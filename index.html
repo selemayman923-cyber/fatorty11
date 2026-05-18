@@ -4,7 +4,21 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>فاتورتي - نظام ERP المتكامل v9</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// تحميل Supabase مع fallback
+(function(){
+  function loadSB(src, fallback){
+    var s = document.createElement('script');
+    s.src = src;
+    s.onerror = function(){ if(fallback){ loadSB(fallback); } };
+    document.head.appendChild(s);
+  }
+  loadSB(
+    'https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js',
+    'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js'
+  );
+})();
+</script>
 <script>
 function _loadScript(src,cb){var s=document.createElement('script');s.src=src;s.async=true;s.onload=cb||function(){};s.onerror=function(){if(cb)cb();};document.head.appendChild(s);}
 window.addEventListener('load',function(){
@@ -4784,7 +4798,17 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 // ============================================================
 const SUPABASE_URL = 'https://lfqwbpyocrbzkddztgqb.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxmcXdicHlvY3JiemtkZHp0Z3FiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg5NTQ0OTcsImV4cCI6MjA5NDUzMDQ5N30.8Z5F9Jw1T1JNwF0a-CM1G4Iak_bG3l5Nn_CYRihMLvo';
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+// ننتظر Supabase يتحمل
+function initSB(){
+  if(typeof supabase !== 'undefined'){
+    window.sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+    // فحص الجلسة بعد ما Supabase يتحمل
+    checkSession();
+  } else {
+    setTimeout(initSB, 100);
+  }
+}
+initSB();
 
 // currentTenantId and currentUser declared globally above
 
@@ -4816,15 +4840,21 @@ function clearAuthMessages() {
 }
 
 async function doLogin() {
+  if(typeof supabase === 'undefined' || !window.sb) { showAuthError('جاري التحميل... حاول تاني بعد ثانية'); return; }
   const email = document.getElementById('auth-email').value.trim();
   const pass = document.getElementById('auth-password').value;
   if (!email || !pass) { showAuthError('برجاء إدخال البريد الإلكتروني وكلمة المرور'); return; }
   const btn = document.getElementById('login-btn-text');
   btn.textContent = 'جاري الدخول...';
-  const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
-  btn.textContent = 'دخول';
-  if (error) { showAuthError('خطأ: ' + (error.message === 'Invalid login credentials' ? 'بيانات غير صحيحة' : error.message)); return; }
-  await afterLogin(data.user);
+  try {
+    const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
+    btn.textContent = 'دخول';
+    if (error) { showAuthError(error.message === 'Invalid login credentials' ? 'بيانات غير صحيحة' : error.message); return; }
+    await afterLogin(data.user);
+  } catch(e) {
+    btn.textContent = 'دخول';
+    showAuthError('تعذر الاتصال بالسيرفر، تحقق من الإنترنت وحاول تاني');
+  }
 }
 
 async function doRegister() {
@@ -5058,7 +5088,7 @@ sb.auth.onAuthStateChange((event, session) => {
 });
 
 // فحص الجلسة مع timeout 6 ثواني
-(async () => {
+async function checkSession(){
   try {
     const result = await Promise.race([
       sb.auth.getSession(),
@@ -5071,9 +5101,8 @@ sb.auth.onAuthStateChange((event, session) => {
     }
   } catch(e) {
     console.warn('Session check:', e.message);
-    // شاشة الدخول بتظهر افتراضياً — مش محتاج نعمل حاجة
   }
-})();
+}
 
 // INIT — إعدادات خفيفة بس، afterLogin هو اللي يرندر
 document.addEventListener('DOMContentLoaded', function(){
