@@ -1,6 +1,22 @@
-/* فاتورتي — Service Worker v9.4 (Network-First for app, Offline fallback) */
-const CACHE = 'fatorty-v9.4';
+/* فاتورتي — Service Worker v9.5 (Network-First for app, safe offline fallback) */
+const CACHE = 'fatorty-v9.5';
 const ASSETS = ['/', '/index.html', '/manifest.json'];
+
+/* صفحة أوفلاين نظيفة — تظهر فقط لو مفيش نت ومفيش نسخة محفوظة */
+const OFFLINE_HTML = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>فاتورتي — غير متصل</title>
+<style>body{font-family:Tahoma,Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f4f7f6;color:#123}
+.box{text-align:center;padding:32px;background:#fff;border-radius:16px;box-shadow:0 8px 30px rgba(0,0,0,.08);max-width:340px}
+h1{font-size:20px;color:#0f6b5c;margin:0 0 10px}p{font-size:14px;color:#567;line-height:1.7;margin:0 0 18px}
+button{background:#0f6b5c;color:#fff;border:none;border-radius:10px;padding:12px 26px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit}</style></head>
+<body><div class="box"><div style="font-size:44px;margin-bottom:10px">📡</div>
+<h1>لا يوجد اتصال بالإنترنت</h1>
+<p>لم نتمكن من تحميل فاتورتي، ولا توجد نسخة محفوظة على هذا الجهاز بعد.<br>افتح التطبيق مرة واحدة مع الإنترنت وسيعمل بعدها بدون نت.</p>
+<button onclick="location.reload()">🔄 إعادة المحاولة</button></div></body></html>`;
+
+const offlineResponse = () =>
+  new Response(OFFLINE_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
 
 // التثبيت: خزّن الملفات الأساسية
 self.addEventListener('install', e => {
@@ -30,7 +46,7 @@ self.addEventListener('fetch', e => {
 
   if (isAppShell) {
     // NETWORK-FIRST: جيب أحدث نسخة من النت دايمًا (لو في نت)
-    // ولو مفيش نت، ارجع للنسخة المحفوظة (أوفلاين)
+    // ولو مفيش نت → النسخة المحفوظة، ولو مفيش نسخة → صفحة أوفلاين نظيفة (مش undefined)
     e.respondWith(
       fetch(e.request)
         .then(res => {
@@ -40,24 +56,28 @@ self.addEventListener('fetch', e => {
           }
           return res;
         })
-        .catch(() => 
-          // مفيش نت → ارجع للكاش
-          caches.open(CACHE).then(cache => cache.match('/index.html'))
+        .catch(() =>
+          caches.open(CACHE)
+            .then(cache => cache.match('/index.html'))
+            .then(cached => cached || offlineResponse())
+            .catch(() => offlineResponse())
         )
     );
     return;
   }
 
-  // باقي الملفات: cache-first
+  // باقي الملفات: cache-first مع fallback آمن (مفيش respondWith(undefined) أبدًا)
   e.respondWith(
-    caches.match(e.request).then(cached => 
+    caches.match(e.request).then(cached =>
       cached || fetch(e.request).then(res => {
         if (res && res.status === 200) {
           const clone = res.clone();
           caches.open(CACHE).then(cache => cache.put(e.request, clone));
         }
         return res;
-      }).catch(() => cached)
+      }).catch(() =>
+        cached || new Response('', { status: 504, statusText: 'Offline' })
+      )
     )
   );
 });
