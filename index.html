@@ -2449,9 +2449,9 @@ function setPriceTier(tier){
 function renderPriceTier(){
   var row=document.getElementById('posPriceTierRow');
   if(!row) return;
-  var hasOnline=db.products.some(function(p){return (+p.onlinePrice||0)>0;});
-  var hasWholesale=db.products.some(function(p){return (+p.wholeSalePrice||0)>0;});
-  if(!hasOnline && !hasWholesale){ row.innerHTML=''; return; }
+  // الأزرار الثلاثة تظهر دائمًا (أونلاين + جملة). لو منتج ملوش سعر أونلاين/جملة،
+  // يرجع effPrice تلقائيًا للسعر الافتراضي — فلا بيع بصفر ولا كسر لأي منطق.
+  var hasOnline=true, hasWholesale=true;
   var btn=function(tier,lbl){
     var on=(posPriceTier===tier);
     return '<button type="button" onclick="setPriceTier(\''+tier+'\')" style="flex:1;padding:8px 4px;border:none;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;transition:all .18s;-webkit-tap-highlight-color:transparent;'+
