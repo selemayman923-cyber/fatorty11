@@ -3917,7 +3917,7 @@ async function delQuote(id){if(!await confirmBox(L('حذف العرض؟ تقدر
 
 /* Customers / Suppliers */
 /* نسخة قديمة غير مستخدمة — النسخة الفعّالة أدناه في الملف */
-function _legacy_tierBadge(c){if(c.tier==='vip')return ` <span class="badge" style="background:var(--accent-soft);color:var(--accent)">⭐ VIP</span>`;if(c.tier==='wholesale')return ` <span class="badge info">📦 ${L('جملة','Wholesale')}</span>`;return '';}
+function _legacy_tierBadge(c){if(c.tier==='vip')return ` <span class="badge" style="background:#EFF4FF;color:#2563EB">💻 ${L('أونلاين','Online')}</span>`;if(c.tier==='wholesale')return ` <span class="badge info">📦 ${L('جملة','Wholesale')}</span>`;return '';}
 let custTierFilter='';
 /* ===== Subscribers / Memberships (Stage 1: list + form + dashboard) ===== */
 function memberOf(customerId){return (db.memberships||[]).find(m=>m.customerId===customerId&&m.status!=='ended')||null;}
@@ -4260,12 +4260,12 @@ views.customers=()=>{
   const list=db.customers.filter(c=>!custTierFilter||(custTierFilter==='regular'?!c.tier:c.tier===custTierFilter));
   const chip=(v,lbl)=>`<span class="cat-chip ${custTierFilter===v?'active':''}" onclick="custTierFilter=${JSON.stringify(v)};views.customers()">${lbl}</span>`;
   document.getElementById('content').innerHTML=`<div class="cards" style="grid-template-columns:repeat(2,1fr)"><div class="card kpi-1"><div class="lbl">${L('عدد العملاء','Customers')}</div><div class="val">${db.customers.length}</div></div><div class="card kpi-3"><div class="lbl">${L('المستحق لك','Receivables')}</div><div class="val" style="font-size:22px;color:var(--gold)">${money(debt)}</div></div></div>
-    <div class="panel"><div class="panel-h" style="flex-wrap:wrap;gap:10px"><h3>${L('العملاء','Customers')}</h3><div style="display:flex;gap:6px;flex-wrap:wrap">${chip('',L('الكل','All'))}${chip('vip','⭐ VIP')}${chip('wholesale','📦 '+L('جملة','Wholesale'))}${chip('regular',L('عادي','Regular'))}</div></div><div class="panel-b">
+    <div class="panel"><div class="panel-h" style="flex-wrap:wrap;gap:10px"><h3>${L('العملاء','Customers')}</h3><div style="display:flex;gap:6px;flex-wrap:wrap">${chip('',L('الكل','All'))}${chip('vip','💻 '+L('أونلاين','Online'))}${chip('wholesale','📦 '+L('جملة','Wholesale'))}${chip('regular',L('🏪 افتراضي','Retail'))}</div></div><div class="panel-b">
     ${list.length?`<table><thead><tr><th>${L('الاسم','Name')}</th><th>${L('الهاتف','Phone')}</th><th>${L('الرصيد','Balance')}</th>${loyOn?`<th>⭐ ${L('نقاط','Points')}</th>`:''}<th>${L('الحالة','Status')}</th><th></th></tr></thead><tbody>
     ${list.slice(0,_cap('customers')).map(c=>{const overLimit=c.creditLimit>0&&c.balance>=c.creditLimit;return `<tr><td><b>${esc(c.name)}</b>${tierBadge(c)}${isSubscriber(c.id)?` <span class="badge ok" title="${L('عميل مشترك','Subscriber')}">🟢 ${L('مشترك','Subscriber')}</span>`:''}${c.bday&&c.bday.slice(5)===today().slice(5)?` <span class="badge warn">🎂 ${L('عيد ميلاد اليوم','Birthday today')}</span>`:''}${c.creditLimit>0?`<div style="font-size:10px;color:var(--muted)">${L('حد','Limit')}: ${money(c.creditLimit)}</div>`:''}</td><td>${esc(c.phone)||'—'}</td><td class="t-num">${money(Math.abs(c.balance))}</td>${loyOn?`<td class="t-num">${c.points||0}${(c.points||0)>0?` <button class="btn btn-ghost btn-sm" onclick="redeemPoints('${c.id}')">${L('استبدال','Redeem')}</button>`:''}</td>`:''}<td>${overLimit?`<span class="badge danger">${L('تخطى الحد','Over limit')}</span>`:c.balance>0?`<span class="badge warn">${L('مدين لك','Owes you')}</span>`:c.balance<0?`<span class="badge info">${L('دفع مقدمًا','Prepaid')}</span>`:`<span class="badge ok">${L('صفر','Zero')}</span>`}</td><td><div class="row-acts">${c.phone?`<button class="iconbtn" title="${L('واتساب','WhatsApp')}" onclick="waCustomer('${c.id}')" style="color:#25D366">📱</button>`:''}<button class="iconbtn" title="${L('كشف حساب','Statement')}" onclick="statement('customer','${c.id}')">📄</button>${db.settings.referralOn?`<button class="iconbtn" title="${L('المحفظة','Wallet')}" onclick="walletView('${c.id}')">👛</button>`:''}${c.balance>0?`<button class="btn btn-ghost btn-sm" onclick="collect('${c.id}')">${L('تحصيل','Collect')}</button>`:''}<button class="iconbtn" onclick="partyForm('customer','${c.id}')">✏️</button><button class="iconbtn del" onclick="delParty('customer','${c.id}')">🗑️</button></div></td></tr>`}).join('')}</tbody></table>${_moreBtn('customers',list.length)}`:`<div class="empty"><span class="big">👤</span>${L('لا يوجد عملاء','No customers')}</div>`}</div></div>`;};
 function exportCustomersCSV(){if(!db.customers.length)return toast(L('لا يوجد عملاء','No customers'),'err');
   const rows=[[L('الاسم','Name'),L('الهاتف','Phone'),L('العنوان','Address'),L('التصنيف','Category'),L('تاريخ ميلاد','Birthday'),L('الرصيد','Balance'),L('حد الائتمان','Credit limit'),L('النقاط','Points')]];
-  db.customers.forEach(c=>rows.push([c.name,c.phone||'',c.address||'',c.tier==='vip'?'VIP':c.tier==='wholesale'?L('جملة','Wholesale'):L('عادي','Regular'),c.bday||'',c.balance,c.creditLimit||0,c.points||0]));
+  db.customers.forEach(c=>rows.push([c.name,c.phone||'',c.address||'',c.tier==='vip'?L('أونلاين','Online'):c.tier==='wholesale'?L('جملة','Wholesale'):L('افتراضي','Retail'),c.bday||'',c.balance,c.creditLimit||0,c.points||0]));
   downloadCSV('customers-'+today()+'.csv',rows);}
 async function waCustomer(id){const c=findCustomer(id);if(!c)return;const num=waNumber(c.phone);if(!num)return toast(L('لا يوجد رقم','No phone number'),'err');
   const msg=await promptBox(L('الرسالة للعميل:','Message to customer:'),{value:L(`مرحبًا ${c.name}،`,`Hello ${c.name},`)});if(msg===null)return;
@@ -4322,7 +4322,7 @@ function partyForm(kind,id){const isC=kind==='customer';const list=isC?db.custom
   <div class="modal-b"><div class="field"><label>${L('الاسم','Name')}</label><input id="p_name" value="${esc(p.name)}"></div><div class="grid2"><div class="field"><label>${L('الهاتف','Phone')}</label><input id="p_phone" value="${esc(p.phone)}"></div><div class="field"><label>${L('العنوان','Address')}</label><input id="p_addr" value="${esc(p.address)}"></div></div>
   <div class="grid2"><div class="field"><label>${L('رصيد افتتاحي','Opening balance')} (${isC?L('مستحق لك','owes you'):L('مستحق عليك','you owe')})</label><input id="p_bal" type="number" value="${p.balance||0}"></div>
   ${isC?`<div class="field"><label>${L('حد الائتمان (0 = بدون حد)','Credit limit (0 = none)')}</label><input id="p_climit" type="number" value="${p.creditLimit||0}"></div>`:'<div class="field"></div>'}</div>
-  ${isC?`<div class="grid2"><div class="field"><label>${L('التصنيف','Category')}</label><select id="p_tier"><option value="" ${!p.tier?'selected':''}>${L('عادي','Regular')}</option><option value="vip" ${p.tier==='vip'?'selected':''}>⭐ VIP</option><option value="wholesale" ${p.tier==='wholesale'?'selected':''}>📦 ${L('جملة','Wholesale')}</option></select></div>
+  ${isC?`<div class="grid2"><div class="field"><label>${L('التصنيف','Category')}</label><select id="p_tier"><option value="" ${!p.tier?'selected':''}>${L('🏪 افتراضي (قطاعي)','🏪 Retail (Default)')}</option><option value="vip" ${p.tier==='vip'?'selected':''}>💻 ${L('أونلاين (نص جملة)','Online (Semi-wholesale)')}</option><option value="wholesale" ${p.tier==='wholesale'?'selected':''}>📦 ${L('جملة (كميات)','Wholesale')}</option></select></div>
   <div class="field"><label>${L('تاريخ ميلاد / مناسبة','Birthday / occasion')}</label><input id="p_bday" type="date" value="${esc(p.bday||'')}"></div></div>`:''}
   ${isC&&id?`<div class="hint">⭐ ${L('نقاط الولاء الحالية','Loyalty points')}: <b>${p.points||0}</b></div>`:''}</div>
   <div class="modal-f"><button class="btn btn-primary" onclick="saveParty('${kind}','${id||''}')">${L('حفظ','Save')}</button><button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button></div>`);}
@@ -7338,12 +7338,12 @@ function autoTier(c){
   var t=buildTierMap();
   var sp=t.spend[c.id]||0,vi=t.visits[c.id]||0,rf=t.refs[c.id]||0;
   if(!vi&&!sp&&!rf)return null;
-  if(sp>=5000||rf>=3)return {k:'vip',icon:'💎',label:'VIP',bg:'var(--accent-soft)',fg:'var(--accent)'};
+  if(sp>=5000||rf>=3)return {k:'vip',icon:'💻',label:L('أونلاين','Online'),bg:'#EFF4FF',fg:'#2563EB'};
   if(sp>=2000||vi>10)return {k:'gold',icon:'🥇',label:L('ذهبي','Gold'),bg:'rgba(214,177,94,.18)',fg:'#9a7b2e'};
   if(sp>=500||vi>=3)return {k:'silver',icon:'🥈',label:L('فضي','Silver'),bg:'rgba(140,150,160,.16)',fg:'#5f6b76'};
   return {k:'bronze',icon:'🥉',label:L('برونزي','Bronze'),bg:'rgba(176,121,80,.14)',fg:'#8a5a3b'};}
 function tierBadge(c){
-  if(c.tier==='vip')return ' <span class="badge" style="background:var(--accent-soft);color:var(--accent)">⭐ VIP</span>';
+  if(c.tier==='vip')return ' <span class="badge" style="background:#EFF4FF;color:#2563EB;border:1px solid #BFDBFE">💻 '+L('أونلاين','Online')+'</span>';
   if(c.tier==='wholesale')return ' <span class="badge info">📦 '+L('جملة','Wholesale')+'</span>';
   var a=autoTier(c);
   if(!a)return '';
