@@ -2307,6 +2307,13 @@ function filterPosCustomers(q){const sel=document.getElementById('posCustomer');
 function renderPosMemberCard(){
   const box=document.getElementById('posMemberCard'); if(!box)return;
   const cid=document.getElementById('posCustomer')?.value;
+  // تغيير مستوى السعر تلقائياً بناءً على تصنيف العميل للتجانس
+  if(cid){const _cm=findCustomer(cid);
+    if(_cm&&_cm.tier==='wholesale'&&posPriceTier==='default'){
+      posPriceTier='wholesale';try{renderPriceTier();}catch(e){}
+      toast('📦 '+L('تم التحويل لسعر الجملة (عميل جملة)','Switched to Wholesale price (wholesale customer)'));
+    }
+  }
   const m=cid?memberOf(cid):null;
   if(window.posPointsUse&&posPointsUse.cid!==cid)posPointsUse=null;
   const loyHtml=(typeof posLoyaltyCard==='function')?posLoyaltyCard(cid):'';
@@ -9054,7 +9061,7 @@ function exportToExcel(rows, filename, headers){
 
 function exportSalesExcel(){
   var rows=bf(db.sales).filter(function(s){return s.subKind!=='delivery';}).map(function(s){
-    return {[L('رقم الفاتورة','Inv#')]:invNo(s),[L('التاريخ','Date')]:s.date,[L('العميل','Customer')]:s.customerName||L('نقدي','Cash'),[L('القناة','Channel')]:s.orderType||'',[L('الإجمالي الفرعي','Subtotal')]:s.sub||0,[L('الخصم','Disc')]:s.disc||0,[L('الضريبة','Tax')]:s.vat||0,[L('الإجمالي','Total')]:s.total||0,[L('التكلفة','Cost')]:s.cost||0,[L('الربح','Profit')]:s.profit||0,[L('طريقة الدفع','Pay method')]:s.payMethod||'',[L('الكاشير','Cashier')]:s.cashier||'',[L('ملاحظة','Note')]:s.notes||''};});
+    return {[L('رقم الفاتورة','Inv#')]:invNo(s),[L('التاريخ','Date')]:s.date,[L('العميل','Customer')]:s.customerName||L('نقدي','Cash'),[L('القناة','Channel')]:s.orderType||'',[L('مستوى السعر','Price tier')]:s.priceTier?priceTierLabel(s.priceTier):L('افتراضي','Default'),[L('الإجمالي الفرعي','Subtotal')]:s.sub||0,[L('الخصم','Disc')]:s.disc||0,[L('الضريبة','Tax')]:s.vat||0,[L('الإجمالي','Total')]:s.total||0,[L('التكلفة','Cost')]:s.cost||0,[L('الربح','Profit')]:s.profit||0,[L('طريقة الدفع','Pay method')]:s.payMethod||'',[L('الكاشير','Cashier')]:s.cashier||'',[L('ملاحظة','Note')]:s.notes||''};});
   exportToExcel(rows,L('المبيعات','Sales'));}
 
 function exportProductsExcel(){
