@@ -1,5 +1,5 @@
-/* فاتورتي — Service Worker v9.9 (Network-First for app, safe offline fallback) */
-const CACHE = 'fatorty-v9.9';
+/* فاتورتي — Service Worker v9.5 (Network-First for app, safe offline fallback) */
+const CACHE = 'fatorty-v9.5';
 const ASSETS = ['/', '/index.html', '/manifest.json'];
 
 /* صفحة أوفلاين نظيفة — تظهر فقط لو مفيش نت ومفيش نسخة محفوظة */
