@@ -881,7 +881,7 @@ const EXP_CATS=['إيجار','رواتب','كهرباء ومياه','نقل وش
 const fmt=n=>(Math.round((+n||0)*100)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const cur=()=>db.settings.currency||'ج.م';
 const money=n=>fmt(n)+' '+cur();
-const today=()=>new Date().toISOString().slice(0,10);
+const today=()=>{const d=new Date(),off=d.getTimezoneOffset(),loc=new Date(d.getTime()-off*60000);return loc.toISOString().slice(0,10);};
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const esc=s=>(s||'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // Normalize for search: lowercase, strip Arabic diacritics, unify alef/taa-marbuta/yaa variants
@@ -1205,6 +1205,14 @@ let _saveT;function bumpOps(){db.settings.opsSinceBackup=(db.settings.opsSinceBa
 function daysSinceBackup(){if(!db.settings.lastBackup)return 999;return Math.floor((Date.now()-new Date(db.settings.lastBackup).getTime())/86400000);}
 function needsBackup(){return (db.settings.opsSinceBackup||0)>=20||daysSinceBackup()>=3;}
 function renderBackupBanner(){const el=document.getElementById('backupBanner');if(!el)return;
+  // تحذير امتلاء الذاكرة — أولوية قصوى
+  if(window._storageCritical){
+    el.style.display='flex';el.style.background='#DC2626';el.style.color='#fff';
+    el.innerHTML='<span>🚨 '+L('ذاكرة الجهاز امتلأت — بياناتك في خطر!','Device storage full — data at risk!')+' '+L('خد نسخة احتياطية فوراً','Back up immediately')+'</span>'+
+      '<button class="btn btn-sm" style="background:#fff;color:#DC2626;font-weight:800" onclick="exportData()">⬇️ '+L('نسخة احتياطية الآن','Back up now')+'</button>';
+    return;
+  }
+  el.style.background='';el.style.color='';
   if(needsBackup()&&(db.sales.length||db.purchases.length)){const d=daysSinceBackup();
     el.style.display='flex';
     el.innerHTML=`<span>⚠️ ${L('لم تأخذ نسخة احتياطية','No backup taken')} ${db.settings.lastBackup?L(`منذ ${d} يوم`,`for ${d} day(s)`):L('أبدًا','yet')} — ${L('بياناتك معرّضة للضياع','your data is at risk')}.</span>
@@ -2137,6 +2145,21 @@ function payBadge(s){const due=s.dueAmount||0;if(due<=0)return `<span class="bad
 /* POS */
 let cart=[],posDiscount=0,posPromo='',posPriceTier='default';
 let posPage=1,posPerPage=20;
+/* تحصيل سريع من داخل الكاشير - دايماً بيسجل في الخزينة لمنع اللغبطة */
+async function posQuickCollect(cid){
+  const c=findCustomer(cid);if(!c)return;
+  const bal=+c.balance||0;if(bal<=0.009)return;
+  const amt=await promptBox(
+    L('تحصيل دين من','Collect debt from')+' '+c.name+'\n'+L('المستحق','Due')+': '+money(bal)+'\n'+L('اكتب المبلغ المحصَّل:','Amount collected:'),
+    {value:bal,type:'number'});
+  if(amt===null)return;const v=+amt;if(!v||v<=0)return;
+  // دايماً بيسجل في الخزينة — لمنع أي لغبطة في الحسابات
+  c.balance=Math.round((c.balance-v)*100)/100;
+  addCash('in',v,L('تحصيل دين','Debt collected')+': '+c.name);
+  logAudit(L('تحصيل من عميل','Collect from customer'),c.name+' — '+money(v));
+  save();renderPosMemberCard();
+  toast('💵 '+money(v)+' — '+(c.balance>0.009?L('الرصيد الباقي','Remaining')+': '+money(c.balance):L('✓ تم سداد الدين كاملاً','✓ Fully settled')));
+}
 /* حفظ/استرجاع مسودة السلة — يحمي من انقطاع الكهرباء/إغلاق مفاجئ/Refresh.
    يستخدم sessionStorage (مؤقت، لا يلمس بيانات النظام ولا المزامنة). عرض فقط. */
 function posSaveDraft(){try{
@@ -2328,16 +2351,21 @@ function renderPosMemberCard(){
       var _tot=_prev.reduce(function(a,s){return a+(+s.total||0);},0);
       var _last=_prev.length?_prev.map(function(s){return s.date;}).sort().slice(-1)[0]:null;
       var _balColor=_bal>0.009?'var(--danger)':(_bal<-0.009?'var(--ok)':'var(--muted)');
-      var _balLbl=_bal>0.009?L('عليه','Owes'):(_bal<-0.009?L('له','Credit'):L('لا يوجد','None'));
+      var _balLbl=_bal>0.009?L('عليه','Owes'):(_bal<-0.009?L('له رصيد','Credit'):L('لا يوجد','None'));
+      var _tierBadgeHtml='';
+      if(_ci.tier==='vip')_tierBadgeHtml=' <span style="background:#EFF4FF;color:#2563EB;border:1px solid #BFDBFE;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700">💻 '+L('أونلاين','Online')+'</span>';
+      else if(_ci.tier==='wholesale')_tierBadgeHtml=' <span style="background:#F0FDF4;color:#16A34A;border:1px solid #BBF7D0;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700">📦 '+L('جملة','Wholesale')+'</span>';
+      else _tierBadgeHtml=' <span style="background:#F8FAFC;color:#64748B;border:1px solid #E2E8F0;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700">🏪 '+L('افتراضي','Retail')+'</span>';
       infoHtml='<div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:4px 0 8px">'+
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">'+
-          '<div style="font-weight:700;font-size:13px">👤 '+esc(_ci.name||'')+'</div>'+
+          '<div style="font-weight:700;font-size:13px">👤 '+esc(_ci.name||'')+_tierBadgeHtml+'</div>'+
           (_ci.phone?'<div style="font-size:11px;color:var(--muted)">📱 '+esc(_ci.phone)+'</div>':'')+
         '</div>'+
-        '<div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px">'+
-          '<span style="background:var(--bg);border-radius:6px;padding:3px 8px">'+L('الرصيد','Balance')+': <b style="color:'+_balColor+'">'+money(Math.abs(_bal))+'</b> '+(_bal!==0?('<span style="color:'+_balColor+'">'+_balLbl+'</span>'):'')+'</span>'+
-          '<span style="background:var(--bg);border-radius:6px;padding:3px 8px">'+L('إجمالي مشترياته','Total spent')+': <b>'+money(_tot)+'</b></span>'+
-          (_last?'<span style="background:var(--bg);border-radius:6px;padding:3px 8px">'+L('آخر زيارة','Last visit')+': <b>'+esc(_last)+'</b></span>':'<span style="background:var(--bg);border-radius:6px;padding:3px 8px;color:var(--muted)">'+L('أول تعامل','First order')+'</span>')+
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px;align-items:center">'+
+          '<span style="background:var(--bg);border-radius:6px;padding:3px 8px">'+L('الرصيد','Balance')+': <b style="color:'+_balColor+'">'+money(Math.abs(_bal))+'</b>'+(Math.abs(_bal)>0.009?' <span style="color:'+_balColor+'">'+_balLbl+'</span>':'')+'</span>'+
+          '<span style="background:var(--bg);border-radius:6px;padding:3px 8px">'+L('مشترياته','Spent')+': <b>'+money(_tot)+'</b></span>'+
+          (_last?'<span style="background:var(--bg);border-radius:6px;padding:3px 8px">'+L('آخر زيارة','Last')+': <b>'+esc(_last)+'</b></span>':'<span style="color:var(--muted)">'+L('أول تعامل','New')+'</span>')+
+          (_bal>0.009?'<button type="button" onclick="posQuickCollect(\''+cid+'\')" style="padding:3px 10px;border:1px solid var(--danger);border-radius:7px;background:var(--danger-soft,#fbe9e7);color:var(--danger);cursor:pointer;font-size:11px;font-weight:700">💵 '+L('تحصيل دين','Collect debt')+'</button>':'')+
         '</div>'+
       '</div>';
     }
@@ -3015,10 +3043,15 @@ function holdSale(){if(!cart.length)return toast(L('السلة فارغة','Cart
   save();cart=[];posDiscount=0;renderCart();updateHeldBadge();toast(L('تم تعليق الفاتورة','Sale held'));}
 function updateHeldBadge(){const b=document.getElementById('heldBadge');if(!b)return;const n=bf(db.heldSales).length;b.textContent=`⏸️ ${L('معلّقة','Held')} (${n})`;b.style.display=n>0?'inline-flex':'none';}
 function openHeldList(){const held=bf(db.heldSales);
+  var _heldAll=bf(db.heldSales);var _heldNow=Date.now();
+  var oldHeld=_heldAll.filter(function(h){return h.at&&(_heldNow-new Date(h.at).getTime())>24*3600*1000;});
+  if(oldHeld.length){toast('⚠️ '+L('فيه','There are')+' '+oldHeld.length+' '+L('فواتير معلقة من أكثر من 24 ساعة — راجعها','held orders older than 24h — please review'),'err');}
   openModal(`<div class="modal-h"><h3>⏸️ ${L('الفواتير المعلّقة','Held Sales')}</h3><button class="x" onclick="closeModal()">×</button></div>
   <div class="modal-b">${held.length?`${held.length>1?`<div style="background:var(--primary-soft);border-radius:10px;padding:9px 12px;margin-bottom:10px;font-size:12px;color:var(--ink)">🔗 ${L('اختر فاتورتين أو أكثر ثم اضغط «دمج» لضمّها في طلب واحد','Select 2+ orders then press «Merge» to combine them')}</div>`:''}<table><thead><tr><th style="width:34px"></th><th>${L('الوقت','Time')}</th><th>${L('العميل','Customer')}</th><th>${L('الأصناف','Items')}</th><th></th></tr></thead><tbody>
   ${held.slice().reverse().map(h=>{const d=new Date(h.at);const tm=d.toLocaleString(LANG==='ar'?'ar-EG':'en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});const n=h.items.reduce((s,i)=>s+i.qty,0);
-    return `<tr><td style="text-align:center"><input type="checkbox" class="mergeChk" value="${h.id}" style="width:17px;height:17px;cursor:pointer"></td><td>${tm}</td><td>${esc(h.customerName)||L('نقدي','Cash')}</td><td class="t-num">${n}</td><td style="text-align:left"><button class="btn btn-primary btn-sm" onclick="resumeHeld('${h.id}')">${L('استرجاع','Resume')}</button> <button class="iconbtn del" onclick="deleteHeld('${h.id}')">🗑️</button></td></tr>`;}).join('')}
+    const ageH=Math.round((Date.now()-d.getTime())/3600000);
+    const ageBadge=ageH>24?` <span style="background:#FEE2E2;color:#DC2626;border-radius:5px;padding:1px 5px;font-size:10px">⚠️ ${ageH}h</span>`:ageH>1?` <span style="color:var(--muted);font-size:10px">${ageH}h</span>`:'';
+    return `<tr><td style="text-align:center"><input type="checkbox" class="mergeChk" value="${h.id}" style="width:17px;height:17px;cursor:pointer"></td><td>${tm}${ageBadge}</td><td>${esc(h.customerName)||L('نقدي','Cash')}</td><td class="t-num">${n}</td><td style="text-align:left"><button class="btn btn-primary btn-sm" onclick="resumeHeld('${h.id}')">${L('استرجاع','Resume')}</button> <button class="iconbtn del" onclick="deleteHeld('${h.id}')">🗑️</button></td></tr>`;}).join('')}
   </tbody></table>`:`<div class="empty"><span class="big">⏸️</span>${L('لا توجد فواتير معلّقة','No held sales')}</div>`}</div>
   <div class="modal-f">${held.length>1?`<button class="btn btn-primary" onclick="mergeHeldSelected()">🔗 ${L('دمج المحدد','Merge selected')}</button>`:''}<button class="btn btn-ghost" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`);}
 /* دمج فواتير معلّقة مختارة في سلة واحدة — لا يمسّ أي فاتورة مسجّلة */
@@ -3392,12 +3425,18 @@ function addCatFromModal(){
 
 async function delCat(name){
   const count=db.products.filter(p=>p.cat===name).length;
-  if(count>0&&!await confirmBox(L(`سيتم إزالة التصنيف من ${count} صنف. متابعة؟`,`Will remove category from ${count} items. Continue?`)))return;
+  const posCount=db.products.filter(p=>p.cat===name&&fatShowsInMenu(p)).length;
+  if(count>0){
+    const msg=L('⚠️ التصنيف "','⚠️ Category "')+name+L('" فيه '+count+' صنف.','\" has '+count+' items.\n')+
+      (posCount>0?'\n'+L('● '+posCount+' منهم بيظهروا في الكاشير — بعد الحذف هيختفوا من شاشة البيع!','● '+posCount+' appear in POS — they will disappear from the sales screen!')+'\n':'')+
+      '\n'+L('الأصناف مش هتتحذف، بس هيفقدوا تصنيفهم. متابعة؟','Items won\'t be deleted but will lose their category. Continue?');
+    if(!await confirmBox(msg))return;
+  }
   db.categories=db.categories.filter(c=>c.name!==name);
   db.products.forEach(p=>{if(p.cat===name)p.cat='';});
   save();
-  document.getElementById('catList').innerHTML=renderCatListHTML(getAllCats());
-  toast(L('تم الحذف','Deleted'));}
+  try{document.getElementById('catList').innerHTML=renderCatListHTML(getAllCats());}catch(e){}
+  toast(L('تم حذف التصنيف — الأصناف بقت بدون تصنيف','Category deleted — items now uncategorized'));}
 
 function editCartLine(lid){
   var line=cart.find(function(c){return c.lid===lid;});
@@ -3868,7 +3907,25 @@ function editSale(id){if(!isManager())return toast(L('التعديل متاح ل
   if(s.acct)setv('inv_acct',s.acct);if(s.dueDate)setv('inv_due',s.dueDate);
   const h=document.querySelector('#modal .modal-h h3');if(h)h.innerHTML=`✏️ ${L('تعديل فاتورة','Edit Invoice')} #${s.no}`;
   renderInvLines();calcInv();}
-async function delSale(id){if(!await confirmBox(L('حذف الفاتورة؟ تقدر ترجّعها من السلة','Delete invoice? Restore from trash')))return;const s=db.sales.find(x=>x.id===id);if(s)trashAdd('sale',s,'#'+s.no+' — '+(money?money(s.total):s.total));saleStockIn(s.items,`إلغاء بيع #${s.no}`,id);addCash('out',s.paidAmount||0,`إلغاء بيع #${s.no}`,id,s.acct||'cash');if((s.dueAmount||0)>0&&s.customerId){const c=findCustomer(s.customerId);if(c)c.balance-=s.dueAmount;}logAudit(L('حذف فاتورة بيع','Delete sale'),`${invNo(s)} — ${money(s.total)}`);db.sales=db.sales.filter(x=>x.id!==id);save();go('sales');toast(L('تم الحذف','Deleted'));}
+async function delSale(id){
+  const s=db.sales.find(x=>x.id===id);if(!s)return;
+  const isManager_=isManager();
+  if(!isManager_)return toast(L('الإلغاء للمدير فقط','Manager only'),'err');
+  // عرض تأثير الإلغاء بوضوح قبل التأكيد
+  var impact=L('⚠️ سيتم إلغاء الفاتورة #','⚠️ Invoice #')+s.no+L(' وعكس:',', reversing:')+'\n'+
+    L('● المخزون: سيُعاد','● Stock: will be restored')+'\n'+
+    (s.paidAmount>0?L('● الخزينة: سيُخصم ','● Cash: will deduct ')+money(s.paidAmount)+'\n':'')+
+    (s.dueAmount>0?L('● رصيد العميل: سيُلغى الدين ','● Customer debt: will clear ')+money(s.dueAmount)+'\n':'')+
+    '\n'+L('هذه العملية موثّقة في سجل التدقيق. متابعة؟','This is logged in the audit trail. Continue?');
+  if(!await confirmBox(impact))return;
+  if(s)trashAdd('sale',s,'#'+s.no+' — '+(money?money(s.total):s.total));
+  saleStockIn(s.items,L('إلغاء فاتورة','Cancel invoice')+' #'+s.no,id);
+  addCash('out',s.paidAmount||0,L('إلغاء فاتورة','Cancel invoice')+' #'+s.no,id,s.acct||'cash');
+  if((s.dueAmount||0)>0&&s.customerId){const c=findCustomer(s.customerId);if(c)c.balance-=s.dueAmount;}
+  logAudit(L('إلغاء فاتورة بيع','Cancel sale invoice'),`${invNo(s)} — ${money(s.total)} — ${L('بواسطة','by')}: ${currentUserName()}`);
+  db.sales=db.sales.filter(x=>x.id!==id);
+  save();go('sales');
+  toast(L('تم إلغاء الفاتورة وعكس تأثيراتها','Invoice cancelled and reversed'));}
 async function delPurchase(id){if(!await confirmBox(L('حذف الفاتورة؟','Delete invoice?')))return;const s=db.purchases.find(x=>x.id===id);s.items.forEach(it=>moveStock(it.pid,-it.qty,'out',`إلغاء شراء #${s.no}`,id));addCash('in',s.paidAmount||0,`إلغاء شراء #${s.no}`,id,s.acct||'cash');if((s.dueAmount||0)>0&&s.supplierId){const sp=findSupplier(s.supplierId);if(sp)sp.balance-=s.dueAmount;}logAudit(L('حذف فاتورة شراء','Delete purchase'),`${invNo(s)} — ${money(s.total)}`);var _opu=db.purchases.find(x=>x.id===id);if(_opu)trashAdd('purchase',_opu,'#'+(_opu.no||''));db.purchases=db.purchases.filter(x=>x.id!==id);save();go('purchases');toast(L('تم الحذف','Deleted'));}
 
 /* Returns */
@@ -3894,7 +3951,18 @@ function saveReturn(){const isSale=retCtx.kind==='sale';const lines=retLines.fil
   const racct=s.acct||'cash';
   if(isSale){{let _ri=lines.map(l=>({pid:l.pid,qty:l.ret}));saleStockIn(_ri,`مرتجع بيع #${rec.no}`,rec.id);}if((s.dueAmount||0)>0&&s.customerId){const c=findCustomer(s.customerId);const cut=Math.min(s.dueAmount,total);s.dueAmount-=cut;if(c)c.balance-=cut;addCash('out',total-cut,`رد مرتجع #${rec.no}`,rec.id,racct);}else addCash('out',total,`رد مرتجع #${rec.no}`,rec.id,racct);}
   else{lines.filter(l=>l.pid&&findProduct(l.pid)).forEach(l=>moveStock(l.pid,-l.ret,'out',`مرتجع شراء #${rec.no}`,rec.id));if((s.dueAmount||0)>0&&s.supplierId){const sp=findSupplier(s.supplierId);const cut=Math.min(s.dueAmount,total);s.dueAmount-=cut;if(sp)sp.balance-=cut;addCash('in',total-cut,`استرداد #${rec.no}`,rec.id,racct);}else addCash('in',total,`استرداد #${rec.no}`,rec.id,racct);}
-  logAudit(L('مرتجع','Return'),`#${rec.no} (${isSale?L('بيع','sale'):L('شراء','purchase')}) — ${money(total)}`);save();closeModal();go('returns');toast(L('تم تسجيل المرتجع','Return recorded'));}
+  logAudit(L('مرتجع','Return'),`#${rec.no} (${isSale?L('بيع','sale'):L('شراء','purchase')}) — ${money(total)}`);
+  // عكس نقاط الولاء لو كانت البيعة الأصلية كسّبت نقاط
+  if(isSale&&db.settings.loyaltyOn&&s.customerId){
+    const _cust=findCustomer(s.customerId);
+    if(_cust&&(_cust.points||0)>0){
+      const retPts=Math.floor(total/100*(db.settings.loyaltyRate||1));
+      if(retPts>0){_cust.points=Math.max(0,Math.round((_cust.points||0)-retPts));
+        logAudit(L('خصم نقاط مرتجع','Return points deducted'),_cust.name+' — '+retPts+' '+L('نقطة','pts'));
+      }
+    }
+  }
+  save();closeModal();go('returns');toast(L('تم تسجيل المرتجع','Return recorded'));}
 views.returns=()=>{const sR=db.returns.filter(r=>r.type==='sale').reduce((s,r)=>s+r.total,0),pR=db.returns.filter(r=>r.type==='purchase').reduce((s,r)=>s+r.total,0);
   document.getElementById('content').innerHTML=`<div class="hint">↩️ ${L('سجّل مرتجعًا من زر «↩️» بجانب أي فاتورة.','Create a return from the ↩️ button next to any invoice.')}</div>
     <div class="cards" style="grid-template-columns:repeat(2,1fr)"><div class="card kpi-2"><div class="lbl">${L('مرتجعات البيع','Sales Returns')}</div><div class="val" style="font-size:21px;color:var(--accent)">${money(sR)}</div></div><div class="card kpi-1"><div class="lbl">${L('مرتجعات الشراء','Purchase Returns')}</div><div class="val" style="font-size:21px">${money(pR)}</div></div></div>
@@ -4258,7 +4326,7 @@ views.customers=()=>{
   const debt=db.customers.reduce((s,c)=>s+Math.max(0,c.balance),0);const loyOn=db.settings.loyaltyOn;
   document.getElementById('topActions').innerHTML=`<button class="btn btn-ghost btn-sm" onclick="receivablesAging()">📋 ${L('ذمم العملاء','Receivables')}</button><button class="btn btn-ghost" onclick="_csvMode='customers';csvImportModal()">📥 ${L('استيراد CSV','Import CSV')}</button><button class="btn btn-ghost" onclick="bulkMessage()">📢 ${L('رسالة جماعية','Bulk message')}</button><button class="btn btn-ghost" onclick="exportCustomersExcel()">📊 ${L('Excel','Excel')}</button><button class="btn btn-primary" onclick="partyForm('customer')">+ ${L('عميل','Customer')}</button>`;
   const list=db.customers.filter(c=>!custTierFilter||(custTierFilter==='regular'?!c.tier:c.tier===custTierFilter));
-  const chip=(v,lbl)=>`<span class="cat-chip ${custTierFilter===v?'active':''}" onclick="custTierFilter=${JSON.stringify(v)};views.customers()">${lbl}</span>`;
+  const chip=(v,lbl)=>`<span class="cat-chip ${custTierFilter===v?'active':''}" onclick="custTierFilter='${v}';views.customers()">${lbl}</span>`;
   document.getElementById('content').innerHTML=`<div class="cards" style="grid-template-columns:repeat(2,1fr)"><div class="card kpi-1"><div class="lbl">${L('عدد العملاء','Customers')}</div><div class="val">${db.customers.length}</div></div><div class="card kpi-3"><div class="lbl">${L('المستحق لك','Receivables')}</div><div class="val" style="font-size:22px;color:var(--gold)">${money(debt)}</div></div></div>
     <div class="panel"><div class="panel-h" style="flex-wrap:wrap;gap:10px"><h3>${L('العملاء','Customers')}</h3><div style="display:flex;gap:6px;flex-wrap:wrap">${chip('',L('الكل','All'))}${chip('vip','💻 '+L('أونلاين','Online'))}${chip('wholesale','📦 '+L('جملة','Wholesale'))}${chip('regular',L('🏪 افتراضي','Retail'))}</div></div><div class="panel-b">
     ${list.length?`<table><thead><tr><th>${L('الاسم','Name')}</th><th>${L('الهاتف','Phone')}</th><th>${L('الرصيد','Balance')}</th>${loyOn?`<th>⭐ ${L('نقاط','Points')}</th>`:''}<th>${L('الحالة','Status')}</th><th></th></tr></thead><tbody>
@@ -4309,7 +4377,26 @@ async function delRecurring(id){if(!await confirmBox(L('حذف القالب ال
 async function redeemPoints(id){const c=findCustomer(id);const pts=c.points||0;if(pts<=0)return;const val=pts*db.settings.loyaltyValue;
   if(!await confirmBox(L(`استبدال ${pts} نقطة بخصم ${money(val)}؟ (يُضاف كرصيد مقدّم للعميل)`,`Redeem ${pts} points for ${money(val)} credit?`)))return;
   c.points=0;c.balance-=val;addCash('out',0,`استبدال نقاط ${c.name}`);save();views.customers();toast(L('تم الاستبدال','Redeemed'));}
-async function collect(id){const c=findCustomer(id);const amt=await promptBox(`${L('تحصيل من','Collect from')} ${c.name} (${money(c.balance)})`,{value:c.balance,type:'number'});if(amt===null)return;const v=+amt;if(!v||v<=0)return;c.balance-=v;addCash('in',v,`تحصيل ${c.name}`);save();views.customers();toast(L('تم التحصيل','Collected'));}
+async function collect(id){
+  const c=findCustomer(id);if(!c||!(+c.balance>0.009))return;
+  const amt=await promptBox(`${L('تحصيل من','Collect from')} ${c.name} (${money(c.balance)})`,{value:c.balance,type:'number'});
+  if(amt===null)return;const v=+amt;if(!v||v<=0)return;
+  c.balance=Math.round((c.balance-v)*100)/100;
+  addCash('in',v,`${L('تحصيل','Collect')} ${c.name}`);
+  // تصفير الفواتير الآجلة المرتبطة تصاعدياً (الأقدم أولاً)
+  var remaining=v;
+  var openSales=db.sales.filter(function(s){return s.customerId===id&&(s.dueAmount||0)>0.009;})
+    .sort(function(a,b){return a.date<b.date?-1:1;});
+  openSales.forEach(function(s){
+    if(remaining<=0.009)return;
+    var pay=Math.min(remaining,s.dueAmount);
+    s.dueAmount=Math.round((s.dueAmount-pay)*100)/100;
+    s.paidAmount=Math.round((s.paidAmount+pay)*100)/100;
+    if(s.dueAmount<0.009){s.dueAmount=0;if(!s.payMethod||s.payMethod==='credit')s.payMethod='cash';}
+    remaining=Math.round((remaining-pay)*100)/100;
+  });
+  logAudit(L('تحصيل من عميل','Collect from customer'),c.name+' — '+money(v));
+  save();views.customers();toast(L('تم التحصيل','Collected'));}
 views.suppliers=()=>{document.getElementById('topActions').innerHTML=`<button class="btn btn-accent" onclick="partyForm('supplier')">+ ${L('مورد','Supplier')}</button>`;
   const due=db.suppliers.reduce((s,c)=>s+Math.max(0,c.balance),0);
   document.getElementById('content').innerHTML=`<div class="cards" style="grid-template-columns:repeat(2,1fr)"><div class="card kpi-2"><div class="lbl">${L('عدد الموردين','Suppliers')}</div><div class="val">${db.suppliers.length}</div></div><div class="card kpi-4"><div class="lbl">${L('المستحق عليك','Payables')}</div><div class="val" style="font-size:22px;color:var(--danger)">${money(due)}</div></div></div>
@@ -4320,7 +4407,9 @@ async function payy(id){const c=findSupplier(id);const amt=await promptBox(`${L(
 function partyForm(kind,id){const isC=kind==='customer';const list=isC?db.customers:db.suppliers;const p=id?list.find(x=>x.id===id):{name:'',phone:'',address:'',balance:0,points:0,creditLimit:0};
   openModal(`<div class="modal-h"><h3>${id?L('تعديل','Edit'):L('إضافة','Add')} ${isC?L('عميل','Customer'):L('مورد','Supplier')}</h3><button class="x" onclick="closeModal()">×</button></div>
   <div class="modal-b"><div class="field"><label>${L('الاسم','Name')}</label><input id="p_name" value="${esc(p.name)}"></div><div class="grid2"><div class="field"><label>${L('الهاتف','Phone')}</label><input id="p_phone" value="${esc(p.phone)}"></div><div class="field"><label>${L('العنوان','Address')}</label><input id="p_addr" value="${esc(p.address)}"></div></div>
-  <div class="grid2"><div class="field"><label>${L('رصيد افتتاحي','Opening balance')} (${isC?L('مستحق لك','owes you'):L('مستحق عليك','you owe')})</label><input id="p_bal" type="number" value="${p.balance||0}"></div>
+  <div class="grid2"><div class="field"><label>${L('رصيد افتتاحي','Opening balance')}
+    <span title="${L('موجب (+) = العميل مدين لك (عليه فلوس). سالب (-) = دفع مقدم (له رصيد عندك). مثال: 500 = العميل عليه 500 ليك','Positive = customer owes you. Negative = customer pre-paid. Example: 500 means customer owes you 500')}" style="cursor:help;color:var(--primary);font-size:11px;font-weight:400;margin-right:4px">ℹ️ ${L('(+ عليه / - له)','(+ owes / - credit)')}</span>
+    </label><input id="p_bal" type="number" value="${p.balance||0}" placeholder="0"></div>
   ${isC?`<div class="field"><label>${L('حد الائتمان (0 = بدون حد)','Credit limit (0 = none)')}</label><input id="p_climit" type="number" value="${p.creditLimit||0}"></div>`:'<div class="field"></div>'}</div>
   ${isC?`<div class="grid2"><div class="field"><label>${L('التصنيف','Category')}</label><select id="p_tier"><option value="" ${!p.tier?'selected':''}>${L('🏪 افتراضي (قطاعي)','🏪 Retail (Default)')}</option><option value="vip" ${p.tier==='vip'?'selected':''}>💻 ${L('أونلاين (نص جملة)','Online (Semi-wholesale)')}</option><option value="wholesale" ${p.tier==='wholesale'?'selected':''}>📦 ${L('جملة (كميات)','Wholesale')}</option></select></div>
   <div class="field"><label>${L('تاريخ ميلاد / مناسبة','Birthday / occasion')}</label><input id="p_bday" type="date" value="${esc(p.bday||'')}"></div></div>`:''}
@@ -4376,8 +4465,23 @@ function statement(kind,id){const isC=kind==='customer';const p=(isC?db.customer
 views.treasury=()=>{document.getElementById('topActions').innerHTML=`<button class="btn btn-primary" onclick="cashForm('in')">+ ${L('إيداع','Deposit')}</button><button class="btn btn-accent" onclick="cashForm('out')">- ${L('صرف','Withdraw')}</button><button class="btn btn-blue" onclick="transferForm()">🔁 ${L('تحويل','Transfer')}</button><button class="btn btn-ghost" onclick="bankForm()">🏦 ${L('حساب بنكي','Bank account')}</button>`;
   const inT=db.cash.filter(c=>c.type==='in').reduce((s,c)=>s+c.amount,0),outT=db.cash.filter(c=>c.type==='out').reduce((s,c)=>s+c.amount,0);
   const acctMap={cash:cashBalance()};db.banks.forEach(b=>acctMap[b.id]=bankBalance(b.id));
+  // حساب مبيعات كل طريقة دفع للشهر الحالي
+  const _pm30={card:0,wallet:0,transfer:0,split_card:0};
+  const _m30=addDays(today(),-30);
+  bf(db.sales).filter(function(s){return s.date>=_m30;}).forEach(function(s){
+    if(s.payMethod==='card')_pm30.card+=s.total;
+    else if(s.payMethod==='wallet')_pm30.wallet+=s.total;
+    else if(s.payMethod==='transfer')_pm30.transfer+=s.total;
+    else if(s.payMethod==='split'){_pm30.card+=s.splitCard||0;}
+  });
+  const P=typeof PAY_LBL==='function'?PAY_LBL():{card:'بطاقة',wallet:'محفظة',transfer:'تحويل'};
+  const pmCards=(_pm30.card>0||_pm30.wallet>0||_pm30.transfer>0)?[
+    _pm30.card>0?`<div class="card kpi-4"><div class="ic-bg">💳</div><div class="lbl">${P.card||L('بطاقة','Card')} <span style="font-size:10px;color:var(--muted)">(${L('آخر 30 يوم','Last 30d')})</span></div><div class="val" style="font-size:20px;color:var(--blue)">${money(_pm30.card)}</div></div>`:'',
+    _pm30.wallet>0?`<div class="card kpi-4"><div class="ic-bg">📱</div><div class="lbl">${P.wallet||L('محفظة','Wallet')} <span style="font-size:10px;color:var(--muted)">(${L('آخر 30 يوم','Last 30d')})</span></div><div class="val" style="font-size:20px;color:var(--accent)">${money(_pm30.wallet)}</div></div>`:'',
+    _pm30.transfer>0?`<div class="card kpi-4"><div class="ic-bg">🏦</div><div class="lbl">${P.transfer||L('تحويل','Transfer')} <span style="font-size:10px;color:var(--muted)">(${L('آخر 30 يوم','Last 30d')})</span></div><div class="val" style="font-size:20px;color:var(--primary-d)">${money(_pm30.transfer)}</div></div>`:'',
+  ].filter(Boolean).join(''):'';
   const bankCards=db.banks.map(b=>`<div class="card kpi-4"><div class="ic-bg">🏦</div><div class="lbl">${esc(b.name)}</div><div class="val" style="font-size:20px;color:var(--blue)">${money(bankBalance(b.id))}</div><div class="sub">${b.accountNo?esc(b.accountNo):L('حساب بنكي','Bank account')} • <a href="#" onclick="delBank('${b.id}');return false" style="color:var(--danger)">${L('حذف','Delete')}</a></div></div>`).join('');
-  document.getElementById('content').innerHTML=`<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))"><div class="card kpi-1"><div class="ic-bg">💵</div><div class="lbl">${L('الخزينة النقدية','Cash Drawer')}</div><div class="val">${money(cashBalance())}</div></div>${bankCards}<div class="card kpi-2"><div class="lbl">${L('إجمالي الداخل','Total In')}</div><div class="val" style="font-size:22px;color:var(--ok)">${money(inT)}</div></div><div class="card kpi-3"><div class="lbl">${L('إجمالي الخارج','Total Out')}</div><div class="val" style="font-size:22px;color:var(--danger)">${money(outT)}</div></div></div>
+  document.getElementById('content').innerHTML=`<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))"><div class="card kpi-1"><div class="ic-bg">💵</div><div class="lbl">${L('الخزينة النقدية','Cash Drawer')}</div><div class="val">${money(cashBalance())}</div></div>${bankCards}${pmCards}<div class="card kpi-2"><div class="lbl">${L('إجمالي الداخل','Total In')}</div><div class="val" style="font-size:22px;color:var(--ok)">${money(inT)}</div></div><div class="card kpi-3"><div class="lbl">${L('إجمالي الخارج','Total Out')}</div><div class="val" style="font-size:22px;color:var(--danger)">${money(outT)}</div></div></div>
     <div class="panel"><div class="panel-h"><h3>${L('حركة الخزينة والحسابات','Cash & Account Movements')}</h3></div><div class="panel-b">
     ${db.cash.length?`<table><thead><tr><th>${L('التاريخ','Date')}</th><th>${L('الحساب','Account')}</th><th>${L('البيان','Description')}</th><th>${L('داخل','In')}</th><th>${L('خارج','Out')}</th></tr></thead><tbody>
     ${[...db.cash].reverse().map(c=>`<tr><td>${c.date}</td><td><span class="badge ${(!c.acct||c.acct==='cash')?'muted':'info'}">${esc(acctName(c.acct))}</span></td><td>${esc(c.note)}</td><td class="t-num" style="color:var(--ok)">${c.type==='in'?money(c.amount):'—'}</td><td class="t-num" style="color:var(--danger)">${c.type==='out'?money(c.amount):'—'}</td></tr>`).join('')}</tbody></table>`:`<div class="empty"><span class="big">💵</span>${L('لا حركات','No movements')}</div>`}</div></div>`;};
@@ -5276,7 +5380,14 @@ function applyCustomBrand(){
 function savePin(){db.settings.pin=document.getElementById('s_pin').value.trim();save();toast(db.settings.pin?L('تم تفعيل القفل','Lock enabled'):L('تم إلغاء القفل','Lock disabled'));}
 function exportData(){doExport(true);}
 function doExport(manual){try{db.settings._lastBackupDate=Date.now();}catch(e){}const data=JSON.stringify(db,null,2);const blob=new Blob([data],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='backup-hesaby-'+today()+(manual?'':'-auto')+'.json';a.click();
-  db.settings.lastBackup=new Date().toISOString();db.settings.opsSinceBackup=0;if(!manual)db.settings.lastAutoExport=today();save();renderBackupBanner();if(manual)toast(L('تم تنزيل النسخة','Backup downloaded'));}
+  db.settings.lastBackup=new Date().toISOString();db.settings.opsSinceBackup=0;if(!manual)db.settings.lastAutoExport=today();save();renderBackupBanner();
+  if(manual){
+    // تأكيد مع إرشاد واضح بضرورة نسخ الملف في مكان آمن
+    setTimeout(function(){
+      try{toast('✅ '+L('تم تنزيل النسخة — انقلها لـ Google Drive أو USB أو إيميل لأمان أكثر','Backup downloaded — move it to Google Drive, USB, or email for safety'),'',{duration:6000});}catch(_){}
+    },500);
+  }
+}
 /* ---- Local snapshots (keep last 5) ---- */
 const SNAP_KEY='hesaby_snaps';
 async function getSnaps(){try{const r=await window.storage.get(SNAP_KEY);return r&&r.value?JSON.parse(r.value):[];}catch(e){return [];}}
@@ -5439,6 +5550,53 @@ function _legacy_empOutstandingAdvances(e){
   const ded=(e.payments||[]).reduce((a,p)=>a+(+p.adv||0),0);
   return Math.max(0,adv-ded);
 }
+/* صرف سلفة سريعة من شاشة السلف مع اختيار الموظف */
+async function giveAdvanceQuick(){
+  const emps=db.employees||[];
+  if(!emps.length)return toast(L('لا يوجد موظفون','No employees yet'),'err');
+  const opts=emps.map(e=>`<option value="${e.id}">${esc(e.name)}${empOutstandingAdvances(e)?' (سُلف: '+money(empOutstandingAdvances(e))+')':''}</option>`).join('');
+  openModal(`<div class="modal-h"><h3>💰 ${L('صرف سلفة','Pay Advance')}</h3><button class="x" onclick="closeModal()">×</button></div>
+  <div class="modal-b">
+    <div class="field"><label>${L('الموظف','Employee')}</label><select id="adv_emp">${opts}</select></div>
+    <div class="field"><label>${L('المبلغ','Amount')}</label><input type="number" id="adv_amt" min="1" placeholder="0" style="font-size:18px;font-weight:700"></div>
+    <div class="field"><label>${L('طريقة الخصم','Deduction method')}</label>
+      <select id="adv_ded">
+        <option value="none">${L('بدون خصم تلقائي (يدوي)','No auto deduction')}</option>
+        <option value="next">${L('تُخصم كاملاً من أول راتب','Deduct fully from next salary')}</option>
+        <option value="split2">${L('تُقسَّم على شهرين','Split over 2 months')}</option>
+        <option value="split3">${L('تُقسَّم على 3 أشهر','Split over 3 months')}</option>
+      </select>
+    </div>
+    <div class="field"><label>${L('ملاحظة','Note')}</label><input id="adv_note" placeholder="${L('سبب السلفة (اختياري)','Reason (optional)')}"></div>
+    <div id="adv_preview" style="font-size:12px;color:var(--muted);padding:8px;border-radius:8px;background:var(--bg);margin-top:4px"></div>
+  </div>
+  <div class="modal-f"><button class="btn btn-primary" onclick="saveAdvanceQuick()">💰 ${L('صرف','Pay')}</button><button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button></div>`);
+  document.getElementById('adv_amt').addEventListener('input',_advPreview);
+  document.getElementById('adv_ded').addEventListener('change',_advPreview);}
+function _advPreview(){
+  const amt=+document.getElementById('adv_amt').value||0;
+  const ded=document.getElementById('adv_ded').value;
+  const p=document.getElementById('adv_preview');if(!p)return;
+  if(!amt){p.innerHTML='';return;}
+  let msg='';
+  if(ded==='none')msg=L('ستُسجَّل السلفة بدون خصم تلقائي — اخصمها يدوياً من الراتب','Advance recorded without auto-deduction');
+  else if(ded==='next')msg=L('سيُخصم ','Will deduct ')+money(amt)+L(' كاملاً من أول راتب',' from next salary');
+  else if(ded==='split2')msg=L('سيُخصم ','Will deduct ')+money(Math.ceil(amt/2))+L(' لمدة شهرين',' for 2 months');
+  else msg=L('سيُخصم ','Will deduct ')+money(Math.ceil(amt/3))+L(' لمدة 3 أشهر',' for 3 months');
+  p.innerHTML='📋 '+msg;}
+async function saveAdvanceQuick(){
+  const eid=document.getElementById('adv_emp').value;
+  const amt=+document.getElementById('adv_amt').value||0;
+  const ded=document.getElementById('adv_ded').value;
+  const note=document.getElementById('adv_note').value.trim();
+  if(!eid||amt<=0)return toast(L('اختر موظف وأدخل مبلغ','Choose employee and amount'),'err');
+  const e=db.employees.find(x=>x.id===eid);if(!e)return;
+  e.advances=e.advances||[];
+  e.advances.push({id:uid(),date:today(),amount:amt,note,dedType:ded,dedMonths:ded==='split2'?2:ded==='split3'?3:ded==='next'?1:0,dedPaid:0});
+  addCash('out',amt,L('سلفة','Advance')+': '+e.name);
+  logAudit(L('سلفة موظف','Employee advance'),`${e.name} — ${money(amt)}${ded!=='none'?' ('+L('خصم تلقائي','auto-deduct')+')':''}`);
+  bumpOps();save();closeModal();views.advances();
+  toast('💰 '+L('تم صرف السلفة','Advance paid')+': '+money(amt)+' → '+e.name);}
 async function giveAdvance(id){
   const e=db.employees.find(x=>x.id===id);if(!e)return;
   const out=empOutstandingAdvances(e);
@@ -5472,7 +5630,10 @@ async function paySalary(id){
     </div>
     <div class="grid2">
       <div class="field"><label>➖ ${L('جزاءات/خصومات','Penalties')}</label><input id="sl_pen" type="number" step="0.5" value="0" oninput="calcPayslip(${base})"></div>
-      <div class="field"><label>➖ ${L('سُلف مخصومة','Advances deducted')}</label><input id="sl_adv" type="number" step="0.5" value="${empOutstandingAdvances(e)}" oninput="calcPayslip(${base})"></div>
+      <div class="field"><label>➖ ${L('سُلف مخصومة هذا الشهر','Advances this month')}</label>
+        <input id="sl_adv" type="number" step="0.5" value="${empMonthlyAdvanceDue(e)||empOutstandingAdvances(e)}" oninput="calcPayslip(${base})">
+        ${empOutstandingAdvances(e)>0?`<div style="font-size:11px;color:var(--muted);margin-top:3px">💡 ${L('إجمالي السُلف المتبقية','Total outstanding')}: ${money(empOutstandingAdvances(e))}</div>`:''}
+      </div>
     </div>
     <div style="padding:10px 12px;border:1px solid var(--line);border-radius:10px;margin-bottom:10px">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
@@ -5514,6 +5675,20 @@ async function confirmPaySalary(id){
   if(v.net<=0&&!await confirmBox(L('الصافي صفر أو أقل. تأكيد الصرف؟','Net is zero or less. Confirm?')))return;
   if(!e.payments)e.payments=[];
   e.payments.push({id:uid(),month,date:today(),amount:v.net,base:v.base,inc:v.inc,bon:v.bon,pen:v.pen,adv:v.adv,absDays:v.absD,absAmount:v.absTotal,note});
+  // تحديث dedPaid في السلف (للتتبع الصحيح عند التقسيم على شهور)
+  var remaining=v.adv;
+  (e.advances||[]).forEach(function(adv){
+    if(remaining<=0)return;
+    if(!adv.dedType||adv.dedType==='none')return;
+    var months=adv.dedMonths||1;
+    var alreadyPaid=+adv.dedPaid||0;
+    var outstanding=Math.max(0,adv.amount-alreadyPaid);
+    if(outstanding<=0)return;
+    var monthly=Math.ceil(adv.amount/months*100)/100;
+    var thisMonth=Math.min(monthly,outstanding,remaining);
+    adv.dedPaid=Math.round((alreadyPaid+thisMonth)*100)/100;
+    remaining=Math.round((remaining-thisMonth)*100)/100;
+  });
   addCash('out',v.net,`${L('راتب','Salary')}: ${e.name} ${month}`);
   db.expenses.push({id:uid(),date:today(),cat:L('رواتب','Salaries'),amount:v.net,note:`${L('راتب','Salary')}: ${e.name} (${month})`});
   logAudit(L('صرف راتب','Pay salary'),`${e.name} ${month} — ${L('صافي','net')} ${money(v.net)}`);
@@ -6099,16 +6274,24 @@ function maybeOnboard(){
       <div class="field"><label>${L('رقم التليفون','Phone')}</label><input id="ob_phone" value="${esc(st.phone||'')}" placeholder="01xxxxxxxxx"></div>
       <div class="field"><label>${L('العنوان/المدينة','Address/City')}</label><input id="ob_address" value="${esc(st.address||'')}" placeholder="${L('مثلًا: القاهرة','e.g. Cairo')}"></div>
     </div>
+    <div class="field" style="background:var(--danger-soft);border-radius:10px;padding:10px 12px;border:1px solid var(--danger)">
+      <label>🔐 ${L('PIN المدير (مهم جداً!)','Manager PIN (important!)')}</label>
+      <input id="ob_pin" type="password" maxlength="8" placeholder="${L('4 أرقام على الأقل','Min 4 digits')}" style="letter-spacing:4px;font-size:18px">
+      <div style="font-size:11px;color:var(--danger);margin-top:4px">⚠️ ${L('بدون PIN أي كاشير يقدر يصبح مدير — حدده دلوقتي','Without PIN any cashier can become manager — set it now')}</div>
+    </div>
     <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:6px" onclick="saveOnboard()">${L('يلا نبدأ','Get started')}</button>
-    <div style="text-align:center;margin-top:8px"><a href="#" onclick="skipOnboard();return false" style="color:var(--muted);font-size:12.5px;text-decoration:none">${L('أكمّلها بعدين','Skip for now')}</a></div>`,false);
+    <div style="text-align:center;margin-top:8px;font-size:12px;color:var(--muted)">${L('⚠️ لازم تكتب اسم المحل عشان الفواتير تطلع صح','⚠️ Shop name required for correct invoices')}</div>`,false);
 }
 function saveOnboard(){
   const name=document.getElementById('ob_company').value.trim();
-  if(!name)return toast(L('اكتب اسم المحل','Enter shop name'),'err');
+  if(!name)return toast(L('اكتب اسم المحل — مهم عشان الفواتير','Enter shop name — required for invoices'),'err');
+  const pin=(document.getElementById('ob_pin')||{}).value||'';
+  if(pin&&pin.length<4)return toast(L('الـ PIN لازم يكون 4 أرقام على الأقل','PIN must be at least 4 digits'),'err');
   db.settings.company=name;
   db.settings.activity=document.getElementById('ob_activity').value||'';
   db.settings.phone=document.getElementById('ob_phone').value.trim();
   db.settings.address=document.getElementById('ob_address').value.trim();
+  if(pin)db.settings.cashierPin=pin;
   db.settings.onboarded=true;
   applyBrand();save();closeModal();toast(L('تمام! اتظبط نشاطك','Done! Your business is set up'));setTimeout(function(){try{showQuickStartWizard();}catch(e){}},600);
 }
@@ -6867,8 +7050,37 @@ views.attendance=()=>{if(!attMonth)attMonth=today().slice(0,7);
   const _schedSummary=(db.schedule||[]).filter(function(s){return s.date.slice(0,7)===attMonth;});
   const _schedCount=_schedSummary.length;
   if(!attMonth)attMonth=today().slice(0,7);
-  document.getElementById('topActions').innerHTML='<button class="btn btn-primary btn-sm" onclick="attMarkAllToday()">✓ '+L('تحضير الكل اليوم','Mark all present today')+'</button>';
+  document.getElementById('topActions').innerHTML=
+    '<button class="btn btn-primary btn-sm" onclick="attMarkAllToday()">✓ '+L('تحضير الكل اليوم','Mark all present today')+'</button>'+
+    '<button class="btn btn-ghost btn-sm" onclick="attTimesheetView()">🕐 '+L('سجل الدخول/الخروج','Check-in/out log')+'</button>';
+  // ── بطاقات تسجيل دخول/خروج اليوم (ظاهرة دايماً في الأعلى) ──
   var emps=db.employees||[];
+  var todayStr=today();
+  var todayCards=emps.length?'<div style="margin-bottom:16px"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">'+
+    '<div style="font-size:13px;font-weight:700;color:var(--ink)">🕐 '+L('تسجيل اليوم','Today\'s Log')+' — '+todayStr+'</div>'+
+    '<div style="font-size:11px;color:var(--muted);background:var(--bg);padding:4px 10px;border-radius:8px">ℹ️ '+L('الوقت من ساعة الجهاز — تأكد إنها صح','Time from device clock — ensure it\'s correct')+
+    (db.settings.workStartTime?' · '+L('وقت الدوام','Work start')+': '+db.settings.workStartTime:' · <a href="#" onclick="attSetWorkTime();return false" style="color:var(--primary)">'+L('حدد وقت الدوام','Set work hours')+'</a>')+'</div>'+
+    '</div>'+
+    '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px">'+
+    emps.map(function(e){
+      var rec=attFind(e.id,todayStr);
+      var ci=rec&&rec.checkIn?rec.checkIn:'';
+      var co=rec&&rec.checkOut?rec.checkOut:'';
+      var hrs='';
+      if(ci&&co){var diff=(parseInt(co.replace(':',''))-parseInt(ci.replace(':','')))/100;hrs=Math.floor(diff)+'h '+Math.round((diff%1)*60)+'m';}
+      var isLate=ci&&db.settings.workStartTime&&ci>db.settings.workStartTime;
+      return '<div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center">'+
+        '<div style="font-weight:700;font-size:13px;margin-bottom:4px">'+esc(e.name)+'</div>'+
+        (ci?'<div style="font-size:11px;color:var(--muted)">دخول: <b style="color:'+(isLate?'var(--danger)':'var(--ok)')+'">'+ci+'</b>'+(isLate?' ⚠️ متأخر':'')+'</div>':'')+
+        (co?'<div style="font-size:11px;color:var(--muted)">خروج: <b>'+co+'</b></div>':'')+
+        (hrs?'<div style="font-size:11px;font-weight:700;color:var(--primary)">⏱️ '+hrs+'</div>':'')+
+        '<div style="display:flex;gap:6px;justify-content:center;margin-top:8px">'+
+          (!ci?'<button onclick="attCheckIn(\''+e.id+'\')" style="flex:1;padding:8px;border:none;border-radius:8px;background:var(--ok);color:#fff;font-weight:700;cursor:pointer;font-size:12px">▶ '+L('دخول','In')+'</button>':'<span style="font-size:11px;color:var(--ok)">✓ سُجّل الدخول</span>')+
+          (ci&&!co?'<button onclick="attCheckOut(\''+e.id+'\')" style="flex:1;padding:8px;border:none;border-radius:8px;background:var(--danger);color:#fff;font-weight:700;cursor:pointer;font-size:12px">■ '+L('خروج','Out')+'</button>':'')+
+        '</div>'+
+      '</div>';
+    }).join('')+
+  '</div></div>':'';
   var y=+attMonth.slice(0,4),mo=+attMonth.slice(5,7);
   var days=new Date(y,mo,0).getDate();
   var t=today();var todayInMonth=t.slice(0,7)===attMonth?+t.slice(8,10):0;
@@ -6888,13 +7100,107 @@ views.attendance=()=>{if(!attMonth)attMonth=today().slice(0,7);
     tds+='<td class="t-num" style="text-align:center;color:var(--ok);font-weight:700">'+s.p+'</td><td class="t-num" style="text-align:center;color:var(--danger);font-weight:700">'+s.a+'</td><td class="t-num" style="text-align:center;color:var(--gold);font-weight:700">'+s.l+'</td><td class="t-num" style="color:var(--danger)">'+(ded?money(ded):'—')+'</td>';
     return '<tr>'+tds+'</tr>';}).join('');
   document.getElementById('content').innerHTML=
+  document.getElementById('content').innerHTML=todayCards+
   '<div class="panel" style="margin-bottom:14px"><div class="panel-b pad" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">'+
     '<div class="field" style="margin:0"><label>'+L('الشهر','Month')+'</label><input type="month" value="'+attMonth+'" onchange="attMonth=this.value;views.attendance()"></div>'+
     '<div style="font-size:12px;color:var(--muted);margin-top:14px">'+L('اضغط على الخلية للتبديل','Tap a cell to cycle')+': <span style="color:var(--ok);font-weight:700">✓ '+L('حاضر','Present')+'</span> · <span style="color:var(--danger);font-weight:700">غ '+L('غائب','Absent')+'</span> · <span style="color:var(--gold);font-weight:700">إ '+L('إجازة','Leave')+'</span></div></div></div>'+
   '<div class="panel"><div class="panel-h"><h3>📅 '+L('سجل الحضور والغياب','Attendance')+' — '+attMonth+'</h3></div><div class="panel-b">'+
-  (emps.length?'<div style="overflow-x:auto"><table style="border-collapse:collapse">'+head+rows+'</table></div><div style="font-size:11px;color:var(--muted);padding:8px 4px">💡 '+L('أيام الغياب بتتخصم تلقائيًا في شاشة صرف الراتب (راتب ÷ 30 × أيام الغياب).','Absence days auto-deduct in the salary screen (salary ÷ 30 × absent days).')+'</div>'
+  (emps.length?'<div style="overflow-x:auto"><table style="border-collapse:collapse">'+head+rows+'</table></div><div style="font-size:11px;color:var(--muted);padding:8px 4px">💡 '+L('أيام الغياب بتتخصم تلقائيًا في شاشة صرف الراتب (راتب ÷ 30 × أيام الغياب).','Absence days auto-deduct in the salary screen (salary ÷ 30 × absent days.')+'</div>'
   :'<div class="empty"><span class="big">📅</span>'+L('أضف موظفين أولًا من صفحة الموظفين','Add employees first')+'</div>')+'</div></div>';};
-/* ----- Advances ledger ----- */
+/* ═══ نظام الحضور بالوقت (Check-in / Check-out) ═══ */
+function attCheckIn(empId){
+  var e=db.employees.find(function(x){return x.id===empId;});if(!e)return;
+  var d=today();var rec=attFind(empId,d);
+  var now=new Date().toTimeString().slice(0,5);
+  if(rec&&rec.checkIn)return toast(L('تم تسجيل دخول هذا الموظف اليوم','Already checked in today')+': '+rec.checkIn,'err');
+  if(rec){rec.checkIn=now;rec.status='p';}
+  else{db.attendance=db.attendance||[];db.attendance.push({id:uid(),empId:empId,date:d,status:'p',checkIn:now,user:currentUserName()});}
+  var late='';
+  if(db.settings.workStartTime&&now>db.settings.workStartTime){
+    // الحساب الصح: تحويل لدقائق أولاً
+    var toMin=function(t){var p=t.split(':');return +p[0]*60+(+p[1]||0);};
+    var lateMin=toMin(now)-toMin(db.settings.workStartTime);
+    if(lateMin>0){
+      late=' — '+L('⚠️ متأخر','⚠️ Late')+' '+lateMin+' '+L('دقيقة','min');
+      var lastRec=rec||db.attendance[db.attendance.length-1];
+      if(lastRec)lastRec.lateMinutes=lateMin;
+    }
+  }
+  logAudit(L('حضور موظف','Employee check-in'),e.name+' '+now+late);
+  save();views.attendance();
+  toast('▶ '+L('تم تسجيل دخول','Checked in')+': '+e.name+' — '+now+late);
+}
+function attCheckOut(empId){
+  var e=db.employees.find(function(x){return x.id===empId;});if(!e)return;
+  var d=today();var rec=attFind(empId,d);
+  if(!rec||!rec.checkIn)return toast(L('لم يُسجَّل دخول بعد','No check-in recorded'),'err');
+  if(rec.checkOut)return toast(L('تم تسجيل الخروج مسبقًا','Already checked out')+': '+rec.checkOut,'err');
+  var now=new Date().toTimeString().slice(0,5);
+  rec.checkOut=now;
+  // حساب الدقائق بالطريقة الصح (تحويل لدقائق أولاً)
+  var toMin=function(t){var p=t.split(':');return +p[0]*60+(+p[1]||0);};
+  var ciMin=toMin(rec.checkIn),coMin=toMin(now);
+  // معالجة cross-midnight (نادر لكن ممكن): لو الخروج أقل من الدخول = عبر منتصف الليل
+  if(coMin<ciMin)coMin+=24*60;
+  var totalMin=coMin-ciMin;
+  rec.hoursWorked=Math.round(totalMin/60*100)/100;
+  if(db.settings.workHours&&totalMin>(+db.settings.workHours*60)){
+    rec.overtimeMinutes=totalMin-(+db.settings.workHours*60);
+  }
+  logAudit(L('انصراف موظف','Employee check-out'),e.name+' '+now+' ('+rec.hoursWorked+' h)');
+  save();views.attendance();
+  toast('■ '+L('تم تسجيل خروج','Checked out')+': '+e.name+' — '+now+' · '+L('عمل','Worked')+' '+rec.hoursWorked+' h');
+}
+function attTimesheetView(){
+  var emps=db.employees||[];var d=today();
+  var rows=emps.map(function(e){
+    var month=d.slice(0,7);
+    var logs=(db.attendance||[]).filter(function(a){return a.empId===e.id&&a.date.slice(0,7)===month;});
+    var totalH=logs.reduce(function(s,a){return s+(a.hoursWorked||0);},0);
+    var lates=logs.filter(function(a){return a.lateMinutes>0;}).length;
+    var ot=logs.reduce(function(s,a){return s+(a.overtimeMinutes||0);},0);
+    return '<tr><td><b>'+esc(e.name)+'</b></td>'+
+      '<td class="t-num">'+Math.round(totalH*10)/10+' h</td>'+
+      '<td class="t-num" style="color:var(--danger)">'+lates+'</td>'+
+      '<td class="t-num" style="color:var(--ok)">'+(ot?Math.round(ot/60*10)/10+' h':'—')+'</td>'+
+      '<td>'+
+        '<details style="cursor:pointer"><summary style="font-size:11px;color:var(--muted)">'+L('تفاصيل','Details')+'</summary>'+
+        logs.filter(function(a){return a.checkIn;}).map(function(a){
+          return '<div style="font-size:11px;padding:2px 4px">'+a.date+' · ▶ '+(a.checkIn||'—')+' ■ '+(a.checkOut||L('لم يخرج','no-out'))+(a.lateMinutes?' ⚠️ '+a.lateMinutes+'d':'')+'</div>';
+        }).join('')+
+        '</details></td></tr>';
+  }).join('');
+  openModal('<div class="modal-h"><h3>🕐 '+L('سجل الدخول والخروج','Timesheet')+'</h3><button class="x" onclick="closeModal()">×</button></div>'+
+    '<div class="modal-b"><table><thead><tr><th>'+L('الموظف','Emp')+'</th><th>'+L('إجمالي الساعات','Hours')+'</th><th style="color:var(--danger)">'+L('تأخيرات','Lates')+'</th><th style="color:var(--ok)">'+L('أوفرتايم','OT')+'</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>');
+}
+/* إعداد وقت بدء العمل (للتأخير) */
+function attSetWorkTime(){
+  openModal('<div class="modal-h"><h3>⚙️ '+L('إعداد وقت الدوام','Work time settings')+'</h3><button class="x" onclick="closeModal()">×</button></div>'+
+    '<div class="modal-b">'+
+      '<div class="field"><label>'+L('وقت بدء الدوام (للتأخير)','Work start time (for late detection)')+'</label>'+
+        '<input type="time" id="ws_start" value="'+(db.settings.workStartTime||'09:00')+'"></div>'+
+      '<div class="field"><label>'+L('ساعات الدوام اليومية (للأوفرتايم)','Daily work hours (for overtime)')+'</label>'+
+        '<input type="number" id="ws_hours" min="1" max="24" value="'+(db.settings.workHours||8)+'"></div>'+
+    '</div>'+
+    '<div class="modal-f"><button class="btn btn-primary" onclick="db.settings.workStartTime=document.getElementById(\'ws_start\').value;db.settings.workHours=+document.getElementById(\'ws_hours\').value;save();closeModal();toast(\'✓ تم الحفظ\')">'+L('حفظ','Save')+'</button></div>');
+}
+/* حساب السلفة المستحقة هذا الشهر (بيراعي طريقة الخصم المحددة) */
+function empMonthlyAdvanceDue(e){
+  var month=today().slice(0,7);
+  var due=0;
+  (e.advances||[]).forEach(function(adv){
+    var amt=+adv.amount||0;
+    var ded=+adv.dedType||adv.dedType;
+    if(!ded||ded==='none'||!adv.dedType)return; // بدون خصم تلقائي
+    var months=adv.dedMonths||1;
+    var paid=+adv.dedPaid||0;
+    if(paid>=amt)return; // سُدّدت بالكامل
+    var monthly=Math.ceil((amt/months)*100)/100;
+    due+=Math.min(monthly,amt-paid);
+  });
+  return Math.round(due*100)/100;
+}
 function empOutstandingAdvances(e){
   var adv=(e.advances||[]).reduce(function(a,x){return a+(+x.amount||0);},0);
   var ded=(e.payments||[]).reduce(function(a,p){return a+(+p.adv||0);},0);
@@ -6930,7 +7236,8 @@ function advStatement(id){
   :'<div class="empty">'+L('لا توجد حركات','No entries')+'</div>')+'</div>'+
   '<div class="modal-f"><button class="btn btn-primary" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>',true);}
 views.advances=()=>{
-  document.getElementById('topActions').innerHTML='';
+  document.getElementById('topActions').innerHTML=
+    (db.employees&&db.employees.length?`<button class="btn btn-primary" onclick="giveAdvanceQuick()">💰 ${L('+ صرف سلفة','+ New Advance')}</button>`:'');
   var emps=(db.employees||[]).map(function(e){return {e:e,t:advTotals(e)};});
   var withAny=emps.filter(function(x){return x.t.given>0;});
   var totOut=emps.reduce(function(a,x){return a+x.t.out;},0);
