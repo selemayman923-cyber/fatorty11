@@ -1416,7 +1416,7 @@ const ROLE_VIEWS={
   manager:null, // null = all views
   accountant:['dashboard','insights','sales','purchases','quotes','returns','customers','suppliers','treasury','expenses','reports','services','waste','dailystock','attendance','advances','subdelivery','reservations','promoters','shiftSessions','recipes','catalog','forecast','schedule','stocktake','shifts','datasafety','settings'],
   stockkeeper:['dashboard','products','waste','dailystock','stocktake','purchases','purchaseOrders','suppliers','returns','shifts','settings'],
-  cashier:['pos','sales','services','subdelivery','shifts','settings']
+  cashier:['pos','services','subdelivery','shifts','settings']
 };
 // ===== Plan-based feature gating =====
 // Higher rank = higher plan. trial is treated as full-access so trials can try everything.
@@ -1447,7 +1447,7 @@ function canView(view){
   return planAllows(view);                       // gate by plan (trial = full)
 }
 const currentUserName=()=>db.settings.currentUser||db.settings.cloudEmail||roleName(db.settings.role||'manager');
-function logAudit(action,detail){db.audit=db.audit||[];db.audit.push({id:uid(),at:new Date().toISOString(),user:currentUserName(),role:db.settings.role||'manager',action,detail:detail||'',branch:activeBranch()});if(db.audit.length>2000)db.audit=db.audit.slice(-2000);}
+function logAudit(action,detail){db.audit=db.audit||[];db.audit.push({id:uid(),at:new Date().toISOString(),user:currentUserName(),role:db.settings.role||'manager',action,detail:detail||'',branch:activeBranch()});if(db.audit.length>20000)db.audit=db.audit.slice(-20000);}
 function seedDemo(){
   // New shops start completely empty (clean slate for real customers).
   db.products=[]; db.customers=[]; db.suppliers=[];
@@ -1518,6 +1518,7 @@ const acctName=id=>(!id||id==='cash')?L('الخزينة النقدية','Cash Dr
 const addDays=(dateStr,n)=>{const d=new Date(dateStr);d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);};
 function addCash(type,amount,note,ref,acct){if(amount>0)db.cash.push({id:uid(),date:today(),ts:new Date().toISOString(),user:currentUserName(),type,amount:+amount,note,ref,acct:acct||'cash'});}
 function moveStock(pid,delta,kind,note,ref){const p=findProduct(pid);if(!p)return;p.qty+=delta;
+  if(p.qty<0){try{if(typeof toast==='function'&&(kind==='out'||kind==='sale'))toast(L('⚠️ تنبيه: مخزون "'+p.name+'" بقى سالب ('+p.qty+') — راجع الجرد','⚠️ Stock of "'+p.name+'" is negative'),'err');}catch(e){}}
   db.stockMoves.push({id:uid(),date:today(),pid,name:p.name,delta,kind,balance:p.qty,note,ref});}
 function toast(msg,kind='',opts){const e=document.getElementById('toast');e.className='toast show '+kind;
   var base=(kind==='err'?'⚠️ ':'✓ ')+esc(msg);
@@ -1580,7 +1581,8 @@ function reorderSuggestions(leadDays){leadDays=leadDays||7;const m=productStats(
 }
 // Customers who used to buy regularly but have gone quiet.
 function dormantCustomers(){const res=[];const tdy=new Date(today());
-  db.customers.forEach(c=>{const cs=bf(db.sales).filter(s=>s.customerId===c.id).sort((a,b)=>a.date<b.date?-1:1);
+  const _byCust={};bf(db.sales).forEach(function(s){if(!s.customerId)return;(_byCust[s.customerId]=_byCust[s.customerId]||[]).push(s);});
+  db.customers.forEach(c=>{const cs=(_byCust[c.id]||[]).slice().sort((a,b)=>a.date<b.date?-1:1);
     if(cs.length<2)return;const dates=cs.map(s=>new Date(s.date));
     let gaps=0;for(let i=1;i<dates.length;i++)gaps+=(dates[i]-dates[i-1]);
     const avgGap=gaps/(dates.length-1)/86400000;const last=dates[dates.length-1];const sinceLast=(tdy-last)/86400000;
@@ -1682,7 +1684,7 @@ function go(view){
   if(!canView(view))view=defaultView();
   // SAFETY: unknown view (bad URL / typo) → fall back to dashboard instead of crashing
   if(typeof views[view]!=='function'||!PG[view]){ view='dashboard'; }
-  current=view;
+  current=view;try{typeof fatEmit==='function'&&fatEmit('view:changed',{view:view});}catch(_e){}
 
   try{document.body.classList.toggle('pos-pro',view==='pos');}catch(e){}
   document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===view));
@@ -2064,6 +2066,7 @@ views.dashboard=()=>{const tdy=today(),month=tdy.slice(0,7);const SALES=bf(db.sa
   const maxD=Math.max(...daySales,1);
   const top=Object.entries(prodSold).sort((a,b)=>b[1]-a[1]).slice(0,5);
   document.getElementById('content').innerHTML=`
+    ${typeof bizDashHTML==='function'?bizDashHTML():''}
     ${(typeof birthdayBanner==='function')?birthdayBanner():''}
     ${(typeof todayVsYesterdayBadge==='function')?todayVsYesterdayBadge():''}
     ${(typeof businessHealthPanel==='function')?businessHealthPanel():''}
@@ -2182,7 +2185,7 @@ function posRestoreDraft(){try{
   var _n=cart.reduce(function(a,c){return a+(c.qty||0);},0);
   toast('🔄 '+L('تم استرجاع سلة سابقة','Previous cart restored')+' ('+_n+')','',{actionLabel:'🗑 '+L('تفريغ','Clear'),onAction:function(){cart=[];posDiscount=0;posPromo='';sessionStorage.removeItem('fat_pos_draft');renderCart();},duration:6000});
 }catch(e){}}
-views.pos=()=>{cart=[];posDiscount=0;posPromo='';posOrderType='dinein';posDelivery=0;posTable='';posCatFilter='';posPointsUse=null;posWalletUse=null;posWelcome=null;posPriceTier='default';posPage=1;
+views.pos=()=>{try{if(_activeShift&&_activeShift.openDate&&_activeShift.openDate!==today()){setTimeout(function(){toast(L('⚠️ في شيفت مفتوح من يوم '+_activeShift.openDate+' — اقفله عشان التقارير تبقى مظبوطة','⚠️ Shift open since '+_activeShift.openDate),'err');},600);}}catch(e){}cart=[];posDiscount=0;posPromo='';posOrderType='dinein';posDelivery=0;posTable='';posCatFilter='';posPointsUse=null;posWalletUse=null;posWelcome=null;posPriceTier='default';posPage=1;
   document.getElementById('topActions').innerHTML=
     `<button class="btn btn-ghost btn-sm" id="heldBadge" onclick="openHeldList()" style="display:none">⏸️ ${L('معلّقة','Held')} (0)</button>`+
     `<button class="btn btn-ghost btn-sm" onclick="shiftCloseModal()">🧾 ${L('تقفيل اليوم','Close Shift')}</button>`;
@@ -2427,9 +2430,7 @@ function renderPosGrid(q){var _hotTop3=Object.keys(_posHot||{}).sort(function(a,
   const bundleCards=(posCatFilter?[]:(db.bundles||[])).filter(b=>matches(b.name,q)).map(b=>{
     const avail=b.items.every(it=>{const p=findProduct(it.pid);return p&&p.qty>=it.qty;});
     return `<div class="pos-card ${avail?'':'out'}" onclick="posTapBundle('${b.id}')" style="border:1.5px solid var(--accent)"><div style="height:48px;display:grid;place-items:center"><div style="font-size:28px">🎁</div></div><div class="nm">${esc(b.name)}</div><div class="pr">${money(b.price)}</div><div class="q"><span class="badge" style="background:var(--accent-soft);color:var(--accent);font-size:9px;padding:1px 6px">${L('تجميعة','Bundle')} · ${b.items.length}</span></div></div>`;}).join('');
-  const prodCards=list.length?list.map(p=>{const tags=(((_posHot[p.id]||0)>0&&_hotTop3.indexOf(p.id)>=0)?`<span class="badge" style="font-size:9px;padding:1px 6px;background:#FEF3C7;color:#D97706">🔥 ${L('الأكثر مبيعاً','Top')}</span> `:'')+((p.qty>0&&(p.min||0)>0&&p.qty<=p.min)?`<span class="badge warn" style="font-size:9px;padding:1px 6px">⚠️ ${L('قارب النفاد','Low')}</span> `:'')+(p.byWeight?`<span class="badge info" style="font-size:9px;padding:1px 6px">⚖️ ${L('وزن','kg')}</span>`:'')+((p.variants&&p.variants.length)?` <span class="badge muted" style="font-size:9px;padding:1px 6px">🏷️ ${p.variants.length}</span>`:'');
-    return `<div class="pos-card ${p.qty<=0?'out':''}" data-pid="${p.id}" onclick="posTap('${p.id}')"><span class="stock-badge ${(+p.qty||0)<=(+p.min||5)?'low':''}">${_safeNum(p.qty)}</span><div style="height:48px;display:grid;place-items:center">${p.img?`<img src="${p.img}" style="width:48px;height:48px;object-fit:cover;border-radius:10px">`:'<div style="font-size:28px">🏷️</div>'}</div><div class="nm">${esc(p.name)}</div><div class="pr">${money(effPrice(p))}${p.byWeight?`/${L('كجم','kg')}`:''}</div><div class="q">${L('متاح','Avail')}: ${(p.components&&p.components.length)?compAvail(p):fmtStock(p)} ${tags}</div></div>`;}).join(''):'';
-  // ── Pagination حقيقي ──
+    // ── Pagination حقيقي ──
   var allCards=[];
   if(bundleCards)allCards.push({_bundle:true,html:bundleCards});
   var total=list.length+(bundleCards?1:0); // عدد العناصر (التجميعات سطر واحد)
@@ -2722,6 +2723,7 @@ function calcKey(k){
   d.value+=k;window._calcVal=d.value;
 }
 function posOpenDrawer(){
+  if(typeof fatCan==='function'&&!fatCan('openDrawer'))return toast(L('مالكش صلاحية فتح الدرج','No drawer permission'),'err');
   // فتح درج النقود (طباعة أمر فتح للطابعة الحرارية إن وُجدت) + تأكيد بصري
   try{if(typeof printThermal==='function'&&db.settings.thermalDrawer){/* الطابعة تفتح الدرج تلقائياً مع الإيصال */}}catch(e){}
   toast(L('🗄️ تم إرسال أمر فتح الدرج','🗄️ Drawer open signal sent'),'');
@@ -2756,7 +2758,7 @@ function posUpdateTotals(){const di=document.getElementById('posDisc');if(!di)re
   // الربح الحي — للمدير فقط + عند تفعيل الإعداد (عرض فقط، لا يمس منطق البيع)
   try{var pr2=document.getElementById('posProfitRow');
     if(pr2){
-      var showProfit=db.settings.posLiveProfit&&(typeof isManager!=='function'||isManager());
+      var showProfit=db.settings.posLiveProfit&&(typeof fatCan!=='function'||fatCan('viewCost'));
       if(showProfit&&cart.length){
         var cost=cart.reduce(function(a,c){var p=findProduct(c.pid);var u=(c.cost!=null?c.cost:(p?(+p.cost||0):0));return a+u*(c.qty||0);},0);
         var profit=Math.round((T.total-(T.vat||0)-cost)*100)/100;
@@ -2828,7 +2830,9 @@ function posUpdateChange(){const pay=document.getElementById('posPay')?.value||'
     }else cb.style.display='none';}
   const insufficient=rcv&&rcv.value!==''&&change<0;
   if(btn){btn.disabled=insufficient;btn.style.opacity=insufficient?.5:1;}}
-function posCheckout(){if(!cart.length)return;if(window._posCheckingOut)return;window._posCheckingOut=true;setTimeout(function(){window._posCheckingOut=false;},2500);const cid=document.getElementById('posCustomer').value;
+function posCheckout(){if(!cart.length)return;
+  var _zero=cart.find(function(c){return lineUnit(c)<=0;});
+  if(_zero){toast(L('⚠️ في صنف بسعر صفر أو أقل — عدّل السعر قبل البيع','An item has zero/negative price'),'err');return;}if(window._posCheckingOut)return;window._posCheckingOut=true;setTimeout(function(){window._posCheckingOut=false;},2500);const cid=document.getElementById('posCustomer').value;
   const payMethod=document.getElementById('posPay')?.value||'cash';
   const T=posCalc();
   let received=T.total,change=0,splitCash=0,splitCard=0,paidNow=T.total,dueNow=0;
@@ -2851,7 +2855,7 @@ function posCheckout(){if(!cart.length)return;if(window._posCheckingOut)return;w
   const items=cart.map(c=>{const p=findProduct(c.pid);return {pid:p.id,name:lineName(c),qty:c.qty,price:lineUnit(c),cost:effCost(p),byWeight:!!c.byWeight,grams:c.grams||0,variant:c.variant||'',note:c.note||''};});
   const cost=items.reduce((s,i)=>s+i.cost*i.qty,0);const party=cid?findCustomer(cid):null;let _ptsU=0,_ptsV=0;if(window.posPointsUse&&party&&posPointsUse.cid===party.id&&(T.ptsVal||0)>0){_ptsV=T.ptsVal;const pv=db.settings.loyaltyValue||0.1;_ptsU=Math.min(party.points||0,Math.ceil(_ptsV/pv));}let _wal=(T.walVal||0),_wel=(T.welVal||0);
   if(db.sales.some(s=>s.no===db.seq.sale)){db.seq.sale=Math.max(...db.sales.map(s=>s.no||0))+1;}const rec={id:uid(),no:db.seq.sale++,date:today(),ts:new Date().toISOString(),customerId:cid,customerName:party?party.name:'',items,sub:T.sub,disc:T.disc,vat:T.vat,vatP:T.vatP,total:T.total,cost,profit:T.total-T.vat-cost,paidAmount:paidNow,dueAmount:dueNow,dueDate:dueNow>0?addDays(today(),30):'',payMethod,received,change,splitCash,splitCard,priceTier:posPriceTier,branch:activeBranch(),orderType:posOrderType||'dinein',deliveryFee:T.deliv||0,tableNo:posTable||'',cashier:currentUserName(),pointsUsed:_ptsU,pointsValue:_ptsV,walletUsed:_wal,welcomeDisc:_wel,shiftSessionId:(_activeShift?_activeShift.id:''),source:'pos',promoCode:(posPromo&&findPromoterByCode(posPromo))?posPromo.toUpperCase():''};
-  db.sales.push(rec);saleStockOut(items,`بيع #${rec.no}`,rec.id);if(paidNow>0)addCash('in',paidNow,`POS #${rec.no}`,rec.id);if(dueNow>0&&party)party.balance=(party.balance||0)+dueNow;
+  db.sales.push(rec);try{typeof fatEmit==='function'&&fatEmit('sale:completed',rec);}catch(_e){}saleStockOut(items,`بيع #${rec.no}`,rec.id);if(paidNow>0)addCash('in',paidNow,`POS #${rec.no}`,rec.id);if(dueNow>0&&party)party.balance=(party.balance||0)+dueNow;
   if(_wal>0&&party){walletPush(party,'use',_wal,L('استخدام في فاتورة','Used on sale')+' #'+rec.no,rec.id);}
   if(_ptsU>0&&party){party.points=Math.max(0,(party.points||0)-_ptsU);}if(party)awardPoints(party,T.total);refProcess(party,rec);bumpOps();
   logAudit(L('بيع كاشير','POS sale'),`${invNo(rec)} — ${money(T.total)}`);try{if(typeof fatTrackEvent==='function')fatTrackEvent('sale',money(T.total));}catch(_e){}save();toast(L('تم البيع','Sold')+' #'+rec.no);window._posCheckingOut=false;var _lastSaleId=rec.id;cart=[];posDiscount=0;posPromo='';posPointsUse=null;posWalletUse=null;posWelcome=null;posTable='';posDelivery=0;try{sessionStorage.removeItem('fat_pos_draft');}catch(e){}window._cartUndo=null;renderCart();if(db.settings.waAutoReceipt&&rec.customerId&&findCustomer(rec.customerId)&&(findCustomer(rec.customerId)||{}).phone){setTimeout(function(){confirmBox(L('إرسال إيصال واتساب للعميل؟','Send WA receipt to customer?')).then(function(ok){if(ok)waOrderConfirm(_lastSaleId);});},300);}if(typeof setOrderType==='function')setOrderType(posOrderType);_posHot=posHotMap();renderPosGrid(document.getElementById('posSearch').value||'');viewInvoice('sale',rec.id);if(db.settings.autoPrintReceipt){setTimeout(function(){try{printThermal('sale',rec.id);}catch(e){}},450);}}
@@ -3096,9 +3100,159 @@ function getAllCats(){
   return [...new Set([...fromCats,...fromProds])].sort();
 }
 
-/* ═══ أداة التصنيف الجماعي (للمطاعم بالذات) ═══
-   تساعد على تحديد نوع كل صنف: 🍔 بيع (menu) / 📦 خامة (raw) / صنف عادي (simple)
-   دفعة واحدة، بدل فتح كل منتج على حدة. تعدّل حقل itemType فقط — لا تمسّ أي منطق بيع أو مخزون. */
+/* ═══ Restaurant Quick Setup Wizard ═══
+   Wizard 3 خطوات للمطاعم:
+   1. تصنيف الأصناف (منيو / خامة)
+   2. وصفة كل وجبة (مكوّناتها من الخامات)
+   3. المخزون الأولي للخامات
+   مكان واحد، بدون الدوران في الشاشات */
+
+var _rwStep=1, _rwCls={}, _rwRecipes={}, _rwStock={};
+
+function restWizard(){
+  var prods=db.products||[];
+  if(!prods.length)return toast(L('أضف أصنافك أولاً من صفحة المنتجات','Add products first'),'err');
+  _rwStep=1;_rwCls={};_rwRecipes={};_rwStock={};
+  // تهيئة التصنيفات الموجودة
+  prods.forEach(function(p){_rwCls[p.id]=fatItemType(p);});
+  // تهيئة الوصفات الموجودة
+  prods.forEach(function(p){if(p.components&&p.components.length)_rwRecipes[p.id]=(p.components||[]).map(function(c){return {pid:c.pid,qty:c.qty};});});
+  _rwRender();
+}
+
+function _rwRender(){
+  var steps=['🏷️ تصنيف الأصناف','🍳 وصفات الوجبات','📦 مخزون الخامات'];
+  var prog=steps.map(function(s,i){return '<div style="display:flex;align-items:center;gap:6px;'+
+    (i+1===_rwStep?'color:var(--primary-d);font-weight:800':'color:var(--muted)')+'">'+
+    '<div style="width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;background:'+(i+1===_rwStep?'var(--primary)':'var(--line)')+';color:'+(i+1===_rwStep?'#fff':'var(--muted)')+'">'+((i+1)<_rwStep?'✓':(i+1))+'</div>'+
+    '<span style="font-size:12px">'+s+'</span></div>'+(i<steps.length-1?'<div style="flex:1;height:2px;background:'+((i+1)<_rwStep?'var(--primary)':'var(--line)')+'"></div>':'');
+  }).join('');
+
+  var body='';
+  if(_rwStep===1) body=_rwStep1();
+  else if(_rwStep===2) body=_rwStep2();
+  else body=_rwStep3();
+
+  openModal('<div class="modal-h"><h3>🍔 '+L('إعداد المطعم السريع','Quick Restaurant Setup')+'</h3><button class="x" onclick="closeModal()">×</button></div>'+
+    '<div style="padding:12px 16px 0"><div style="display:flex;align-items:center;gap:6px;margin-bottom:14px">'+prog+'</div></div>'+
+    '<div class="modal-b" style="max-height:58vh;overflow-y:auto">'+body+'</div>'+
+    '<div class="modal-f">'+
+      (_rwStep>1?'<button class="btn btn-ghost" onclick="_rwStep--;_rwRender()">← '+L('رجوع','Back')+'</button>':'')+
+      (_rwStep<3?'<button class="btn btn-primary" onclick="_rwNext()">'+L('التالي','Next')+' →</button>':
+        '<button class="btn btn-primary" onclick="_rwSave()">✅ '+L('حفظ وانتهى','Save & Finish')+'</button>')+
+    '</div>',true);
+}
+
+function _rwStep1(){
+  var prods=db.products||[];
+  // زرار Auto-classify
+  var autoBtn='<div style="background:var(--primary-soft);border-radius:10px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:8px">'+
+    '<span style="font-size:12px">✨ '+L('تصنيف تلقائي: الأصناف اللي ليها وصفات → بيع، الباقي → خامة','Auto: items with recipes → Menu, others → Raw')+'</span>'+
+    '<button class="btn btn-primary btn-sm" onclick="_rwAutoClassify()">'+L('تطبيق','Apply')+'</button></div>';
+  var rows=prods.map(function(p){
+    var t=_rwCls[p.id]||'simple';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px;border-bottom:1px solid var(--line)">'+
+      '<span style="flex:1;font-size:13px;font-weight:600">'+esc(p.name)+'</span>'+
+      '<div style="display:flex;gap:4px">'+
+        ['simple|🏪 '+L('عادي','Simple'),'menu|🍔 '+L('وجبة','Menu'),'raw|📦 '+L('خامة','Raw')].map(function(o){
+          var v=o.split('|')[0],lbl=o.split('|')[1];
+          return '<button type="button" onclick="_rwCls[\''+p.id+'\']=\''+v+'\';this.parentNode.querySelectorAll(\'button\').forEach(function(b){b.style.background=b.getAttribute(\'data-v\')==\''+v+'\'?\'var(--primary)\':\'\';b.style.color=b.getAttribute(\'data-v\')==\''+v+'\'?\'#fff\':\'var(--ink)\';});_rwUpdateStep2Hint()" data-v="'+v+'" style="padding:4px 8px;border:1px solid var(--line);border-radius:7px;font-size:11px;cursor:pointer;'+(t===v?'background:var(--primary);color:#fff':'')+'">'+lbl+'</button>';
+        }).join('')+
+      '</div></div>';
+  }).join('');
+  return autoBtn+'<div style="border:1px solid var(--line);border-radius:10px;overflow:hidden">'+rows+'</div>'+
+    '<div id="rwStep1Hint" style="font-size:11px;color:var(--muted);margin-top:8px;text-align:center"></div>';
+}
+
+function _rwAutoClassify(){
+  db.products.forEach(function(p){
+    if(p.components&&p.components.length)_rwCls[p.id]='menu';
+    else if(!_rwCls[p.id]||_rwCls[p.id]==='simple'){/* keep as is */}
+  });
+  _rwRender();toast(L('تم التصنيف التلقائي — راجع وعدّل لو محتاج','Auto-classified — review and adjust'));
+}
+
+function _rwUpdateStep2Hint(){
+  var menuCount=Object.values(_rwCls).filter(function(v){return v==='menu';}).length;
+  var h=document.getElementById('rwStep1Hint');
+  if(h)h.textContent=menuCount+' '+L('وجبة للبيع ·','menu items ·')+' '+
+    Object.values(_rwCls).filter(function(v){return v==='raw';}).length+' '+L('خامة','raw items');
+}
+
+function _rwNext(){
+  if(_rwStep===1){
+    var menuCount=Object.values(_rwCls).filter(function(v){return v==='menu';}).length;
+    if(!menuCount&&!confirm(L('مفيش وجبات للبيع — متابعة؟','No menu items — continue?')))return;
+    _rwStep=2;_rwRender();return;
+  }
+  if(_rwStep===2){_rwStep=3;_rwRender();}
+}
+
+function _rwStep2(){
+  var menuProds=db.products.filter(function(p){return _rwCls[p.id]==='menu';});
+  var rawProds=db.products.filter(function(p){return _rwCls[p.id]==='raw';});
+  if(!menuProds.length)return '<div class="empty">'+L('مفيش وجبات مصنّفة. ارجع وصنّف أصنافك.','No menu items. Go back and classify.')+'</div>';
+  if(!rawProds.length)return '<div style="background:#FEF3C7;border-radius:10px;padding:12px;margin-bottom:10px;font-size:12px">⚠️ '+L('مفيش خامات مصنّفة. صنّف خاماتك أولاً في الخطوة السابقة عشان تقدر تحط وصفات.','No raw materials classified. Go back and classify your raw items first.')+'</div>';
+  
+  return '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">'+L('لكل وجبة، حدد مكوّناتها من الخامات وكميتها. لو مش عايز وصفة لوجبة، اتركها فاضية.','For each dish, set its raw material components.')+'</div>'+
+  menuProds.map(function(p){
+    var comps=_rwRecipes[p.id]||[];
+    var compRows=comps.map(function(c,ci){
+      var raw=findProduct(c.pid);
+      return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'+
+        '<select onchange="_rwRecipes[\''+p.id+'\']['+ci+'].pid=this.value" style="flex:2;padding:4px 6px;border:1px solid var(--line);border-radius:7px;font-size:12px;background:var(--panel);color:var(--ink)">'+
+          rawProds.map(function(r){return '<option value="'+r.id+'" '+(r.id===c.pid?'selected':'')+'>'+esc(r.name)+'</option>';}).join('')+
+        '</select>'+
+        '<input type="number" min="0.1" step="0.1" value="'+c.qty+'" onchange="_rwRecipes[\''+p.id+'\']['+ci+'].qty=+this.value" style="width:70px;padding:4px 6px;border:1px solid var(--line);border-radius:7px;font-size:12px" placeholder="الكمية">'+
+        '<button onclick="_rwRecipes[\''+p.id+'\'].splice('+ci+',1);_rwRender()" style="border:none;background:none;color:var(--danger);cursor:pointer;font-size:16px">×</button>'+
+      '</div>';
+    }).join('');
+    return '<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">'+
+      '<div style="font-weight:700;font-size:13px;margin-bottom:8px">🍔 '+esc(p.name)+'</div>'+
+      compRows+
+      '<button onclick="if(!_rwRecipes[\''+p.id+'\'])_rwRecipes[\''+p.id+'\']=[];_rwRecipes[\''+p.id+'\'].push({pid:\''+rawProds[0].id+'\',qty:1});_rwRender()" style="border:1px dashed var(--line);border-radius:7px;padding:4px 10px;background:none;cursor:pointer;font-size:12px;color:var(--muted);width:100%;margin-top:4px">+ '+L('إضافة مكوّن','Add component')+'</button>'+
+    '</div>';
+  }).join('');
+}
+
+function _rwStep3(){
+  var rawProds=db.products.filter(function(p){return _rwCls[p.id]==='raw';});
+  if(!rawProds.length)return '<div class="empty">'+L('مفيش خامات — ارجع وصنّف خاماتك','No raw items')+'</div>';
+  if(!_rwStock||Object.keys(_rwStock).length===0){rawProds.forEach(function(p){_rwStock[p.id]=p.qty||0;});}
+  return '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">'+L('حط الكمية الموجودة عندك دلوقتي من كل خامة (الرصيد الابتدائي).','Enter current quantity of each raw material (opening stock).')+'</div>'+
+  '<div style="border:1px solid var(--line);border-radius:10px;overflow:hidden">'+
+  rawProds.map(function(p){
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line)">'+
+      '<span style="flex:1;font-size:13px;font-weight:600">📦 '+esc(p.name)+'</span>'+
+      '<input type="number" min="0" step="0.1" value="'+(_rwStock[p.id]||0)+'" onchange="_rwStock[\''+p.id+'\']=+this.value" style="width:100px;padding:6px 9px;border:2px solid var(--primary);border-radius:8px;font-size:14px;font-weight:700;text-align:center;background:var(--panel);color:var(--ink)">'+
+      '<span style="font-size:11px;color:var(--muted)">'+(p.unit||L('وحدة','unit'))+'</span>'+
+    '</div>';
+  }).join('')+'</div>';
+}
+
+async function _rwSave(){
+  // 1. حفظ التصنيفات
+  db.products.forEach(function(p){p.itemType=_rwCls[p.id]||'simple';});
+  // 2. حفظ الوصفات
+  Object.keys(_rwRecipes).forEach(function(pid){
+    var p=findProduct(pid);if(!p)return;
+    p.components=_rwRecipes[pid].filter(function(c){return c.pid&&c.qty>0;});
+    if(p.components.length)p.itemType='menu';
+  });
+  // 3. حفظ المخزون الأولي للخامات
+  Object.keys(_rwStock).forEach(function(pid){
+    var p=findProduct(pid);if(!p)return;
+    var old=+p.qty||0, nw=+_rwStock[pid]||0;
+    if(Math.abs(nw-old)>0.001){
+      moveStock(pid,nw-old,nw>old?'in':'out',L('رصيد ابتدائي','Opening stock'),'wizard');
+      p.qty=nw;
+    }
+  });
+  logAudit(L('إعداد المطعم السريع','Restaurant wizard setup'),L('تصنيف وتحديد وصفات ومخزون ابتدائي','Classify + recipes + opening stock'));
+  bumpOps();save();closeModal();
+  toast('✅ '+L('تم الإعداد! المطعم جاهز للعمل','Setup complete! Restaurant ready'),''  ,{duration:5000});
+  if(current==='products')views.products();
+}
 function bulkClassifyModal(){
   var prods=db.products.slice().sort(function(a,b){return String(a.cat||'').localeCompare(String(b.cat||''),'ar')||String(a.name).localeCompare(String(b.name),'ar');});
   if(!prods.length)return toast(L('لا توجد أصناف','No items'),'err');
@@ -3154,7 +3308,9 @@ views.products=()=>{
     `<button class="btn btn-ghost" onclick="_csvMode='products';csvImportModal()">📥 ${L('استيراد','Import')}</button>`+
     `<button class="btn btn-ghost" onclick="exportProductsExcel()">📊 ${L('Excel','Excel')}</button>`+
     `<button class="btn btn-ghost" onclick="stockCountForm()">📋 ${L('جرد','Count')}</button>`+
-    ((['restaurant','cafe','bakery'].indexOf(db.settings.businessType)>=0||db.products.some(function(p){return p.components&&p.components.length;}))?`<button class="btn btn-ghost btn-sm" onclick="bulkClassifyModal()" title="${L('تحديد نوع كل صنف: بيع/خامة','Classify items')}">🍔 ${L('تصنيف الأصناف','Classify')}</button>`:'')+
+    ((['restaurant','cafe','bakery'].indexOf(db.settings.businessType)>=0||db.products.some(function(p){return p.components&&p.components.length;}))?
+      `<button class="btn btn-primary btn-sm" onclick="restWizard()" title="${L('إعداد المطعم: تصنيف + وصفات + مخزون','Restaurant setup wizard')}">🍔 ${L('إعداد المطعم','Restaurant Setup')}</button>`+
+      `<button class="btn btn-ghost btn-sm" onclick="bulkClassifyModal()" title="${L('تحديد نوع كل صنف','Classify items')}">🏷️ ${L('تصنيف','Classify')}</button>`:'')+
     `<button class="btn btn-ghost" onclick="fatImportProductsUI()" title="${L('استيراد من Excel','Import from Excel')}">📥 ${L('استيراد','Import')}</button>`+
     `<button class="btn btn-primary" onclick="productForm()">+ ${L('صنف جديد','New Item')}</button>`;
   const sv=db.products.reduce((s,p)=>s+p.cost*p.qty,0);
@@ -3581,6 +3737,8 @@ function saveProduct(id){
   let cat=g('f_cat');
   if(cat==='__new__'){cat=g('f_cat_new').trim();if(cat&&!getAllCats().includes(cat))db.categories.push({id:uid(),name:cat});}
   if(!cat)return toast(L('اختر تصنيف الصنف — إلزامي','Choose a category — required'),'err');
+  var _bc=(document.getElementById('f_barcode')?document.getElementById('f_barcode').value:'').trim();
+  if(_bc){var _dup=db.products.find(function(x){return x.barcode===_bc&&x.id!==id;});if(_dup)return toast(L('⚠️ الباركود مستخدم قبل كده في: '+_dup.name,'Barcode already used: '+_dup.name),'err');}
   const byWeight=document.getElementById('f_byweight').checked;
   const presets=g('f_presets').split(',').map(x=>Math.round(+x.trim())).filter(x=>x>0);
   const variants=prodVariants.map(v=>({name:(v.name||'').trim(),extra:+v.extra||0})).filter(v=>v.name);
@@ -3623,7 +3781,7 @@ function saveProduct(id){
     try{renderPriceTier();}catch(e){}}else{views.products();}
   toast(L('تم الحفظ','Saved'));}
 
-async function delProduct(id){
+async function delProduct(id){if(typeof fatCan==='function'&&!fatCan('editProduct'))return toast(L('مالكش صلاحية حذف المنتجات','No permission'),'err');
   // تحذير لو المنتج في السلة النشطة حالياً
   if(typeof cart!=='undefined'&&Array.isArray(cart)&&cart.some(function(c){return c.pid===id;})){
     if(!await confirmBox(L('⚠️ هذا الصنف موجود في سلة الكاشير الحالية. لو حذفته هيظهر كـ "محذوف" في الفاتورة. متابعة؟','⚠️ This item is in the active cart. Deleting it will show as "deleted" in the invoice. Continue?')))return;
@@ -3926,7 +4084,7 @@ async function delSale(id){
   db.sales=db.sales.filter(x=>x.id!==id);
   save();go('sales');
   toast(L('تم إلغاء الفاتورة وعكس تأثيراتها','Invoice cancelled and reversed'));}
-async function delPurchase(id){if(!await confirmBox(L('حذف الفاتورة؟','Delete invoice?')))return;const s=db.purchases.find(x=>x.id===id);s.items.forEach(it=>moveStock(it.pid,-it.qty,'out',`إلغاء شراء #${s.no}`,id));addCash('in',s.paidAmount||0,`إلغاء شراء #${s.no}`,id,s.acct||'cash');if((s.dueAmount||0)>0&&s.supplierId){const sp=findSupplier(s.supplierId);if(sp)sp.balance-=s.dueAmount;}logAudit(L('حذف فاتورة شراء','Delete purchase'),`${invNo(s)} — ${money(s.total)}`);var _opu=db.purchases.find(x=>x.id===id);if(_opu)trashAdd('purchase',_opu,'#'+(_opu.no||''));db.purchases=db.purchases.filter(x=>x.id!==id);save();go('purchases');toast(L('تم الحذف','Deleted'));}
+async function delPurchase(id){if(typeof fatCan==='function'&&!fatCan('deleteInvoice'))return toast(L('مالكش صلاحية','No permission'),'err');if(!await confirmBox(L('حذف الفاتورة؟','Delete invoice?')))return;const s=db.purchases.find(x=>x.id===id);s.items.forEach(it=>moveStock(it.pid,-it.qty,'out',`إلغاء شراء #${s.no}`,id));addCash('in',s.paidAmount||0,`إلغاء شراء #${s.no}`,id,s.acct||'cash');if((s.dueAmount||0)>0&&s.supplierId){const sp=findSupplier(s.supplierId);if(sp)sp.balance-=s.dueAmount;}logAudit(L('حذف فاتورة شراء','Delete purchase'),`${invNo(s)} — ${money(s.total)}`);var _opu=db.purchases.find(x=>x.id===id);if(_opu)trashAdd('purchase',_opu,'#'+(_opu.no||''));db.purchases=db.purchases.filter(x=>x.id!==id);save();go('purchases');toast(L('تم الحذف','Deleted'));}
 
 /* Returns */
 let retLines=[],retCtx=null;
@@ -3944,9 +4102,10 @@ function returnForm(kind,id){const isSale=kind==='sale';const s=(isSale?db.sales
   <div class="inv-totals" id="retTotals"></div></div>
   <div class="modal-f"><button class="btn btn-primary" onclick="saveReturn()" ${!hasReturnable?'disabled':''}>✅ ${L('تأكيد','Confirm')}</button><button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button></div>`,true);calcRet();}
 function calcRet(){const total=retLines.reduce((s,l)=>s+l.ret*l.price,0);document.getElementById('retTotals').innerHTML=`<div class="row grand"><span>${L('قيمة المرتجع','Return value')}</span><span>${money(total)}</span></div>`;}
-function saveReturn(){const isSale=retCtx.kind==='sale';const lines=retLines.filter(l=>l.ret>0);if(!lines.length)return toast(L('حدّد كمية','Set a quantity'),'err');
+function saveReturn(){if(typeof fatCan==='function'&&!fatCan('refund'))return toast(L('مالكش صلاحية عمل مرتجعات','No refund permission'),'err');const isSale=retCtx.kind==='sale';retLines.forEach(function(l){if(l._maxRet!=null&&l.ret>l._maxRet)l.ret=l._maxRet;});const lines=retLines.filter(l=>l.ret>0);if(!lines.length)return toast(L('حدّد كمية','Set a quantity'),'err');
   const total=lines.reduce((s,l)=>s+l.ret*l.price,0),cost=lines.reduce((s,l)=>s+l.ret*l.cost,0);const s=retCtx.s;
-  const rec={id:uid(),no:db.seq.ret++,date:today(),type:retCtx.kind,refNo:s.no,refId:s.id,partyName:(isSale?s.customerName:s.supplierName)||L('نقدي','Cash'),items:lines.map(l=>({name:l.name,qty:l.ret,price:l.price})),total,cost};
+  var _vatP=+((s&&s.vatP)||0);var _retVat=_vatP>0?Math.round(total*_vatP/100*100)/100:0;
+  const rec={id:uid(),no:db.seq.ret++,date:today(),type:retCtx.kind,refNo:s.no,refId:s.id,partyName:(isSale?s.customerName:s.supplierName)||L('نقدي','Cash'),items:lines.map(l=>({name:l.name,qty:l.ret,price:l.price})),total,cost,vat:_retVat};
   db.returns.push(rec);
   const racct=s.acct||'cash';
   if(isSale){{let _ri=lines.map(l=>({pid:l.pid,qty:l.ret}));saleStockIn(_ri,`مرتجع بيع #${rec.no}`,rec.id);}if((s.dueAmount||0)>0&&s.customerId){const c=findCustomer(s.customerId);const cut=Math.min(s.dueAmount,total);s.dueAmount-=cut;if(c)c.balance-=cut;addCash('out',total-cut,`رد مرتجع #${rec.no}`,rec.id,racct);}else addCash('out',total,`رد مرتجع #${rec.no}`,rec.id,racct);}
@@ -4540,7 +4699,7 @@ views.reports=()=>{if(!repFrom){const d=new Date();d.setDate(1);repFrom=d.toISOS
   const saleRet=rets.filter(r=>r.type==='sale');
   const revenue=sales.reduce((s,i)=>s+i.total,0)-saleRet.reduce((s,r)=>s+r.total,0);
   const cogs=sales.reduce((s,i)=>s+i.cost,0)-saleRet.reduce((s,r)=>s+r.cost,0);
-  const vatColl=sales.reduce((s,i)=>s+i.vat,0),vatPaid=purch.reduce((s,i)=>s+i.vat,0),expTotal=exps.reduce((s,e)=>s+e.amount,0);
+  const vatColl=sales.reduce((s,i)=>s+i.vat,0)-saleRet.reduce((s,r)=>s+(+r.vat||0),0),vatPaid=purch.reduce((s,i)=>s+i.vat,0),expTotal=exps.reduce((s,e)=>s+e.amount,0);
   const grossProfit=revenue-vatColl-cogs,netProfit=grossProfit-expTotal;
   const prodProfit={};sales.forEach(s=>s.items.forEach(it=>{prodProfit[it.name]=(prodProfit[it.name]||0)+(it.price-it.cost)*it.qty;}));
   const topP=Object.entries(prodProfit).sort((a,b)=>b[1]-a[1]).slice(0,6);
@@ -4907,7 +5066,7 @@ views.settings=()=>{const st=db.settings;
   if(!isManager()){document.getElementById('content').innerHTML=`<div class="panel" style="max-width:680px"><div class="panel-h"><h3>${L('وضع الكاشير','Cashier Mode')}</h3></div><div class="panel-b pad">
     <div class="hint">👤 ${L('أنت داخل بحساب موظف. صلاحياتك محدودة، ولتغييرها لازم مدير المحل يعدّل دورك من «فريق العمل».','You are signed in as staff. Your access is limited; only the shop manager can change your role from the Team panel.')}</div>
     ${(!sb||!CURRENT_ORG)?`<button class="btn btn-primary" onclick="managerLogin()">🔑 ${L('الدخول كمدير (يحتاج كلمة السر)','Switch to Manager (requires PIN)')}</button>`:`<button class="btn btn-danger" onclick="authSignOut()">🚪 ${L('تسجيل الخروج','Sign out')}</button>`}</div></div>`;return;}
-  document.getElementById('content').innerHTML=`<div class="panel" style="max-width:680px"><div class="panel-h"><h3>☁️ ${L('حساب الدخول (سحابي)','Login Account (Cloud)')}</h3><span class="badge ok">${esc(st.cloudEmail||L('متصل','Connected'))}</span></div><div class="panel-b pad">
+  document.getElementById('content').innerHTML=`${(typeof fatPermsEditorHTML==='function'?fatPermsEditorHTML():'')+(typeof fatFlagsEditorHTML==='function'?fatFlagsEditorHTML():'')+(typeof fatPluginsPanelHTML==='function'?fatPluginsPanelHTML():'')}<div class="panel" style="max-width:680px"><div class="panel-h"><h3>☁️ ${L('حساب الدخول (سحابي)','Login Account (Cloud)')}</h3><span class="badge ok">${esc(st.cloudEmail||L('متصل','Connected'))}</span></div><div class="panel-b pad">
     <div class="hint">🔒 ${L('بيانات مشروعك معزولة بالكامل على حسابك، ومحفوظة على السحابة، ومفيش أي حساب تاني يقدر يشوفها.','Your business data is fully isolated to your account, stored in the cloud, and no other account can access it.')}</div>
     <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-ghost" onclick="changePassword()">🔑 ${L('تغيير كلمة السر','Change password')}</button><button class="btn btn-danger" onclick="authSignOut()">🚪 ${L('تسجيل الخروج','Sign out')}</button></div></div></div>
     <div class="panel" id="planPanel" style="max-width:680px;display:none"><div class="panel-h"><h3>💳 ${L('باقتك واستهلاكك','Your Plan & Usage')}</h3></div><div class="panel-b pad" id="planBody"></div></div>
@@ -5342,8 +5501,10 @@ async function switchRole(){if(sb&&CURRENT_ORG)return toast(L('الدور بيت
     const v=await promptBox(L('كلمة سر المدير (افتراضية: 0000)','Manager PIN (default: 0000)'),{type:'password'});
     if(!v||v!==need)return toast(L('كلمة سر خاطئة — تواصل مع المدير','Wrong PIN — contact the manager'),'err');
   }
-  db.settings.role=r;db.settings.currentUser='';db.settings.cashierPin=document.getElementById('s_cpin').value.trim();
-  logAudit(L('تغيير الدور','Role switch'),roleName(r));save();applyLang();go(defaultView());toast(L('الدور الحالي','Current role')+': '+roleName(r));}
+  var _who='';
+  if(r!=='manager'){ _who=(await promptBox(L('اسمك؟ (اختياري — للسجل بس)','Your name? (optional — for the log)'),{}))||''; }
+  db.settings.role=r;db.settings.currentUser=_who.trim();db.settings.cashierPin=document.getElementById('s_cpin').value.trim();
+  logAudit(L('تغيير الدور','Role switch'),roleName(r)+(_who?(' — '+_who.trim()):''));save();applyLang();go(defaultView());toast(L('الدور الحالي','Current role')+': '+roleName(r)+(_who?(' ('+_who.trim()+')'):''));}
 // Lightweight local hash (NOT cryptographic — local access control only)
 function simpleHash(str){let h=5381;for(let i=0;i<str.length;i++){h=((h<<5)+h)+str.charCodeAt(i);h=h&0xffffffff;}return (h>>>0).toString(36);}
 function userForm(){openModal(`<div class="modal-h"><h3>👤 ${L('إضافة مستخدم','Add User')}</h3><button class="x" onclick="closeModal()">×</button></div>
@@ -5364,7 +5525,7 @@ function emailLogin(){if(window._loginLockUntil&&Date.now()<window._loginLockUnt
   db.settings.role=u.role;db.settings.currentUser=u.name||u.email;logAudit(L('تسجيل دخول','Login'),u.email);save();
   document.getElementById('loginScreen').style.display='none';applyLang();go(defaultView());toast(L('مرحبًا','Welcome')+' '+(u.name||u.email));}
 function logoutUser(){db.settings.currentUser='';save();location.reload();}
-function saveSettings(){const g=x=>document.getElementById(x).value;Object.assign(db.settings,{company:g('s_company').trim()||'مشروعي',phone:g('s_phone').trim(),activity:g('s_activity').trim(),address:g('s_address').trim(),currency:g('s_currency').trim()||'ج.م',vat:+g('s_vat')||0,taxNumber:g('s_tax').trim(),posVat:document.getElementById('s_posvat').checked,invNumOn:document.getElementById('s_invnum_on').checked,invPrefix:g('s_invprefix').trim()||'INV',invYear:document.getElementById('s_invyear').checked,invPad:Math.min(8,Math.max(1,+g('s_invpad')||3))});applyBrand();save();views.settings();toast(L('تم الحفظ','Saved'));}
+function saveSettings(){if(typeof fatCan==='function'&&!fatCan('editSettings'))return toast(L('مالكش صلاحية تعديل الإعدادات','No permission to edit settings'),'err');const g=x=>document.getElementById(x).value;Object.assign(db.settings,{company:g('s_company').trim()||'مشروعي',phone:g('s_phone').trim(),activity:g('s_activity').trim(),address:g('s_address').trim(),currency:g('s_currency').trim()||'ج.م',vat:+g('s_vat')||0,taxNumber:g('s_tax').trim(),posVat:document.getElementById('s_posvat').checked,invNumOn:document.getElementById('s_invnum_on').checked,invPrefix:g('s_invprefix').trim()||'INV',invYear:document.getElementById('s_invyear').checked,invPad:Math.min(8,Math.max(1,+g('s_invpad')||3))});applyBrand();save();views.settings();toast(L('تم الحفظ','Saved'));}
 function saveBrand(){
   const color=document.getElementById('s_color')?.value||'#0f6b5c';
   const logoText=document.getElementById('s_logo_text')?.value.trim()||'';
@@ -5378,7 +5539,7 @@ function applyCustomBrand(){
   if(db.settings.primaryColor){document.documentElement.style.setProperty('--primary',db.settings.primaryColor);}
 }
 function savePin(){db.settings.pin=document.getElementById('s_pin').value.trim();save();toast(db.settings.pin?L('تم تفعيل القفل','Lock enabled'):L('تم إلغاء القفل','Lock disabled'));}
-function exportData(){doExport(true);}
+function exportData(){if(typeof fatCan==='function'&&!fatCan('exportData'))return toast(L('مالكش صلاحية تصدير','No permission'),'err');doExport(true);}
 function doExport(manual){try{db.settings._lastBackupDate=Date.now();}catch(e){}const data=JSON.stringify(db,null,2);const blob=new Blob([data],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='backup-hesaby-'+today()+(manual?'':'-auto')+'.json';a.click();
   db.settings.lastBackup=new Date().toISOString();db.settings.opsSinceBackup=0;if(!manual)db.settings.lastAutoExport=today();save();renderBackupBanner();
   if(manual){
@@ -5414,7 +5575,7 @@ function downloadCSV(filename,rows){
   const csv=rows.map(r=>r.map(c=>{const v=(c==null?'':''+c).replace(/"/g,'""');return /[",\n]/.test(v)?`"${v}"`:v;}).join(',')).join('\r\n');
   const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();toast(L('تم تصدير الملف','File exported'));}
 async function importData(el){const f=el.files[0];if(!f)return;const r=new FileReader();r.onload=async()=>{try{const d=JSON.parse(r.result);if(!d.products)throw 0;if(!await confirmBox(L('سيتم استبدال كل البيانات. متابعة؟','This replaces all data. Continue?')))return;await makeSnapshot('before-import');db=d;migrate();save();applyLang();applyBrand();renderBranchSel();go('dashboard');toast(L('تم الاسترجاع','Restored'));}catch(e){toast(L('ملف غير صالح — تأكد أنه ملف نسخة احتياطية من فاتورتي','Invalid file — must be a Fatorty backup file'),'err');}};r.readAsText(f,'utf-8');el.value='';}
-async function resetAll(){if(!await confirmBox(L('حذف كل البيانات نهائيًا؟','Permanently delete all data?')))return;await makeSnapshot('before-reset');const keep=db.settings;db={products:[],customers:[],suppliers:[],sales:[],purchases:[],returns:[],quotes:[],expenses:[],cash:[],stockMoves:[],branches:[],shifts:[],heldSales:[],editLog:[],banks:[],recurring:[],bundles:[],audit:[],users:[],settings:{company:'مشروعي',vat:VAT_DEFAULT,currency:'ج.م',address:'',phone:'',taxNumber:'',pin:'',theme:keep.theme,lang:keep.lang,activeBranch:'',role:'manager',cashierPin:'',posVat:keep.posVat||false},seq:{sale:1,purchase:1,ret:1,quote:1,shift:1}};migrate();save();renderBranchSel();go('dashboard');toast(L('تم الحذف','Cleared'));}
+async function resetAll(){if(!await confirmBox(L('حذف كل البيانات نهائيًا؟','Permanently delete all data?')))return;await makeSnapshot('before-reset');const keep=db.settings;db={products:[],customers:[],suppliers:[],sales:[],purchases:[],returns:[],quotes:[],expenses:[],cash:[],stockMoves:[],branches:[],shifts:[],heldSales:[],editLog:[],banks:[],recurring:[],bundles:[],audit:[],users:[],settings:{company:'',vat:VAT_DEFAULT,currency:'ج.م',address:'',phone:'',taxNumber:'',pin:'',theme:keep.theme,lang:keep.lang,activeBranch:'',role:'manager',cashierPin:'',posVat:keep.posVat||false,onboarded:false},seq:{sale:1,purchase:1,ret:1,quote:1,shift:1}};migrate();save();renderBranchSel();go('dashboard');toast(L('تم الحذف','Cleared'));}
 
 /* Lock + brand */
 function tryUnlock(){if(document.getElementById('lockPin').value===db.settings.pin)document.getElementById('lock').style.display='none';else toast(L('كلمة سر خاطئة','Wrong PIN'),'err');}
@@ -5617,7 +5778,13 @@ async function delEmployee(id){
 
 async function paySalary(id){
   const e=db.employees.find(x=>x.id===id);if(!e)return;
-  const month=today().slice(0,7);
+  // اختيار الشهر — افتراضي الشهر الحالي، لكن قابل للتغيير
+  const selMonth=await promptBox(
+    L('اختر شهر الصرف (مثال: 2026-07)','Select payroll month (e.g. 2026-07)'),
+    {value:today().slice(0,7)});
+  if(!selMonth)return;
+  const month=selMonth.trim().slice(0,7);
+  if(!/^\d{4}-\d{2}$/.test(month))return toast(L('صيغة الشهر غلط — مثال: 2026-07','Invalid month format — e.g. 2026-07'),'err');
   const already=(e.payments||[]).find(p=>p.month===month);
   if(already){if(!await confirmBox(L(`تم صرف راتب ${month} قبل كده. تصرف تاني؟`,`${month} already paid. Pay again?`)))return;}
   const base=+e.salary||0;
@@ -5667,7 +5834,7 @@ function calcPayslip(base){
   const a=document.getElementById('sl_absCalc');if(a)a.textContent=L('خصم الغياب','Absence deduction')+`: ${money(v.absTotal)} (${v.absD} ${L('يوم','d')}${v.absM?` + ${money(v.absM)} ${L('يدوي','manual')}`:''})`;
   const n=document.getElementById('sl_net');if(n)n.textContent=money(v.net);
 }
-async function confirmPaySalary(id){
+async function confirmPaySalary(id){if(typeof fatCan==='function'&&!fatCan('manageStaff'))return toast(L('مالكش صلاحية صرف الرواتب','No permission'),'err');
   const e=db.employees.find(x=>x.id===id);if(!e)return;
   const month=today().slice(0,7);
   const v=payslipValues(+e.salary||0);
@@ -7677,6 +7844,180 @@ function addCompRow(){(window._compEdit=window._compEdit||[]).push({pid:'',qty:1
 function compSet(i,k,v){var a=window._compEdit||[];if(!a[i])return;a[i][k]=(k==='qty')?(+v||0):v;renderCompRows();}
 function compDel(i){(window._compEdit||[]).splice(i,1);renderCompRows();}
 /* --- 2) Role limits + manager approval --- */
+/* ===== DYNAMIC BUSINESS DASHBOARD (v9.7) ===== */
+function bizDashHTML(){try{
+  var bp=db.settings&&db.settings.bizProfile; if(!bp)return '';
+  var type=bp.type||'',f=bp.flags||{},tdy=today(),S=bf(db.sales).filter(function(s){return s.date===tdy;});
+  function card(ic,lbl,val,color){return '<div class="card"><div class="ic-bg">'+ic+'</div><div class="lbl">'+lbl+'</div><div class="val"'+(color?' style="color:'+color+'"':'')+'>'+val+'</div></div>';}
+  var cards='';
+  if(f.kitchen===1||f.tables===1){
+    var del=0,din=0,top={},tn='\u2014',tq=0;
+    S.forEach(function(s){if(s.orderType==='delivery')del++;else din++;(s.items||[]).forEach(function(it){top[it.name]=(top[it.name]||0)+(+it.qty||0);});});
+    for(var k in top)if(top[k]>tq){tq=top[k];tn=k;}
+    cards=card('\uD83E\uDDFE',L('طلبات اليوم','Orders today'),S.length)+card('\uD83C\uDF7D\uFE0F',L('صالة/استلام','Dine-in'),din)+card('\uD83D\uDEF5',L('توصيل اليوم','Delivery'),del)+card('\uD83D\uDD25',L('الأكثر طلباً','Top item'),esc(tn.length>14?tn.slice(0,14)+'…':tn));
+  } else if(type==='pharmacy'){
+    var lim=addDays(tdy,30),expir=0,shortg=0;
+    db.products.forEach(function(p){if((+p.qty||0)>0&&p.expiry&&p.expiry<=lim)expir++;if((+p.min||0)>0&&(+p.qty||0)<=(+p.min||0))shortg++;});
+    cards=card('\uD83D\uDC8A',L('قربت صلاحيتها (30ي)','Expiring 30d'),expir,expir?'var(--danger)':'')+card('\u26A0\uFE0F',L('نواقص','Shortages'),shortg,shortg?'var(--danger)':'')+card('\uD83E\uDDFE',L('فواتير اليوم','Invoices today'),S.length);
+  } else if(f.variants===1){
+    var vout=0,vcnt=0;db.products.forEach(function(p){if(p.variants&&p.variants.length)vcnt++;if((+p.qty||0)<=0)vout++;});
+    cards=card('\uD83C\uDFA8',L('أصناف بمقاسات/ألوان','Variant items'),vcnt)+card('\uD83D\uDEAB',L('نفدت','Out of stock'),vout,vout?'var(--danger)':'')+card('\uD83E\uDDFE',L('فواتير اليوم','Invoices today'),S.length);
+  } else if(f.services===1&&f.inventory!==1){
+    var resv=(db.reservations||[]).filter(function(r){return (r.date||'')===tdy;}).length;
+    var mon=tdy.slice(0,7),newC=(db.customers||[]).filter(function(c){return (c.firstVisit||'').slice(0,7)===mon;}).length;
+    cards=card('\uD83D\uDCC5',L('حجوزات اليوم','Bookings today'),resv)+card('\uD83E\uDDFE',L('فواتير اليوم','Invoices today'),S.length)+card('\uD83D\uDC65',L('عملاء جدد الشهر','New customers'),newC);
+  }
+  if(!cards && f.inventory===1){
+    // ريتيل بمخزون (قطع غيار، حلويات، عطور بدون متغيرات…): كروت مخزون مفيدة
+    var lowc=0,outc=0,stockVal=0;
+    db.products.forEach(function(p){if(fatShowsInStock&&!fatShowsInStock(p))return;var q=+p.qty||0;if(q<=0)outc++;else if((+p.min||0)>0&&q<=(+p.min||0))lowc++;stockVal+=(+p.cost||0)*q;});
+    var revToday=S.reduce(function(a,s){return a+(+s.total||0);},0);
+    cards=card('\uD83D\uDCB0',L('مبيعات اليوم','Sales today'),money(revToday))+card('\u26A0\uFE0F',L('قرب ينفد','Low stock'),lowc,lowc?'var(--warn,#d97706)':'')+card('\uD83D\uDEAB',L('نفد','Out'),outc,outc?'var(--danger)':'')+card('\uD83D\uDCE6',L('قيمة المخزون','Stock value'),money(stockVal));
+  }
+  if(!cards)return '';
+  return '<div style="font-size:12.5px;font-weight:800;color:var(--muted);margin:2px 2px 6px">\uD83C\uDFAF '+esc(bp.typeName||'')+'</div><div class="cards" style="margin-bottom:8px">'+cards+'</div>';
+}catch(e){return '';}}
+
+/* ===== PLUGIN ENGINE (v9.7) — إضافات بدون تعديل الكود الأساسي ===== */
+window.FAT_PLUGINS=window.FAT_PLUGINS||[];
+var _fatHooks={};
+function fatOn(evt,fn){(_fatHooks[evt]=_fatHooks[evt]||[]).push(fn);}
+function fatEmit(evt,data){var hs=_fatHooks[evt]||[];for(var i=0;i<hs.length;i++){try{hs[i](data);}catch(e){try{console.warn('plugin hook',evt,e);}catch(_){}}}}
+function fatRegisterPlugin(p){
+  if(!p||!p.id)return false;
+  var off=((db.settings&&db.settings.disabledPlugins)||[]).indexOf(p.id)>-1;
+  window.FAT_PLUGINS.push({id:p.id,name:p.name||p.id,desc:p.desc||'',disabled:off});
+  if(off)return false;
+  try{p.init&&p.init({on:fatOn,emit:fatEmit,db:db,save:save,toast:toast,go:go,L:L});}catch(e){}
+  return true;
+}
+function fatTogglePlugin(id){
+  var st=db.settings;st.disabledPlugins=st.disabledPlugins||[];
+  var i=st.disabledPlugins.indexOf(id);
+  if(i>-1)st.disabledPlugins.splice(i,1);else st.disabledPlugins.push(id);
+  save();toast(L('يتطبق بعد إعادة تحميل الصفحة','Applies after page reload'));views.settings();
+}
+function fatPluginsPanelHTML(){
+  var ps=window.FAT_PLUGINS||[];
+  var body=ps.length?ps.map(function(p){var off=((db.settings.disabledPlugins)||[]).indexOf(p.id)>-1;
+    return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:9px;margin-bottom:6px"><span style="flex:1;font-size:12.5px;font-weight:700">'+esc(p.name)+'</span><button class="btn btn-sm '+(off?'btn-ghost':'btn-primary')+'" onclick="fatTogglePlugin(\''+p.id+'\')">'+(off?'⬜ '+L('موقوفة','Off'):'✅ '+L('شغّالة','On'))+'</button></div>';}).join('')
+  :'<div style="font-size:12px;color:var(--muted);line-height:1.7">'+L('مفيش إضافات مركّبة حاليًا. البنية جاهزة: أي إضافة (فاتورة إلكترونية، بوابة دفع، توصيل…) بتتسجل بسطر واحد <code>fatRegisterPlugin({id,name,init})</code> وبتستقبل أحداث النظام (app:ready · view:changed · sale:completed) بدون أي تعديل في الكود الأساسي.','No plugins installed. Architecture is ready: register with one line and receive system events without touching core code.')+'</div>';
+  return '<div style="margin:4px 0 16px;padding:14px 16px;border:1px solid var(--line);border-radius:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">\uD83E\uDDE9 '+L('الإضافات (Plugins)','Plugins')+'</div>'+body+'</div>';
+}
+
+
+
+/* ===== CUSTOM BUSINESS BUILDER — أسئلة الخصائص (v9.7) ===== */
+var FAT_FLAG_LABELS = {
+  barcode:    {ic:'📷', ar:'باركود ومسح ضوئي',        en:'Barcode scanning'},
+  inventory:  {ic:'📦', ar:'مخزون وجرد',              en:'Inventory & stocktake'},
+  suppliers:  {ic:'🚚', ar:'موردين',                   en:'Suppliers'},
+  purchases:  {ic:'🧾', ar:'فواتير شراء',              en:'Purchases'},
+  returns:    {ic:'↩️', ar:'مرتجعات',                  en:'Returns'},
+  stockAlerts:{ic:'🔔', ar:'تنبيهات نقص المخزون',      en:'Stock alerts'},
+  variants:   {ic:'🎨', ar:'مقاسات وألوان (متغيرات)',  en:'Sizes & colors'},
+  kitchen:    {ic:'👨‍🍳', ar:'مطبخ ووصفات (مكونات)',    en:'Kitchen & recipes'},
+  tables:     {ic:'🍽️', ar:'طاولات',                   en:'Tables'},
+  services:   {ic:'🛠️', ar:'خدمات (مش منتجات بس)',     en:'Services'}
+};
+function wizToggleFlag(k){
+  var a=_wizState.answers; a.customFlags=a.customFlags||JSON.parse(JSON.stringify((BIZ_TYPES[_wizState.type]||BIZ_TYPES.other).flags));
+  a.customFlags[k]=a.customFlags[k]?0:1;
+  renderWizQuestions();
+}
+function wizFlagGrid(){
+  var a=_wizState.answers;
+  var cur=a.customFlags||JSON.parse(JSON.stringify((BIZ_TYPES[_wizState.type]||BIZ_TYPES.other).flags));
+  return '<div class="field"><label>🧩 '+L('اختار اللي محتاجه في نشاطك (تقدر تغيّرها بعدين من الإعدادات)','Pick what your business needs (editable later)')+'</label>'+
+    '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:7px">'+
+    Object.keys(FAT_FLAG_LABELS).map(function(k){var fl=FAT_FLAG_LABELS[k];var on=cur[k]!==0;
+      return '<button type="button" onclick="wizToggleFlag(\''+k+'\')" style="display:flex;align-items:center;gap:7px;padding:9px 10px;border-radius:10px;text-align:right;border:2px solid '+(on?'var(--primary)':'rgba(255,255,255,.12)')+';background:'+(on?'var(--primary-soft)':'transparent')+';color:var(--ink);font-size:12px;font-weight:600;cursor:pointer">'+
+        '<span>'+fl.ic+'</span><span style="flex:1">'+L(fl.ar,fl.en)+'</span><span>'+(on?'✅':'⬜')+'</span></button>';
+    }).join('')+'</div></div>';
+}
+
+
+/* ===== محرر خصائص النشاط في الإعدادات (v9.7) ===== */
+function fatFlagsEditorHTML(){
+  var st=db.settings;
+  var f=(st.bizProfile&&st.bizProfile.flags)||null;
+  var toggles=Object.keys(FAT_FLAG_LABELS).map(function(k){
+    var fl=FAT_FLAG_LABELS[k];var on=!f||f[k]!==0;
+    return '<button type="button" onclick="fatToggleBizFlag(\''+k+'\')" style="display:flex;align-items:center;gap:7px;padding:9px 11px;border-radius:10px;text-align:right;border:1.5px solid '+(on?'var(--primary)':'var(--line)')+';background:'+(on?'var(--primary-soft)':'var(--panel)')+';color:var(--ink);font-size:12px;font-weight:600;cursor:pointer">'+
+      '<span>'+fl.ic+'</span><span style="flex:1">'+L(fl.ar,fl.en)+'</span><span>'+(on?'✅':'⬜')+'</span></button>';
+  }).join('');
+  return '<div style="margin:4px 0 16px;padding:14px 16px;border:1px solid var(--line);border-radius:12px">'+
+    '<div style="font-size:13px;font-weight:700;margin-bottom:4px">🧩 '+L('خصائص النشاط (Modules)','Business features')+'</div>'+
+    '<div style="font-size:11.5px;color:var(--muted);margin-bottom:10px">'+L('فعّل أو اقفل أي جزء في النظام — القائمة الجانبية والشاشات بتتظبط فوراً.','Toggle any module — sidebar & screens update instantly.')+'</div>'+
+    '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:7px">'+toggles+'</div></div>';
+}
+function fatToggleBizFlag(k){
+  var st=db.settings;
+  if(!st.bizProfile){ st.bizProfile={type:'other',typeName:L('نشاط آخر','Other'),flags:JSON.parse(JSON.stringify(BIZ_TYPES.other.flags))}; }
+  if(!st.bizProfile.flags){ st.bizProfile.flags=JSON.parse(JSON.stringify(BIZ_TYPES.other.flags)); }
+  var f=st.bizProfile.flags;
+  f[k]=(f[k]===0)?1:0;
+  save();
+  try{typeof renderNav==='function'&&renderNav();}catch(e){}
+  views.settings();
+  toast((f[k]?'✅ ':'⬜ ')+L(FAT_FLAG_LABELS[k].ar,FAT_FLAG_LABELS[k].en));
+}
+
+/* ===== GRANULAR PERMISSIONS (v9.9) — صلاحيات دقيقة مستقلة عن الأدوار ===== */
+var FAT_PERMS = {
+  viewCost:     {ic:'\uD83D\uDCB2', ar:'رؤية التكلفة والأرباح',   en:'View cost & profit',  def:{manager:1,accountant:1,stockkeeper:1,cashier:0}},
+  editPrice:    {ic:'\uD83C\uDFF7\uFE0F', ar:'تعديل أسعار البيع',       en:'Edit selling prices', def:{manager:1,accountant:0,stockkeeper:0,cashier:0}},
+  deleteInvoice:{ic:'\uD83D\uDDD1\uFE0F', ar:'حذف/إلغاء فاتورة',        en:'Delete/void invoice', def:{manager:1,accountant:1,stockkeeper:0,cashier:0}},
+  refund:       {ic:'\u21A9\uFE0F', ar:'عمل مرتجعات',           en:'Process returns',     def:{manager:1,accountant:1,stockkeeper:0,cashier:0}},
+  exportData:   {ic:'\uD83D\uDCE4', ar:'تصدير البيانات',         en:'Export data',         def:{manager:1,accountant:1,stockkeeper:0,cashier:0}},
+  editProduct:  {ic:'\uD83D\uDCE6', ar:'إضافة/تعديل المنتجات',    en:'Add/edit products',   def:{manager:1,accountant:0,stockkeeper:1,cashier:0}},
+  manageStaff:  {ic:'\uD83D\uDC65', ar:'إدارة الموظفين والرواتب', en:'Staff & payroll',     def:{manager:1,accountant:1,stockkeeper:0,cashier:0}},
+  openDrawer:   {ic:'\uD83D\uDDC4\uFE0F', ar:'فتح درج النقود يدويًا',   en:'Open cash drawer',    def:{manager:1,accountant:1,stockkeeper:0,cashier:1}},
+  editSettings: {ic:'\u2699\uFE0F', ar:'تعديل الإعدادات',         en:'Edit settings',       def:{manager:1,accountant:0,stockkeeper:0,cashier:0}}
+};
+function fatCan(perm){
+  try{
+    if(typeof IS_ADMIN!=='undefined' && IS_ADMIN) return true;
+    var role = db.settings.role || 'manager';
+    if(role==='manager') return true; // المدير له كل شيء
+    var custom = (db.settings.granPerms||{})[role];
+    if(custom && custom[perm]!=null) return custom[perm]===1;
+    var d = FAT_PERMS[perm];
+    return d ? (d.def[role]!==0) : true; // غير معرّف = مسموح
+  }catch(e){ return true; }
+}
+function fatSetPerm(role,perm,val){
+  var st=db.settings; st.granPerms=st.granPerms||{};
+  st.granPerms[role]=st.granPerms[role]||{};
+  st.granPerms[role][perm]=val?1:0;
+  save();
+}
+function fatPermsEditorHTML(){
+  var roles=[['cashier','\uD83D\uDCB5 كاشير','Cashier'],['stockkeeper','\uD83D\uDCE6 أمين مخزن','Stock'],['accountant','\uD83E\uDDEE محاسب','Accountant']];
+  var rows=Object.keys(FAT_PERMS).map(function(pk){
+    var p=FAT_PERMS[pk];
+    var cells=roles.map(function(r){
+      var on=fatCanRole(r[0],pk);
+      return '<td style="text-align:center;padding:6px"><button type="button" onclick="fatTogglePerm(\''+r[0]+'\',\''+pk+'\')" style="width:30px;height:30px;border-radius:8px;border:1.5px solid '+(on?'var(--primary)':'var(--line)')+';background:'+(on?'var(--primary-soft)':'var(--panel)')+';cursor:pointer;font-size:13px">'+(on?'\u2705':'\u2B1C')+'</button></td>';
+    }).join('');
+    return '<tr><td style="padding:6px 8px;font-size:12px;font-weight:600">'+p.ic+' '+L(p.ar,p.en)+'</td>'+cells+'</tr>';
+  }).join('');
+  return '<div style="margin:4px 0 16px;padding:14px 16px;border:1px solid var(--line);border-radius:12px">'+
+    '<div style="font-size:13px;font-weight:700;margin-bottom:4px">\uD83D\uDD10 '+L('صلاحيات دقيقة لكل دور','Granular role permissions')+'</div>'+
+    '<div style="font-size:11.5px;color:var(--muted);margin-bottom:10px">'+L('المدير له كل الصلاحيات دائمًا. حدد إيه المسموح لكل دور بالظبط.','Manager always has all. Toggle exactly what each role can do.')+'</div>'+
+    '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:right;padding:6px 8px;font-size:11px;color:var(--muted)">'+L('الصلاحية','Permission')+'</th><th style="font-size:11px;color:var(--muted)">\uD83D\uDCB5</th><th style="font-size:11px;color:var(--muted)">\uD83D\uDCE6</th><th style="font-size:11px;color:var(--muted)">\uD83E\uDDEE</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+}
+function fatCanRole(role,perm){
+  var custom=(db.settings.granPerms||{})[role];
+  if(custom&&custom[perm]!=null)return custom[perm]===1;
+  var d=FAT_PERMS[perm];return d?(d.def[role]!==0):true;
+}
+function fatTogglePerm(role,perm){
+  fatSetPerm(role,perm,!fatCanRole(role,perm));
+  views.settings();
+  toast((fatCanRole(role,perm)?'\u2705 ':'\u2B1C ')+L(FAT_PERMS[perm].ar,FAT_PERMS[perm].en));
+}
+
 function permGet(kind,role){var p=(db.settings.perm||{})[kind]||{};var v=p[role];if(v==null)v=(kind==='discountMax')?100:0;return +v||0;}
 function needsDiscApproval(T){var role=db.settings.role||'manager';if(role==='manager')return false;
   var lim=permGet('discountMax',role);var sub=T.sub||0;if(sub<=0)return false;
@@ -8051,10 +8392,11 @@ views.shiftSessions=()=>{
 /* ===== 2. AUTO WA NOTIFICATIONS + SMART ALERTS ===== */
 function waMissYouAlerts(){var out=[];if(!db.settings.waMissYou)return out;var t=today();
   var tms=new Date(t).getTime();
+  var _lastByCust={};
+  db.sales.forEach(function(s){if(s.subKind||!s.customerId)return;if(!_lastByCust[s.customerId]||s.date>_lastByCust[s.customerId])_lastByCust[s.customerId]=s.date;});
   db.customers.forEach(function(c){if(!c.phone)return;
-    var lastSale=db.sales.filter(function(s){return s.customerId===c.id&&!s.subKind;});
-    if(!lastSale.length)return;
-    var last=lastSale.reduce(function(a,s){return s.date>a?s.date:a;},'');
+    var last=_lastByCust[c.id];
+    if(!last)return;
     var days=Math.floor((tms-new Date(last).getTime())/86400000);
     var thr=+db.settings.waMissYouDays||30;
     if(days>=thr&&days<thr+7)
@@ -8248,6 +8590,13 @@ views.stocktake=()=>{
   var summaryColor=totalDiff>0?'var(--danger)':'var(--ok)';
   var _hasMenu=db.products.some(function(p){return fatItemType(p)==='menu';});
   var _hasRaw=db.products.some(function(p){return fatItemType(p)==='raw';});
+  // تحذير خاص للمطاعم: لو مفيش تصنيف، كل الأصناف بتظهر في الجرد (منيو + خامات)
+  var _isRestBiz=['restaurant','cafe','bakery'].indexOf(db.settings.businessType||'')>=0;
+  var _classifyWarning=(_isRestBiz&&!_hasMenu&&!_hasRaw)?
+    '<div style="background:#FEF3C7;border:1px solid #FDE68A;border-radius:10px;padding:12px 14px;margin-bottom:12px">'+
+    '🍔 <b>'+L('تنبيه للمطاعم','Restaurant notice')+'</b>: '+
+    L('الجرد بيعرض كل الأصناف لأنك لسه مصنّفتهاش. صنّف وجباتك كـ «صنف بيع» والخامات كـ «خامة» عشان الجرد يبقى صح.','Stocktake shows all items because you haven\'t classified them yet. Classify meals as «Menu item» and raw materials as «Raw» for accurate stocktake.')+
+    ' <button class="btn btn-primary btn-sm" onclick="bulkClassifyModal()" style="margin-right:8px">🍔 '+L('تصنيف الأصناف الآن','Classify now')+'</button></div>':'';
   var _stkNote=_hasMenu?'<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12.5px;color:#1e40af">📦 '+L('الجرد بيعرض الخامات والأصناف العادية فقط. الوجبات والمشروبات مش بتظهر هنا لأن مخزونها بيتحسب من مكوناتها.','Stocktake shows raw materials & simple items only. Menu items are excluded — their stock comes from components.')+'</div>':'';
   // فلتر بصري اختياري (يظهر فقط لو فيه خامات فعلاً — أي مطعم/كافيه)
   window._stkFilter=window._stkFilter||'all';
@@ -8259,7 +8608,7 @@ views.stocktake=()=>{
   if(window._stkFilter==='raw')prods=prods.filter(function(p){return fatItemType(p)==='raw';});
   else if(window._stkFilter==='simple')prods=prods.filter(function(p){return fatItemType(p)==='simple';});
   document.getElementById('content').innerHTML=
-  _stkNote+_stkTabs+
+  _classifyWarning+_stkNote+_stkTabs+
   '<div class="cards">'+
     '<div class="card"><div class="ic-bg">📦</div><div class="lbl">'+L('أصناف تم جردها','Items counted')+'</div><div class="val">'+Object.keys(_stk).length+' / '+prods.length+'</div></div>'+
     '<div class="card"><div class="ic-bg">⚖️</div><div class="lbl">'+L('تسويات مطلوبة','Adjustments needed')+'</div><div class="val" style="color:'+summaryColor+'">'+upCount+'↑ '+downCount+'↓</div></div>'+
@@ -9432,6 +9781,14 @@ function csvImport(type){
   input.onchange=function(){var f=input.files&&input.files[0];if(!f)return;
     var rd=new FileReader();rd.onload=function(ev){csvPreview(type,ev.target.result);};rd.readAsText(f,'utf-8');};
   input.click();}
+function csvFileChosen(input){
+  var f=input.files&&input.files[0];
+  if(!f)return;
+  var rd=new FileReader();
+  rd.onload=function(ev){ csvPreview(window._csvMode||'customers', ev.target.result); };
+  rd.onerror=function(){ toast(L('تعذّر قراءة الملف','Could not read file'),'err'); };
+  rd.readAsText(f,'utf-8');
+}
 function csvPreview(type,text){
   var parsed=csvParse(text);var h=parsed.headers;var rows=parsed.rows;
   if(!rows.length)return toast(L('الملف فارغ','File is empty'),'err');
@@ -9441,6 +9798,7 @@ function csvPreview(type,text){
   // map columns
   var colMap={};fields.forEach(function(f){colMap[f]=resolveCol(h,f);});
   if(colMap.name<0)return toast(L('لازم يكون فيه عمود "اسم"','Need a "name" column'),'err');
+  window._csvType=type;window._csvRows=rows;window._csvColMap=colMap;
   var preview=rows.slice(0,5).map(function(r){var m=csvMap(h,r);
     return '<tr>'+fields.map(function(f){return '<td style="font-size:11.5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(colMap[f]>=0?r[colMap[f]]||'':'—')+'</td>';}).join('')+'</tr>';}).join('');
   openModal('<div class="modal-h"><h3>📥 '+L('استيراد','Import')+' '+label+'</h3><button class="x" onclick="closeModal()">×</button></div>'+
@@ -9455,10 +9813,12 @@ function csvPreview(type,text){
     :L('💡 الأعمدة المطلوبة: اسم. الاختيارية: هاتف، عنوان، رصيد','💡 Required: name. Optional: phone, address, balance'))+'</div>'+
   '</div>'+
   '<div class="modal-f">'+
-    '<button class="btn btn-primary" onclick="csvDoImport(\''+type+'\','+JSON.stringify(rows).replace(/'/g,"&#39;")+','+JSON.stringify(colMap)+')">✅ '+L('استيراد','Import')+' '+rows.length+' '+L('سجل','records')+'</button>'+
+    '<button class="btn btn-primary" onclick="csvDoImport()">✅ '+L('استيراد','Import')+' '+rows.length+' '+L('سجل','records')+'</button>'+
     '<button class="btn btn-ghost" onclick="closeModal()">'+L('إلغاء','Cancel')+'</button>'+
   '</div>',true);}
 function csvDoImport(type,rows,colMap){
+  type=type||window._csvType;rows=rows||window._csvRows;colMap=colMap||window._csvColMap;
+  if(!rows||!colMap)return toast(L('مفيش بيانات للاستيراد — اختر الملف تاني','No data to import — choose the file again'),'err');
   var isProduct=type==='product';var added=0,skipped=0;
   rows.forEach(function(r){
     var name=(colMap.name>=0?r[colMap.name]||'':'').trim();if(!name){skipped++;return;}
@@ -9495,7 +9855,7 @@ function csvImportModal(){
       L('الأعمدة المطلوبة','Required columns')+': <b>name</b><br>'+
       L('اختيارية','Optional')+': sku, price, cost, qty, min, cat, unit, notes</div>')+
   '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">💡 '+L('السطر الأول يجب أن يكون رؤوس الأعمدة (header row)','First row must be column headers')+'</div>'+
-  '<input type="file" accept=".csv,.txt" id="csvFile" onchange="csvPreview(this)" style="margin-bottom:10px">'+
+  '<input type="file" accept=".csv,.txt" id="csvFile" onchange="csvFileChosen(this)" style="margin-bottom:10px">'+
   '<div id="csvPreviewBox"></div>'+
   '</div>'+
   '<div class="modal-f"><button id="csvImportBtn" class="btn btn-primary" style="display:none" onclick="csvDoImport()">✅ '+L('استيراد','Import')+'</button><button class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>');
@@ -9729,7 +10089,31 @@ var BIZ_TYPES = {
     flags:{barcode:1,inventory:1,suppliers:1,purchases:1,returns:1,stockAlerts:1,variants:1,kitchen:0,tables:0,services:0}},
   factory: {icon:'🏭', ar:'مصنع صغير', en:'Small factory', desc:{ar:'تصنيع ومواد خام', en:'Manufacturing & materials'},
     flags:{barcode:1,inventory:1,suppliers:1,purchases:1,returns:1,stockAlerts:1,variants:0,kitchen:1,tables:0,services:0}},
-  other: {icon:'🏢', ar:'نشاط آخر', en:'Other', desc:{ar:'كل المميزات متاحة', en:'All features available'},
+sweets: {icon:'🍰', ar:'حلويات', en:'Sweets', desc:{ar:'حلويات شرقية وغربية وتورت', en:'Oriental & western sweets'},
+    flags:{barcode:1,inventory:1,suppliers:1,purchases:1,returns:1,stockAlerts:1,variants:0,kitchen:1,tables:0,services:0}},
+  clinic: {icon:'🏥', ar:'عيادة', en:'Clinic', desc:{ar:'كشف ومتابعة وحجوزات', en:'Consultations & bookings'},
+    flags:{barcode:0,inventory:0,suppliers:0,purchases:0,returns:0,stockAlerts:0,variants:0,kitchen:0,tables:0,services:1}},
+  gym: {icon:'🏋️', ar:'جيم / لياقة', en:'Gym', desc:{ar:'اشتراكات وحصص تدريب', en:'Memberships & sessions'},
+    flags:{barcode:0,inventory:0,suppliers:0,purchases:0,returns:0,stockAlerts:0,variants:0,kitchen:0,tables:0,services:1}},
+  salon: {icon:'💇', ar:'صالون / كوافير', en:'Salon', desc:{ar:'خدمات تجميل ومنتجات عناية', en:'Beauty services & products'},
+    flags:{barcode:0,inventory:1,suppliers:1,purchases:1,returns:0,stockAlerts:1,variants:0,kitchen:0,tables:0,services:1}},
+  laundry: {icon:'🧼', ar:'مغسلة', en:'Laundry', desc:{ar:'غسيل وكي واستلام وتسليم', en:'Wash, iron, pickup'},
+    flags:{barcode:0,inventory:0,suppliers:0,purchases:0,returns:0,stockAlerts:0,variants:0,kitchen:0,tables:0,services:1}},
+  jewelry: {icon:'💍', ar:'مجوهرات', en:'Jewelry', desc:{ar:'ذهب ومجوهرات وإكسسوار ثمين', en:'Gold & fine jewelry'},
+    flags:{barcode:1,inventory:1,suppliers:1,purchases:1,returns:1,stockAlerts:1,variants:1,kitchen:0,tables:0,services:0}},
+  perfumes: {icon:'🧴', ar:'عطور', en:'Perfumes', desc:{ar:'عطور وأحجام متعددة', en:'Perfumes, multiple sizes'},
+    flags:{barcode:1,inventory:1,suppliers:1,purchases:1,returns:1,stockAlerts:1,variants:1,kitchen:0,tables:0,services:0}},
+  workshop: {icon:'🔧', ar:'ورشة صيانة', en:'Workshop', desc:{ar:'إصلاحات + قطع غيار', en:'Repairs + parts'},
+    flags:{barcode:1,inventory:1,suppliers:1,purchases:1,returns:0,stockAlerts:1,variants:0,kitchen:0,tables:0,services:1}},
+  autoparts: {icon:'🚗', ar:'قطع غيار سيارات', en:'Auto parts', desc:{ar:'قطع غيار وزيوت', en:'Parts & oils'},
+    flags:{barcode:1,inventory:1,suppliers:1,purchases:1,returns:1,stockAlerts:1,variants:0,kitchen:0,tables:0,services:0}},
+  shipping: {icon:'🚚', ar:'شركة شحن', en:'Shipping', desc:{ar:'شحنات وتتبع وتحصيل', en:'Shipments & COD'},
+    flags:{barcode:0,inventory:0,suppliers:0,purchases:0,returns:0,stockAlerts:0,variants:0,kitchen:0,tables:0,services:1}},
+  tourism: {icon:'✈️', ar:'شركة سياحة', en:'Tourism', desc:{ar:'رحلات وحجوزات وبرامج', en:'Trips & bookings'},
+    flags:{barcode:0,inventory:0,suppliers:0,purchases:0,returns:0,stockAlerts:0,variants:0,kitchen:0,tables:0,services:1}},
+  school: {icon:'🏫', ar:'مدرسة / سنتر تعليمي', en:'School', desc:{ar:'مصروفات واشتراكات طلبة', en:'Fees & subscriptions'},
+    flags:{barcode:0,inventory:0,suppliers:0,purchases:0,returns:0,stockAlerts:0,variants:0,kitchen:0,tables:0,services:1}},
+    other: {icon:'🏢', ar:'نشاط آخر', en:'Other', desc:{ar:'كل المميزات متاحة', en:'All features available'},
     flags:{barcode:1,inventory:1,suppliers:1,purchases:1,returns:1,stockAlerts:1,variants:1,kitchen:0,tables:0,services:1}}
 };
 
@@ -11345,7 +11729,7 @@ function fatShowActivationScreen(){
   wrap.innerHTML =
     '<div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:32px 26px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">'+
       '<div style="font-size:46px;margin-bottom:8px">🔐</div>'+
-      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v9.4</div>'+
+      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v1.4</div>'+
       '<p style="color:#667;font-size:14px;margin:0 0 22px;line-height:1.6">'+(_expiredPlan ? ('انتهى '+_expiredPlan+' بتاعك. جدّد عشان تكمّل. ابعت رقم جهازك للدعم.') : 'علشان تستخدم البرنامج على الجهاز ده، محتاج كود تفعيل. ابعت رقم جهازك للدعم وهنبعتلك الكود.')+'</p>'+
 
       '<div style="background:#f0f7f5;border:2px dashed #0f6b5c;border-radius:14px;padding:16px;margin-bottom:18px">'+
@@ -11848,6 +12232,8 @@ function fatInitCustomerUX(){
   }, 1000);
 }
 
+
+try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{version:'v1.0-GM'});},800);}catch(_e){}
 </script>
 </body>
 </html>
