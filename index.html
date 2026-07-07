@@ -231,6 +231,13 @@ html[dir=ltr] .search .si{right:auto;left:11px}
    ═══════════════════════════════════════════════════════════ */
 body.pos-pro .content{background:#F8FAFC}
 body.pos-pro .pos{gap:16px}
+/* ── قائمة اقتراحات البحث المنسدلة ── */
+.search-suggest{display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #E2E8F0;border-radius:12px;box-shadow:0 12px 32px -8px rgba(16,24,40,.18);z-index:50;max-height:340px;overflow-y:auto}
+.search-suggest .ss-item{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;border-bottom:1px solid #F1F5F9;transition:background .1s}
+.search-suggest .ss-item:last-child{border-bottom:none}
+.search-suggest .ss-item:hover{background:#F0FAF7}
+.search-suggest .ss-nm{flex:1;font-weight:600;color:#1E293B;font-size:13.5px}
+.search-suggest .ss-pr{font-weight:800;color:#16A34A;font-size:13.5px}
 
 /* ══ DEEP REDESIGN v2 — تخطيط محسّن مستوحى من Sky Soft ══ */
 /* سلة أعرض وأوضح (420px بدل 380) على الشاشات الكبيرة */
@@ -921,7 +928,7 @@ const fmt=n=>(Math.round((+n||0)*100)/100).toLocaleString('en-US',{minimumFracti
 const cur=()=>db.settings.currency||'ج.م';
 const money=n=>fmt(n)+' '+cur();
 const today=()=>{const d=new Date(),off=d.getTimezoneOffset(),loc=new Date(d.getTime()-off*60000);return loc.toISOString().slice(0,10);};
-const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+let _uidCounter=0;const uid=()=>Date.now().toString(36)+'-'+(_uidCounter=(_uidCounter+1)%0x100000).toString(36)+Math.random().toString(36).slice(2,6);
 const esc=s=>(s||'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // Normalize for search: lowercase, strip Arabic diacritics, unify alef/taa-marbuta/yaa variants
 const norm=s=>(s||'').toString().toLowerCase().replace(/[\u064B-\u0652\u0670]/g,'').replace(/[أإآ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي').trim();
@@ -2230,7 +2237,7 @@ views.pos=()=>{try{if(_activeShift&&_activeShift.openDate&&_activeShift.openDate
     `<button class="btn btn-ghost btn-sm" onclick="shiftCloseModal()">🧾 ${L('تقفيل اليوم','Close Shift')}</button>`;
   document.getElementById('content').innerHTML=`<div class="pos"><div>
     <div class="panel" style="margin-bottom:16px"><div class="panel-b pad" style="display:flex;gap:10px;flex-wrap:wrap">
-      <div class="search" style="flex:1"><input id="posSearch" placeholder="${L('ابحث عن صنف… (Enter يضيف أول نتيجة)','Search item… (Enter adds first match)')}" oninput="posPage=1;clearTimeout(window._posSearchT);window._posSearchT=setTimeout(function(){renderPosGrid(document.getElementById('posSearch')?.value||'');},120)" onkeydown="if(event.key==='Enter')posSearchEnter()"><span class="si">🔍</span></div>
+      <div class="search" style="flex:1;position:relative"><input id="posSearch" autocomplete="off" placeholder="${L('ابحث عن صنف… (Enter يضيف أول نتيجة)','Search item… (Enter adds first match)')}" oninput="posPage=1;clearTimeout(window._posSearchT);window._posSearchT=setTimeout(function(){var q=document.getElementById('posSearch')?.value||'';renderPosGrid(q);renderSearchSuggest(q);},120)" onkeydown="if(event.key==='Enter'){posSearchEnter();hideSearchSuggest();}else if(event.key==='Escape')hideSearchSuggest()"><span class="si">🔍</span><div id="posSearchSuggest" class="search-suggest"></div></div>
       ${(typeof feat!=='function'||feat('barcode'))?`<div class="search"><input id="posBarcode" placeholder="${L('باركود ثم Enter','Barcode then Enter')}" onkeydown="if(event.key==='Enter')scanBarcode(this)"><span class="si" onclick="startCameraScanner()" style="cursor:pointer" title="${L('مسح بالكاميرا','Scan with camera')}">📷</span></div>`:''}</div>
     <div class="no-print" style="display:none;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:10.5px;color:var(--muted)" id="posKeysHint">
       ${[['F2',L('بحث','Search')],['F4',L('باركود','Barcode')],['F6',L('تعليق','Hold')],['F7',L('المعلّقة','Held')],['F8',L('خصم','Disc.')],['F9',L('بيع','Pay')],['Esc×2',L('تفريغ','Clear')]].map(x=>`<span style="background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:2px 7px"><b style="color:var(--primary)">${x[0]}</b> ${x[1]}</span>`).join('')}
@@ -2464,6 +2471,20 @@ function renderPosKPI(){
     bar.style.display='grid';
   }catch(e){bar.style.display='none';}
 }
+function renderSearchSuggest(q){
+  var box=document.getElementById('posSearchSuggest');if(!box)return;
+  q=(q||'').trim();
+  if(!q){box.style.display='none';box.innerHTML='';return;}
+  var list=db.products.filter(function(p){return fatShowsInMenu(p)&&(matches(p.name,q)||matches(p.sku,q)||(p.barcode&&matches(p.barcode,q)));}).slice(0,8);
+  if(!list.length){box.style.display='none';box.innerHTML='';return;}
+  box.innerHTML=list.map(function(p){
+    var q2=(p.components&&p.components.length)?compAvail(p):(+p.qty||0);
+    var st=q2<=0?'<span style="color:#DC2626;font-size:10px">'+L('نافذ','Out')+'</span>':(q2<=(+p.min||5)?'<span style="color:#D97706;font-size:10px">'+L('قليل','Low')+' '+_safeNum(q2)+'</span>':'<span style="color:#16A34A;font-size:10px">'+L('متوفر','In')+'</span>');
+    return '<div class="ss-item" onclick="posTap(\''+p.id+'\');document.getElementById(\'posSearch\').value=\'\';hideSearchSuggest();renderPosGrid(\'\');"><span class="ss-nm">'+esc(p.name)+'</span><span class="ss-pr">'+money(effPrice(p))+'</span>'+st+'</div>';
+  }).join('');
+  box.style.display='block';
+}
+function hideSearchSuggest(){var box=document.getElementById('posSearchSuggest');if(box){box.style.display='none';box.innerHTML='';}}
 function renderPosGrid(q){var _hotTop3=Object.keys(_posHot||{}).sort(function(a,b){return (_posHot[b]||0)-(_posHot[a]||0);}).slice(0,3);
   const list=db.products.filter(p=>fatShowsInMenu(p)&&(matches(p.name,q)||matches(p.sku,q)||(p.barcode&&matches(p.barcode,q))||(p.code&&matches(p.code,q)))&&(!posCatFilter||p.cat===posCatFilter)).sort((a,b)=>((_posHot[b.id]||0)-(_posHot[a.id]||0))||String(a.name).localeCompare(String(b.name),'ar'));
   const bundleCards=(posCatFilter?[]:(db.bundles||[])).filter(b=>matches(b.name,q)).map(b=>{
@@ -4697,7 +4718,7 @@ views.treasury=()=>{document.getElementById('topActions').innerHTML=`<button cla
     _pm30.transfer>0?`<div class="card kpi-4"><div class="ic-bg">🏦</div><div class="lbl">${P.transfer||L('تحويل','Transfer')} <span style="font-size:10px;color:var(--muted)">(${L('آخر 30 يوم','Last 30d')})</span></div><div class="val" style="font-size:20px;color:var(--primary-d)">${money(_pm30.transfer)}</div></div>`:'',
   ].filter(Boolean).join(''):'';
   const bankCards=db.banks.map(b=>`<div class="card kpi-4"><div class="ic-bg">🏦</div><div class="lbl">${esc(b.name)}</div><div class="val" style="font-size:20px;color:var(--blue)">${money(bankBalance(b.id))}</div><div class="sub">${b.accountNo?esc(b.accountNo):L('حساب بنكي','Bank account')} • <a href="#" onclick="delBank('${b.id}');return false" style="color:var(--danger)">${L('حذف','Delete')}</a></div></div>`).join('');
-  document.getElementById('content').innerHTML=`<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))"><div class="card kpi-1"><div class="ic-bg">💵</div><div class="lbl">${L('الخزينة النقدية','Cash Drawer')}</div><div class="val">${money(cashBalance())}</div></div>${bankCards}${pmCards}<div class="card kpi-2"><div class="lbl">${L('إجمالي الداخل','Total In')}</div><div class="val" style="font-size:22px;color:var(--ok)">${money(inT)}</div></div><div class="card kpi-3"><div class="lbl">${L('إجمالي الخارج','Total Out')}</div><div class="val" style="font-size:22px;color:var(--danger)">${money(outT)}</div></div></div>
+  document.getElementById('content').innerHTML=`<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))"><div class="card kpi-1"><div class="ic-bg">💵</div><div class="lbl">${L('الخزينة النقدية','Cash Drawer')}</div><div class="val">${money(cashBalance())}</div></div>${bankCards}${pmCards}<div class="card" style="border:2px dashed var(--primary);background:var(--primary-soft);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:100px" onclick="bankForm()"><div style="font-size:26px">➕</div><div class="lbl" style="color:var(--primary);font-weight:700;margin-top:4px">${L('أضف حساب / محفظة / فيزا','Add account / wallet')}</div><div class="sub" style="font-size:11px;color:var(--muted)">${L('انستاباي · فودافون كاش · حساب بنكي','InstaPay · Wallet · Bank')}</div></div><div class="card kpi-2"><div class="lbl">${L('إجمالي الداخل','Total In')}</div><div class="val" style="font-size:22px;color:var(--ok)">${money(inT)}</div></div><div class="card kpi-3"><div class="lbl">${L('إجمالي الخارج','Total Out')}</div><div class="val" style="font-size:22px;color:var(--danger)">${money(outT)}</div></div></div>
     <div class="panel"><div class="panel-h"><h3>${L('حركة الخزينة والحسابات','Cash & Account Movements')}</h3></div><div class="panel-b">
     ${db.cash.length?`<table><thead><tr><th>${L('التاريخ','Date')}</th><th>${L('الحساب','Account')}</th><th>${L('البيان','Description')}</th><th>${L('داخل','In')}</th><th>${L('خارج','Out')}</th></tr></thead><tbody>
     ${[...db.cash].reverse().map(c=>`<tr><td>${c.date}</td><td><span class="badge ${(!c.acct||c.acct==='cash')?'muted':'info'}">${esc(acctName(c.acct))}</span></td><td>${esc(c.note)}</td><td class="t-num" style="color:var(--ok)">${c.type==='in'?money(c.amount):'—'}</td><td class="t-num" style="color:var(--danger)">${c.type==='out'?money(c.amount):'—'}</td></tr>`).join('')}</tbody></table>`:`<div class="empty"><span class="big">💵</span>${L('لا حركات','No movements')}</div>`}</div></div>`;};
@@ -7569,7 +7590,7 @@ views.treasury=()=>{
   var acctOpts='<option value="">'+L('كل الحسابات','All accounts')+'</option><option value="cash" '+(trF.acct==='cash'?'selected':'')+'>💵 '+L('الخزينة النقدية','Cash')+'</option>'+db.banks.map(function(b){return '<option value="'+b.id+'" '+(trF.acct===b.id?'selected':'')+'>🏦 '+esc(b.name)+'</option>';}).join('');
   document.getElementById('content').innerHTML=
   '<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">'+
-    '<div class="card kpi-1"><div class="ic-bg">💵</div><div class="lbl">'+L('الخزينة النقدية','Cash Drawer')+'</div><div class="val">'+money(cashBalance())+'</div></div>'+bankCards+
+    '<div class="card kpi-1"><div class="ic-bg">💵</div><div class="lbl">'+L('الخزينة النقدية','Cash Drawer')+'</div><div class="val">'+money(cashBalance())+'</div></div>'+bankCards+'<div class="card" style="border:2px dashed var(--primary);background:var(--primary-soft);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:90px" onclick="bankForm()"><div style="font-size:24px">➕</div><div class="lbl" style="color:var(--primary);font-weight:700">'+L('أضف حساب / محفظة / فيزا','Add account / wallet')+'</div><div style="font-size:10.5px;color:var(--muted)">'+L('انستاباي · فودافون كاش · بنك','InstaPay · Wallet · Bank')+'</div></div>'+
     '<div class="card kpi-2"><div class="lbl">'+L('إجمالي الداخل','Total In')+'</div><div class="val" style="font-size:22px;color:var(--ok)">'+money(inT)+'</div></div>'+
     '<div class="card kpi-3"><div class="lbl">'+L('إجمالي الخارج','Total Out')+'</div><div class="val" style="font-size:22px;color:var(--danger)">'+money(outT)+'</div></div>'+
     '<div class="card"><div class="ic-bg">🔄</div><div class="lbl">'+L('حركات اليوم','Today moves')+'</div><div class="val" style="font-size:22px">'+todayN+'</div></div></div>'+
@@ -11789,7 +11810,7 @@ function fatShowActivationScreen(){
   wrap.innerHTML =
     '<div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:32px 26px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">'+
       '<div style="font-size:46px;margin-bottom:8px">🔐</div>'+
-      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v1.9</div>'+
+      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v2.1</div>'+
       '<p style="color:#667;font-size:14px;margin:0 0 22px;line-height:1.6">'+(_expiredPlan ? ('انتهى '+_expiredPlan+' بتاعك. جدّد عشان تكمّل. ابعت رقم جهازك للدعم.') : 'علشان تستخدم البرنامج على الجهاز ده، محتاج كود تفعيل. ابعت رقم جهازك للدعم وهنبعتلك الكود.')+'</p>'+
 
       '<div style="background:#f0f7f5;border:2px dashed #0f6b5c;border-radius:14px;padding:16px;margin-bottom:18px">'+
