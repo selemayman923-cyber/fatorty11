@@ -232,11 +232,43 @@ html[dir=ltr] .search .si{right:auto;left:11px}
 body.pos-pro .content{background:#F8FAFC}
 body.pos-pro .pos{gap:16px}
 
+/* ══ DEEP REDESIGN v2 — تخطيط محسّن مستوحى من Sky Soft ══ */
+/* سلة أعرض وأوضح (420px بدل 380) على الشاشات الكبيرة */
+@media(min-width:1280px){ body.pos-pro .pos{grid-template-columns:1fr 420px} }
+/* عمود السلة: بطاقة واحدة متماسكة بظل ناعم وحافة علوية ملوّنة */
+body.pos-pro .pos>div:last-child>.panel:first-child{border-top:3px solid var(--primary)}
+/* رأس السلة أوضح */
+body.pos-pro .pos .panel-h h3{font-weight:800;letter-spacing:-.2px}
+/* شبكة المنتجات: مسافات أريح وكروت أكبر شوية للمس أسهل */
+body.pos-pro .pos-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
+/* كارت المنتج: ظل أنعم وحركة hover أوضح */
+body.pos-pro .pos-card{border:1px solid #EAEEF4;box-shadow:0 1px 2px rgba(16,24,40,.04);transition:transform .14s cubic-bezier(.34,1.56,.64,1),box-shadow .16s,border-color .16s}
+body.pos-pro .pos-card:hover{transform:translateY(-4px);box-shadow:0 12px 28px -8px rgba(15,107,92,.25);border-color:var(--primary)}
+/* شارة السعر: خلفية خفيفة تبرز السعر أكتر */
+body.pos-pro .pos-card .pr{background:linear-gradient(180deg,transparent,rgba(22,163,74,.06));border-radius:8px;padding:2px 0}
+/* أزرار الإجراءات السفلية: أوضح وأكبر للمس */
+body.pos-pro .pa-btn{border-radius:13px;padding:12px 6px;box-shadow:0 2px 8px -2px color-mix(in srgb,var(--c) 40%,transparent);transition:transform .1s,box-shadow .15s}
+body.pos-pro .pa-btn:hover{transform:translateY(-2px)}
+body.pos-pro .pa-btn:active{transform:translateY(0) scale(.97)}
+/* كروت KPI: أنظف وأنعم */
+body.pos-pro .pos-kpi>div{background:#fff;border:1px solid #EAEEF4;border-radius:14px;box-shadow:0 1px 2px rgba(16,24,40,.03);transition:box-shadow .15s}
+body.pos-pro .pos-kpi>div:hover{box-shadow:0 6px 16px -6px rgba(16,24,40,.12)}
+/* شريط التصنيفات: شرائح أوضح */
+body.pos-pro .cat-chip{border-radius:22px;padding:7px 15px;font-weight:600;transition:all .14s}
+body.pos-pro .cat-chip:hover{border-color:var(--primary);color:var(--primary)}
+/* صف السلة: خطوط فاصلة أنعم ومسافة أريح */
+body.pos-pro .pos .cart-row,body.pos-pro .pos .citem{border-radius:10px;transition:background .12s}
+body.pos-pro .pos .cart-row:hover,body.pos-pro .pos .citem:hover{background:#F8FAFC}
+/* زر إتمام البيع: أبرز عنصر في الشاشة */
+body.pos-pro #posCheckoutBtn{box-shadow:0 6px 18px -4px rgba(15,107,92,.4);letter-spacing:.3px;transition:transform .12s,box-shadow .16s}
+body.pos-pro #posCheckoutBtn:hover{transform:translateY(-2px);box-shadow:0 10px 24px -4px rgba(15,107,92,.5)}
+/* ══ نهاية DEEP REDESIGN v2 ══ */
+
 /* ── لوحة البحث ── */
 body.pos-pro .pos .panel{background:#fff;border:1px solid #E8ECF3;box-shadow:0 1px 3px rgba(16,24,40,.04),0 1px 2px rgba(16,24,40,.03);border-radius:16px}
 body.pos-pro .pos .search input{background:#fff;border:1px solid #E2E8F0;color:#0F172A;border-radius:12px;transition:border-color .15s,box-shadow .15s}
 body.pos-pro .pos .search input::placeholder{color:#94A3B8}
-body.pos-pro .pos .search input:focus{border-color:#2563EB;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+body.pos-pro .pos .search input:focus{border-color:#0f6b5c;box-shadow:0 0 0 3px rgba(15,107,92,.12)}
 
 /* ── شريط KPI (كروت بيضا، أيقونات ملوّنة فقط) ── */
 .pos-kpi{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:0 0 14px}
@@ -253,15 +285,22 @@ body.pos-pro .pos-kpi-val{font-size:17px;color:#0F172A;font-weight:800;letter-sp
 /* ── الأقسام (Chips) ── */
 body.pos-pro #posCatBar .cat-chip,body.pos-pro #posCatBar button{background:#fff!important;border:1px solid #E2E8F0!important;color:#475569!important;border-radius:999px!important;font-weight:600;transition:all .15s}
 body.pos-pro #posCatBar .cat-chip:hover,body.pos-pro #posCatBar button:hover{background:#F1F5F9!important;border-color:#CBD5E1!important}
-body.pos-pro #posCatBar .cat-chip.active,body.pos-pro #posCatBar button.active{background:#2563EB!important;border-color:#2563EB!important;color:#fff!important;box-shadow:0 2px 8px -2px rgba(37,99,235,.45)}
+body.pos-pro #posCatBar .cat-chip.active,body.pos-pro #posCatBar button.active{background:#0f6b5c!important;border-color:#0f6b5c!important;color:#fff!important;box-shadow:0 2px 8px -2px rgba(15,107,92,.45)}
 
 /* ── كروت المنتجات ── */
 body.pos-pro .pos-card{background:#fff;border:1px solid #E8ECF3;border-radius:18px;box-shadow:0 1px 3px rgba(16,24,40,.04);transition:transform .15s,box-shadow .15s,border-color .15s}
-body.pos-pro .pos-card:hover{transform:translateY(-3px);box-shadow:0 12px 24px -8px rgba(16,24,40,.16);border-color:#DBEAFE}
-body.pos-pro .pos-card .nm{color:#1E293B;font-weight:700}
-body.pos-pro .pos-card .pr{color:#0F172A;font-weight:800}
-body.pos-pro .pos-card .q{color:#94A3B8}
+body.pos-pro .pos-card:hover{transform:translateY(-3px);box-shadow:0 12px 24px -8px rgba(16,24,40,.16);border-color:#c9e6df}
+body.pos-pro .pos-card .nm{color:#1E293B;font-weight:700;font-size:13px;line-height:1.35;margin-top:6px;min-height:34px;display:flex;align-items:center;justify-content:center}
+body.pos-pro .pos-card .pr{color:#16A34A;font-weight:800;font-size:15px;margin:3px 0 5px}
+body.pos-pro .pos-card .q{color:#94A3B8;font-size:10.5px;font-weight:600}
+.pos-status{margin-top:2px;display:flex;align-items:center;justify-content:center;gap:4px;flex-wrap:wrap}
+.ps-chip{font-size:10px;font-weight:700;padding:2px 9px;border-radius:20px;letter-spacing:.2px}
+.ps-chip.ok{background:#DCFCE7;color:#16A34A}
+.ps-chip.low{background:#FEF3C7;color:#D97706}
+.ps-chip.out{background:#FEE2E2;color:#DC2626}
 .pos-card .stock-badge{position:absolute;top:9px;left:9px;font-size:10px;font-weight:800;padding:2px 8px;border-radius:9px;background:#DCFCE7;color:#16A34A;border:1px solid #BBF7D0;z-index:1}
+.stock-badge.low{background:#FEF3C7;color:#D97706;border-color:#FDE68A}
+.pos-card.out .stock-badge{background:#FEE2E2;color:#DC2626;border-color:#FECACA}
 .pos-card .stock-badge.low{background:#FEF3C7;color:#D97706;border-color:#FDE68A}
 .pos-card.out .stock-badge{background:#FEE2E2;color:#DC2626;border-color:#FECACA}
 body.pos-pro .pos-card .stock-badge{position:absolute;top:9px;left:9px;font-size:10px;font-weight:800;padding:2px 9px;border-radius:9px;background:#DCFCE7;color:#16A34A;border:1px solid #BBF7D0}body.pos-pro .pos-card .stock-badge.low{background:#FEF3C7;color:#D97706;border-color:#FDE68A}
@@ -272,7 +311,7 @@ body.pos-pro .pos-card{padding:0;overflow:hidden;display:flex;flex-direction:col
 body.pos-pro .pos-card>div:nth-child(2){height:118px!important;width:100%;background:#F1F5F9;border-radius:0!important;margin:0!important;display:grid;place-items:center}
 body.pos-pro .pos-card>div:nth-child(2) img{width:100%!important;height:118px!important;border-radius:0!important;object-fit:cover}
 body.pos-pro .pos-card .nm{padding:9px 10px 2px;font-size:13.5px;min-height:19px}
-body.pos-pro .pos-card .pr{padding:0 10px 3px;color:#2563EB!important;font-size:15px}
+body.pos-pro .pos-card .pr{padding:0 10px 3px;color:#0f6b5c!important;font-size:15px}
 body.pos-pro .pos-card .q{padding:0 10px 10px}
 body.pos-pro .pos-card .stock-badge{top:8px;left:8px;background:#16A34A;color:#fff;border:none;box-shadow:0 1px 4px rgba(0,0,0,.15)}
 body.pos-pro .pos-card .stock-badge.low{background:#F59E0B;color:#fff}
@@ -285,10 +324,10 @@ body.pos-pro .cart-h span{color:#0F172A}
 body.pos-pro .cart label{color:#475569}
 body.pos-pro .cart input,body.pos-pro .cart select{background:#fff;border:1px solid #E2E8F0;color:#0F172A;border-radius:10px}
 body.pos-pro .cart input::placeholder{color:#94A3B8}
-body.pos-pro .cart input:focus,body.pos-pro .cart select:focus{border-color:#2563EB;box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+body.pos-pro .cart input:focus,body.pos-pro .cart select:focus{border-color:#0f6b5c;box-shadow:0 0 0 3px rgba(15,107,92,.1)}
 body.pos-pro .cart-row{border-bottom:1px solid #F1F5F9}
 /* ── الإجمالي الكلي: كارت أزرق كبير (تطابق الصورة) ── */
-body.pos-pro .pos-grand{background:linear-gradient(135deg,#2563EB,#1D4ED8);color:#fff!important;border-radius:14px;padding:14px 16px!important;margin:10px 0;box-shadow:0 6px 18px -4px rgba(37,99,235,.4);border:none!important}
+body.pos-pro .pos-grand{background:linear-gradient(135deg,#0f6b5c,#0b5346);color:#fff!important;border-radius:14px;padding:14px 16px!important;margin:10px 0;box-shadow:0 6px 18px -4px rgba(15,107,92,.4);border:none!important}
 body.pos-pro .pos-grand span{color:#fff!important}
 body.pos-pro .pos-grand span:first-child{font-size:14px;font-weight:600;opacity:.95}
 body.pos-pro .pos-grand span:last-child{font-size:22px;font-weight:800;letter-spacing:-.5px}
@@ -296,8 +335,8 @@ body.pos-pro .cart-row:hover{background:#F8FAFC}
 body.pos-pro .ci-n{color:#1E293B;font-weight:600}
 body.pos-pro .ci-p{color:#94A3B8}
 /* أزرار الكمية: outline أزرق */
-body.pos-pro .qstep button{background:#fff;border:1.5px solid #BFDBFE;color:#2563EB;border-radius:8px;transition:all .12s}
-body.pos-pro .qstep button:hover{background:#2563EB;color:#fff;border-color:#2563EB}
+body.pos-pro .qstep button{background:#fff;border:1.5px solid #BFDBFE;color:#0f6b5c;border-radius:8px;transition:all .12s}
+body.pos-pro .qstep button:hover{background:#0f6b5c;color:#fff;border-color:#0f6b5c}
 body.pos-pro .qstep .del,body.pos-pro .iconbtn.del{color:#fff!important;background:#EF4444!important;border-color:#EF4444!important}
 body.pos-pro .qstep .del:hover,body.pos-pro .iconbtn.del:hover{background:#DC2626!important}
 body.pos-pro .cart-items .empty{color:#94A3B8}
@@ -318,7 +357,7 @@ body.pos-pro #posCashBox input{background:#fff!important;color:#0F172A!important
 /* مبدّل السعر + نوع الأوردر */
 body.pos-pro #posPriceTierRow>div:last-child{background:#F8FAFC!important;border-color:#E2E8F0!important}
 body.pos-pro [id^="ot_"]{background:#fff!important;border:1px solid #E2E8F0!important;color:#475569!important}
-body.pos-pro #shiftStatusBtn{background:#2563EB!important;color:#fff!important;border-radius:12px}
+body.pos-pro #shiftStatusBtn{background:#0f6b5c!important;color:#fff!important;border-radius:12px}
 
 /* اسكرول بار */
 body.pos-pro .cart-items::-webkit-scrollbar,body.pos-pro .content::-webkit-scrollbar{width:8px}
@@ -330,15 +369,15 @@ body.pos-pro .cart-items::-webkit-scrollbar-thumb{background:#CBD5E1;border-radi
 .pos-pagination .pg-nav{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 .pos-pagination .pg-btn{min-width:34px;height:34px;padding:0 9px;border:1px solid #E2E8F0;background:#fff;color:#475569;border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;transition:all .12s;display:inline-flex;align-items:center;justify-content:center}
 .pos-pagination .pg-btn:hover:not(:disabled):not(.active){background:#F1F5F9;border-color:#CBD5E1}
-.pos-pagination .pg-btn.active{background:#2563EB;border-color:#2563EB;color:#fff;box-shadow:0 2px 8px -2px rgba(37,99,235,.45)}
+.pos-pagination .pg-btn.active{background:#0f6b5c;border-color:#0f6b5c;color:#fff;box-shadow:0 2px 8px -2px rgba(15,107,92,.45)}
 .pos-pagination .pg-btn:disabled{opacity:.4;cursor:not-allowed}
 .pos-pagination .pg-dots{color:#94A3B8;padding:0 2px;font-weight:700}
 .pos-pagination .pg-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .pos-pagination .pg-page-of{font-size:12.5px;color:#475569;font-weight:700;white-space:nowrap}
 .pos-pagination .pg-goto{width:54px;height:34px;border:1px solid #E2E8F0;border-radius:9px;text-align:center;font-weight:700;font-size:13px;color:#0F172A;background:#fff}
-.pos-pagination .pg-goto:focus{border-color:#2563EB;outline:none;box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+.pos-pagination .pg-goto:focus{border-color:#0f6b5c;outline:none;box-shadow:0 0 0 3px rgba(15,107,92,.1)}
 .pos-pagination .pg-per{height:34px;border:1px solid #E2E8F0;border-radius:9px;padding:0 8px;font-weight:700;font-size:13px;color:#0F172A;background:#fff;cursor:pointer}
-.pos-pagination .pg-per:focus{border-color:#2563EB;outline:none}
+.pos-pagination .pg-per:focus{border-color:#0f6b5c;outline:none}
 /* ═══ أزرار الإجراءات السريعة الملوّنة (Quick Actions) ═══ */
 .pos-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
 .pos-actions .pa-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:11px 6px;background:var(--c);color:#fff;border:none;border-radius:14px;font-size:18px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px -1px color-mix(in srgb,var(--c) 45%,transparent);transition:transform .12s,box-shadow .12s,background .12s}
@@ -351,7 +390,7 @@ body.pos-pro .cart-items::-webkit-scrollbar-thumb{background:#CBD5E1;border-radi
 body.pos-pro .modal{border-radius:18px;box-shadow:0 24px 64px rgba(16,24,40,.18)}
 body.pos-pro .modal .field label{color:#475569}
 body.pos-pro .modal .cat-chip{border-radius:999px}
-body.pos-pro .modal .cat-chip.active{background:#2563EB!important;color:#fff!important}
+body.pos-pro .modal .cat-chip.active{background:#0f6b5c!important;color:#fff!important}
 
 
 .pos-card .nm{font-weight:700;font-size:13px;margin:7px 0 3px;line-height:1.3;color:var(--ink);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:34px}
@@ -1194,10 +1233,10 @@ async function syncV2(){
 
 let _saveT;function bumpOps(){db.settings.opsSinceBackup=(db.settings.opsSinceBackup||0)+1;
   // فحص حجم البيانات كل 50 عملية — تحذير مبكر قبل الامتلاء الكامل
-  if((db.settings.opsSinceBackup||0)%50===0){try{
+  if((db.settings.opsSinceBackup||0)%20===0){try{
     var raw=localStorage.getItem('hesaby_cache_'+((typeof CURRENT_UID!=='undefined'&&CURRENT_UID)?CURRENT_UID:'offline'))||localStorage.getItem('hesaby_cache_offline')||'{}';
     var usedKB=Math.round(raw.length/1024);
-    if(usedKB>3000&&!window._storageWarned){window._storageWarned=true;
+    if(usedKB>3500&&!window._storageWarned){window._storageWarned=true;
       try{toast(L('⚠️ حجم بياناتك كبير ('+usedKB+'KB) — خد نسخة احتياطية من الإعدادات الآن','⚠️ Data size is large ('+usedKB+'KB) — please backup from Settings now'),'err');}catch(_){}
     }
   }catch(_){}}
@@ -2442,7 +2481,7 @@ function renderPosGrid(q){var _hotTop3=Object.keys(_posHot||{}).sort(function(a,
   var pageList=list.slice(startIdx,startIdx+per);
   // التجميعات تظهر فقط في الصفحة الأولى وبدون فلتر قسم
   var pagedProdCards=pageList.map(function(p){var tags=(((_posHot[p.id]||0)>0&&_hotTop3.indexOf(p.id)>=0)?`<span class="badge" style="font-size:9px;padding:1px 6px;background:#FEF3C7;color:#D97706">🔥 ${L('الأكثر مبيعاً','Top')}</span> `:'')+((p.qty>0&&(p.min||0)>0&&p.qty<=p.min)?`<span class="badge warn" style="font-size:9px;padding:1px 6px">⚠️ ${L('قارب النفاد','Low')}</span> `:'')+(p.byWeight?`<span class="badge info" style="font-size:9px;padding:1px 6px">⚖️ ${L('وزن','kg')}</span>`:'')+((p.variants&&p.variants.length)?` <span class="badge muted" style="font-size:9px;padding:1px 6px">🏷️ ${p.variants.length}</span>`:'');
-    return `<div class="pos-card ${p.qty<=0?'out':''}" data-pid="${p.id}" onclick="posTap('${p.id}')"><span class="stock-badge ${(+p.qty||0)<=(+p.min||5)?'low':''}">${_safeNum(p.qty)}</span><div style="height:48px;display:grid;place-items:center">${p.img?`<img src="${p.img}" style="width:48px;height:48px;object-fit:cover;border-radius:10px">`:'<div style="font-size:28px">🏷️</div>'}</div><div class="nm">${esc(p.name)}</div><div class="pr">${money(effPrice(p))}${p.byWeight?`/${L('كجم','kg')}`:''}</div><div class="q">${L('متاح','Avail')}: ${(p.components&&p.components.length)?compAvail(p):fmtStock(p)} ${tags}</div></div>`;}).join('');
+    return `<div class="pos-card ${p.qty<=0?'out':''}" data-pid="${p.id}" onclick="posTap('${p.id}')"><span class="stock-badge ${(+p.qty||0)<=(+p.min||5)?'low':''}">${_safeNum(p.qty)}</span><div style="height:48px;display:grid;place-items:center">${p.img?`<img src="${p.img}" style="width:48px;height:48px;object-fit:cover;border-radius:10px">`:'<div style="font-size:28px">🏷️</div>'}</div><div class="nm">${esc(p.name)}</div><div class="pr">${money(effPrice(p))}${p.byWeight?`/${L('كجم','kg')}`:''}</div><div class="pos-status">${(function(){var q=(p.components&&p.components.length)?compAvail(p):(+p.qty||0);var lo=(+p.min||5);if(q<=0)return `<span class="ps-chip out">${L('نافذ','Out')}</span>`;if(q<=lo)return `<span class="ps-chip low">${L('قليل','Low')} · ${_safeNum(q)}</span>`;return `<span class="ps-chip ok">${L('متوفر','In stock')}</span>`;})()} ${tags}</div></div>`;}).join('');
   var bundlesHere=(posPage===1)?bundleCards:'';
   document.getElementById('posGrid').innerHTML=(bundlesHere+pagedProdCards)||`<div class="empty" style="grid-column:1/-1"><span class="big">🏷️</span>${L('لا توجد أصناف','No items')}</div>`;
   renderPosPagination(list.length, totalPages, startIdx, pageList.length);}
@@ -6992,7 +7031,7 @@ function dsCompute(D){
       if(d>0){if(/^شراء|^Purchase/i.test(note)||/مرتجع/.test(note))r.in+=d;else r.adj+=d;}
       else if(d<0){var a=-d;if(/^(مكونات )?(بيع|فاتورة)|^Sale/i.test(note))r.sold+=a;else if(/^هدر/.test(note))r.waste+=a;else r.adj-=a;}}});
   var rows=[];
-  db.products.forEach(function(p){var r=map[p.id];
+  db.products.forEach(function(p){if(!fatShowsInStock(p))return;var r=map[p.id];
     if(!r){if(dsShowAll)rows.push({p:p,opening:p.qty,inn:0,sold:0,waste:0,adj:0,closing:p.qty});return;}
     var closing=(r.closing!==null)?r.closing:((r.after!==undefined)?r.after:p.qty);
     var net=r.in-r.sold-r.waste+r.adj;
@@ -10132,7 +10171,9 @@ sweets: {icon:'🍰', ar:'حلويات', en:'Sweets', desc:{ar:'حلويات ش�
     flags:{barcode:0,inventory:0,suppliers:0,purchases:0,returns:0,stockAlerts:0,variants:0,kitchen:0,tables:0,services:1}},
   school: {icon:'🏫', ar:'مدرسة / سنتر تعليمي', en:'School', desc:{ar:'مصروفات واشتراكات طلبة', en:'Fees & subscriptions'},
     flags:{barcode:0,inventory:0,suppliers:0,purchases:0,returns:0,stockAlerts:0,variants:0,kitchen:0,tables:0,services:1}},
-    other: {icon:'🏢', ar:'نشاط آخر', en:'Other', desc:{ar:'كل المميزات متاحة', en:'All features available'},
+    electronics: {icon:'📱', ar:'موبايلات وإلكترونيات', en:'Electronics', desc:{ar:'موبايلات، أجهزة، إكسسوار وضمان', en:'Phones, devices, accessories'},
+    flags:{barcode:1,inventory:1,suppliers:1,purchases:1,returns:1,stockAlerts:1,variants:1,kitchen:0,tables:0,services:1}},
+  other: {icon:'🏢', ar:'نشاط آخر', en:'Other', desc:{ar:'كل المميزات متاحة', en:'All features available'},
     flags:{barcode:1,inventory:1,suppliers:1,purchases:1,returns:1,stockAlerts:1,variants:1,kitchen:0,tables:0,services:1}}
 };
 
@@ -11748,7 +11789,7 @@ function fatShowActivationScreen(){
   wrap.innerHTML =
     '<div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:32px 26px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">'+
       '<div style="font-size:46px;margin-bottom:8px">🔐</div>'+
-      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v1.5</div>'+
+      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v1.9</div>'+
       '<p style="color:#667;font-size:14px;margin:0 0 22px;line-height:1.6">'+(_expiredPlan ? ('انتهى '+_expiredPlan+' بتاعك. جدّد عشان تكمّل. ابعت رقم جهازك للدعم.') : 'علشان تستخدم البرنامج على الجهاز ده، محتاج كود تفعيل. ابعت رقم جهازك للدعم وهنبعتلك الكود.')+'</p>'+
 
       '<div style="background:#f0f7f5;border:2px dashed #0f6b5c;border-radius:14px;padding:16px;margin-bottom:18px">'+
