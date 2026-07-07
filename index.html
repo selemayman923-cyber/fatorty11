@@ -284,6 +284,27 @@ body.pos-pro .pos-card .nm{min-height:36px!important;font-size:14px!important}
 @media(min-height:600px){
   body.pos-pro .pos>div:last-child .cart-items{max-height:calc(100vh - 430px);overflow-y:auto}
 }
+/* ═══ أزرار الفاتورة ثابتة — مفيش اسكرول عشان تجيبها ═══ */
+@media(min-height:600px){
+  /* عمود السلة يملأ ارتفاع الشاشة */
+  body.pos-pro .pos>div:last-child{position:sticky;top:16px;align-self:start}
+  body.pos-pro .pos>div:last-child .panel{display:flex;flex-direction:column;max-height:calc(100vh - 32px)}
+  /* الأصناف تاخد المساحة المرنة وتعمل اسكرول جوّاها */
+  body.pos-pro .cart-items{flex:1 1 auto;overflow-y:auto;min-height:60px;max-height:none!important}
+  /* الفوتر (الإجمالي + الأزرار) ثابت تحت — مايسكرولش */
+  body.pos-pro .cart-f{flex:0 0 auto;position:sticky;bottom:0;background:#fff;z-index:2;box-shadow:0 -4px 12px -6px rgba(16,24,40,.1)}
+}
+/* ═══ وضع ملء الشاشة للكاشير: طي السايدبار ═══ */
+body.pos-fullscreen .sidebar{transform:translateX(100%);transition:transform .25s ease}
+html body.pos-fullscreen .main,html[dir=ltr] body.pos-fullscreen .main,html[dir=rtl] body.pos-fullscreen .main{margin-right:0!important;margin-left:0!important;transition:margin .25s ease}
+.sidebar{transition:transform .25s ease}
+.main{transition:margin .25s ease}
+/* زرار إظهار/إخفاء السايدبار — عائم في الكاشير */
+#posSidebarToggle{display:none}
+body.pos-pro #posSidebarToggle{display:flex;position:fixed;top:14px;right:14px;z-index:60;align-items:center;justify-content:center;width:42px;height:42px;border-radius:12px;background:var(--primary);color:#fff;border:none;cursor:pointer;font-size:18px;box-shadow:0 3px 12px rgba(15,107,92,.35);transition:transform .12s,background .15s}
+body.pos-pro #posSidebarToggle:hover{transform:scale(1.05);background:var(--primary-d,#0b5346)}
+/* لما السايدبار مطوي، الزر يبان إنه هيفتح */
+body.pos-fullscreen #posSidebarToggle{right:14px}
 /* ══ نهاية CALM MODE ══ */
 /* ══ تكبير الخطوط لضعاف النظر — استغلال المساحات ══ */
 body.pos-pro .pos-card .nm{font-size:15px!important;min-height:40px!important;font-weight:700}
@@ -613,6 +634,7 @@ body.pos-pro .modal .cat-chip.active{background:#0f6b5c!important;color:#fff!imp
 </head>
 <body>
 <div class="app">
+  <button id="posSidebarToggle" onclick="togglePosSidebar()" title="طي/فتح القائمة">☰</button>
   <aside class="sidebar">
     <div class="brand"><div class="logo"><div class="mark" id="brandMark">حـ</div>
       <div><h1 id="brandName">حسابي</h1><p id="brandTag">إدارة المبيعات والحسابات</p></div></div></div>
@@ -1815,7 +1837,7 @@ function go(view){
   if(typeof views[view]!=='function'||!PG[view]){ view='dashboard'; }
   current=view;try{var _sf=document.getElementById('supportFab');if(_sf)_sf.style.display=(view==='pos')?'none':'';}catch(_e){}try{typeof fatEmit==='function'&&fatEmit('view:changed',{view:view});}catch(_e){}
 
-  try{document.body.classList.toggle('pos-pro',view==='pos');}catch(e){}
+  try{document.body.classList.toggle('pos-pro',view==='pos');if(view==='pos'){document.body.classList.add('pos-fullscreen');}else{document.body.classList.remove('pos-fullscreen');}}catch(e){}
   document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===view));
   const p=PG[view]?PG[view][LANG==='ar'?0:1]:[view,''];document.getElementById('pageTitle').textContent=p[0];document.getElementById('pageSub').textContent=p[1];
   document.getElementById('topActions').innerHTML='';try{views[view]();}catch(_e){if(view!=='dashboard'){current='dashboard';try{views.dashboard();}catch(__e){}}}renderBackupBanner();updateAlertBadge();window.scrollTo(0,0);}
@@ -2556,6 +2578,10 @@ function renderPosKPI(){
     var _tgl=document.getElementById('posKpiToggle');
     if(_tgl)_tgl.innerHTML=_kpiOpen?('▲ '+L('إخفاء الملخص','Hide summary')):('▼ '+L('ملخص سريع','Quick summary'));
   }catch(e){bar.style.display='none';}
+}
+function togglePosSidebar(){
+  document.body.classList.toggle('pos-fullscreen');
+  try{db.settings.posFullscreen=document.body.classList.contains('pos-fullscreen');save();}catch(e){}
 }
 function togglePosKpi(){
   db.settings.posKpiOpen=!(db.settings&&db.settings.posKpiOpen);
@@ -11900,7 +11926,7 @@ function fatShowActivationScreen(){
   wrap.innerHTML =
     '<div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:32px 26px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">'+
       '<div style="font-size:46px;margin-bottom:8px">🔐</div>'+
-      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v2.5</div>'+
+      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v2.6</div>'+
       '<p style="color:#667;font-size:14px;margin:0 0 22px;line-height:1.6">'+(_expiredPlan ? ('انتهى '+_expiredPlan+' بتاعك. جدّد عشان تكمّل. ابعت رقم جهازك للدعم.') : 'علشان تستخدم البرنامج على الجهاز ده، محتاج كود تفعيل. ابعت رقم جهازك للدعم وهنبعتلك الكود.')+'</p>'+
 
       '<div style="background:#f0f7f5;border:2px dashed #0f6b5c;border-radius:14px;padding:16px;margin-bottom:18px">'+
