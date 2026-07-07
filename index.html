@@ -231,6 +231,60 @@ html[dir=ltr] .search .si{right:auto;left:11px}
    ═══════════════════════════════════════════════════════════ */
 body.pos-pro .content{background:#F8FAFC}
 body.pos-pro .pos{gap:16px}
+
+/* ══════════════════════════════════════════════════════════
+   CALM MODE — تهدئة الشاشة (أقل زحمة، أريح للعين)
+   ══════════════════════════════════════════════════════════ */
+/* خلفية أهدأ ومسافات أوسع */
+body.pos-pro .content{background:#FAFBFC}
+body.pos-pro .pos{gap:20px}
+/* صف الاختصارات: يهدأ تمامًا — رمادي باهت صغير، مش بيشد العين */
+body.pos-pro #posKeysHint{opacity:.55;font-size:10px!important;margin-top:10px!important}
+body.pos-pro #posKeysHint span{background:transparent!important;border:none!important;padding:1px 4px!important}
+body.pos-pro #posKeysHint:hover{opacity:1;transition:opacity .2s}
+/* صف الـ KPI: يهدأ — خلفية بيضا نظيفة، ظل خفيف جدًا، أيقونات أنعم */
+body.pos-pro .pos-kpi{gap:12px!important}
+body.pos-pro .pos-kpi>div{background:#fff!important;border:1px solid #EEF1F5!important;box-shadow:none!important;border-radius:14px!important;padding:14px 16px!important}
+body.pos-pro .pos-kpi>div .ic-bg,body.pos-pro .pos-kpi>div [class*=ic]{opacity:.5}
+/* لوحة البحث: أنظف، ظل أخف */
+body.pos-pro .pos .panel{box-shadow:0 1px 2px rgba(16,24,40,.03)!important;border-color:#EEF1F5!important}
+/* شبكة المنتجات: مسافات أوسع = راحة للعين */
+body.pos-pro .pos-grid{gap:16px!important;grid-template-columns:repeat(auto-fill,minmax(170px,1fr))!important}
+/* كروت المنتجات: أهدأ — ظل ناعم جدًا، حد خفيف، بدون تدرّجات صاخبة */
+body.pos-pro .pos-card{border:1px solid #EEF1F5!important;box-shadow:0 1px 2px rgba(16,24,40,.03)!important;padding:14px 12px!important;background:#fff!important}
+body.pos-pro .pos-card::before{display:none!important}
+body.pos-pro .pos-card:hover{border-color:#0f6b5c!important;box-shadow:0 8px 20px -8px rgba(15,107,92,.2)!important;transform:translateY(-3px)}
+body.pos-pro .pos-card .pr{background:none!important;color:#0f6b5c!important}
+/* شارة الحالة: نقطة لون صغيرة بدل شريحة كاملة = أهدأ */
+body.pos-pro .pos-status{margin-top:4px}
+body.pos-pro .ps-chip{background:transparent!important;padding:2px 0!important;font-size:11px!important}
+body.pos-pro .ps-chip.ok{color:#16A34A!important}
+body.pos-pro .ps-chip.low{color:#D97706!important}
+body.pos-pro .ps-chip.out{color:#DC2626!important}
+/* شارة المخزون في الركن: أنعم */
+body.pos-pro .stock-badge{box-shadow:none!important;font-weight:700!important}
+/* شرائح التصنيفات: أهدأ، حدود خفيفة */
+body.pos-pro .cat-chip{border-color:#EAEEF3!important;background:#fff!important}
+body.pos-pro .cat-chip.active{background:#0f6b5c!important;color:#fff!important;border-color:#0f6b5c!important}
+/* السلة: خلفية بيضا نظيفة، فواصل خفيفة */
+body.pos-pro .pos>div:last-child .panel{box-shadow:0 1px 3px rgba(16,24,40,.04)!important}
+/* ── تقليل الاسكرول: مسافات أذكى، منتجات تطلع لفوق ── */
+/* ضغط لوحة البحث عشان المنتجات تطلع أعلى */
+body.pos-pro .pos .panel .panel-b,body.pos-pro .pos .panel>div{padding-top:12px!important;padding-bottom:12px!important}
+body.pos-pro .pos .search input{padding:11px 14px!important}
+body.pos-pro #posKeysHint{margin-top:4px!important;line-height:1.4}
+body.pos-pro .pos .panel{margin-bottom:12px!important}
+body.pos-pro #posKeysHint{margin-top:6px!important}
+body.pos-pro #posCatBar{margin:6px 0 8px!important}
+/* شبكة المنتجات: كروت أصغر شوية = أصناف أكتر تبان مع بعض (أقل اسكرول) */
+body.pos-pro .pos-grid{grid-template-columns:repeat(auto-fill,minmax(155px,1fr))!important;gap:12px!important}
+body.pos-pro .pos-card{padding:12px 10px!important}
+body.pos-pro .pos-card .nm{min-height:36px!important;font-size:14px!important}
+/* السلة تملأ الطول المتاح وتعمل اسكرول جوّاها بدل الصفحة كلها */
+@media(min-height:600px){
+  body.pos-pro .pos>div:last-child .cart-items{max-height:calc(100vh - 430px);overflow-y:auto}
+}
+/* ══ نهاية CALM MODE ══ */
 /* ══ تكبير الخطوط لضعاف النظر — استغلال المساحات ══ */
 body.pos-pro .pos-card .nm{font-size:15px!important;min-height:40px!important;font-weight:700}
 body.pos-pro .pos-card .pr{font-size:18px!important;font-weight:800}
@@ -2272,7 +2326,7 @@ views.pos=()=>{try{if(_activeShift&&_activeShift.openDate&&_activeShift.openDate
       ${[['F2',L('بحث','Search')],['F4',L('باركود','Barcode')],['F6',L('تعليق','Hold')],['F7',L('المعلّقة','Held')],['F8',L('خصم','Disc.')],['F9',L('بيع','Pay')],['Esc×2',L('تفريغ','Clear')]].map(x=>`<span style="background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:2px 7px"><b style="color:var(--primary)">${x[0]}</b> ${x[1]}</span>`).join('')}
     </div>
       <div style="padding:0 16px 12px;font-size:11px;color:var(--muted)">⌨️ ${L('اختصارات','Shortcuts')}: <b>F2</b> ${L('بحث','search')} · <b>F4</b> ${L('باركود','barcode')} · <b>F9</b> ${L('إتمام البيع','checkout')} · <b>Esc</b> ${L('تفريغ','clear')}</div></div>
-    <div id="posKpiBar" class="pos-kpi" style="display:none"></div>
+    <div style="display:flex;justify-content:flex-end;margin:2px 0 0"><button id="posKpiToggle" onclick="togglePosKpi()" style="background:transparent;border:none;color:var(--muted);font-size:11.5px;cursor:pointer;padding:3px 8px;opacity:.7">▼ ${L('ملخص سريع','Quick summary')}</button></div><div id="posKpiBar" class="pos-kpi" style="display:none"></div>
     <div id="posCatBar" style="display:none;gap:6px;flex-wrap:wrap;margin:0 0 10px"></div><div class="pos-grid" id="posGrid"></div><div id="posPagination" class="pos-pagination" style="display:none"></div></div>
     <div class="cart"><div class="cart-h" style="flex-wrap:wrap;gap:4px"><button id="shiftStatusBtn" onclick="_activeShift?shiftClose():shiftOpen()" style="width:100%;padding:6px;border:none;border-radius:8px;background:var(--primary);color:#fff;font-weight:600;cursor:pointer;font-family:inherit;font-size:12px;margin-bottom:4px">⏱️ ${_activeShift?('⏹️ '+L('أغلق الشيفت','Close Shift')+': '+esc(_activeShift.cashier)):L('فتح شيفت جديد','Open New Shift')}</button><span>🛒 ${L('السلة','Cart')} <span id="cartCountBadge" style="font-size:11px;background:var(--primary);color:#fff;padding:1px 8px;border-radius:20px;font-weight:700;vertical-align:middle;display:none"></span></span><button class="btn btn-ghost btn-sm" onclick="cart=[];posDiscount=0;posPromo='';renderCart()">${L('تفريغ','Clear')}</button></div>
       <div class="field" style="padding:12px 16px 0;margin:0"><label style="display:flex;justify-content:space-between;align-items:center">${L('العميل','Customer')} <button type="button" class="btn btn-ghost btn-sm" onclick="posAddCustomer()" style="padding:2px 9px">+ ${L('جديد','New')}</button></label>
@@ -2497,8 +2551,15 @@ function renderPosKPI(){
       card('🔥','rgba(245,158,11,.15)',L('الأكثر مبيعاً','Top seller'),topItem.length>12?topItem.slice(0,12)+'…':topItem)+
       card('⏱️','rgba(148,163,184,.15)',L('آخر بيع','Last sale'),lastTxt)+
       card('📈','rgba(37,99,235,.15)',L('مبيعات اليوم','Today'),money(todayTotal));
-    bar.style.display='grid';
+    var _kpiOpen=(db.settings&&db.settings.posKpiOpen)?true:false;
+    bar.style.display=_kpiOpen?'grid':'none';
+    var _tgl=document.getElementById('posKpiToggle');
+    if(_tgl)_tgl.innerHTML=_kpiOpen?('▲ '+L('إخفاء الملخص','Hide summary')):('▼ '+L('ملخص سريع','Quick summary'));
   }catch(e){bar.style.display='none';}
+}
+function togglePosKpi(){
+  db.settings.posKpiOpen=!(db.settings&&db.settings.posKpiOpen);
+  save();renderPosKPI();
 }
 function renderSearchSuggest(q){
   var box=document.getElementById('posSearchSuggest');if(!box)return;
@@ -2781,7 +2842,7 @@ function renderCart(){const items=document.getElementById('cartItems'),foot=docu
     `<div id="posCashBox"></div>`+
     `<button class="btn btn-primary posCheckoutBtn" id="posCheckoutBtn" style="width:100%;justify-content:center;font-size:16px;padding:15px;font-weight:800;border-radius:13px;letter-spacing:.2px" onclick="posCheckout()">💳 ${L('إتمام البيع','Checkout')}</button>`+
     `<div class="pos-actions">`+
-      `<button class="pa-btn" style="--c:#F59E0B;--cd:#D97706" onclick="holdSale()" title="${L('تعليق الفاتورة','Hold')}">⏸️<span>${L('تعليق','Hold')}</span></button>`+
+      `<button class="pa-btn" style="--c:#F59E0B;--cd:#D97706" onclick="holdSale()" title="${L('علّق الفاتورة دي وابدأ عميل تاني — تقدر ترجعلها بعدين','Hold this bill & start another customer')}">⏸️<span>${L('عميل تاني','Next cust.')}</span></button>`+
       `<button class="pa-btn" style="--c:#EC4899;--cd:#DB2777" onclick="posSplitBill()" title="${L('تقسيم الحساب','Split bill')}">🧾<span>${L('تقسيم','Split')}</span></button>`+
       `<button class="pa-btn" style="--c:#7C3AED;--cd:#6D28D9" onclick="posAddCustomer()" title="${L('إضافة عميل','Add customer')}">👤<span>${L('عميل','Customer')}</span></button>`+
       `<button class="pa-btn" style="--c:#06B6D4;--cd:#0891B2" onclick="document.getElementById('posDisc')?.focus();document.getElementById('posDisc')?.select()" title="${L('خصم','Discount')}">٪<span>${L('خصم','Discount')}</span></button>`+
@@ -3148,7 +3209,7 @@ function holdSale(){if(!cart.length)return toast(L('السلة فارغة','Cart
   const cid=document.getElementById('posCustomer')?.value||'';const party=cid?findCustomer(cid):null;
   db.heldSales.push({id:uid(),at:new Date().toISOString(),branch:activeBranch(),customerId:cid,customerName:party?party.name:'',disc:posDiscount||0,items:cart.map(c=>({pid:c.pid,qty:c.qty,price:c.price,label:c.label,byWeight:c.byWeight,grams:c.grams,variant:c.variant}))});
   save();cart=[];posDiscount=0;renderCart();updateHeldBadge();toast(L('تم تعليق الفاتورة','Sale held'));}
-function updateHeldBadge(){const b=document.getElementById('heldBadge');if(!b)return;const n=bf(db.heldSales).length;b.textContent=`⏸️ ${L('معلّقة','Held')} (${n})`;b.style.display=n>0?'inline-flex':'none';}
+function updateHeldBadge(){const b=document.getElementById('heldBadge');if(!b)return;const n=bf(db.heldSales).length;b.textContent=`⏸️ ${L('فواتير مفتوحة','Open bills')} (${n})`;b.style.display=n>0?'inline-flex':'none';}
 function openHeldList(){const held=bf(db.heldSales);
   var _heldAll=bf(db.heldSales);var _heldNow=Date.now();
   var oldHeld=_heldAll.filter(function(h){return h.at&&(_heldNow-new Date(h.at).getTime())>24*3600*1000;});
@@ -11839,7 +11900,7 @@ function fatShowActivationScreen(){
   wrap.innerHTML =
     '<div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:32px 26px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">'+
       '<div style="font-size:46px;margin-bottom:8px">🔐</div>'+
-      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v2.2</div>'+
+      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v2.5</div>'+
       '<p style="color:#667;font-size:14px;margin:0 0 22px;line-height:1.6">'+(_expiredPlan ? ('انتهى '+_expiredPlan+' بتاعك. جدّد عشان تكمّل. ابعت رقم جهازك للدعم.') : 'علشان تستخدم البرنامج على الجهاز ده، محتاج كود تفعيل. ابعت رقم جهازك للدعم وهنبعتلك الكود.')+'</p>'+
 
       '<div style="background:#f0f7f5;border:2px dashed #0f6b5c;border-radius:14px;padding:16px;margin-bottom:18px">'+
