@@ -239,7 +239,7 @@ body.pos-pro .pos{gap:16px}
 body.pos-pro .content{background:#FAFBFC}
 body.pos-pro .pos{gap:20px}
 /* صف الاختصارات: يهدأ تمامًا — رمادي باهت صغير، مش بيشد العين */
-body.pos-pro #posKeysHint{opacity:.55;font-size:10px!important;margin-top:10px!important}
+body.pos-pro #posKeysHint{opacity:.7;font-size:12px!important;margin-top:8px!important}
 body.pos-pro #posKeysHint span{background:transparent!important;border:none!important;padding:1px 4px!important}
 body.pos-pro #posKeysHint:hover{opacity:1;transition:opacity .2s}
 /* صف الـ KPI: يهدأ — خلفية بيضا نظيفة، ظل خفيف جدًا، أيقونات أنعم */
@@ -277,18 +277,31 @@ body.pos-pro .pos .panel{margin-bottom:12px!important}
 body.pos-pro #posKeysHint{margin-top:6px!important}
 body.pos-pro #posCatBar{margin:6px 0 8px!important}
 /* شبكة المنتجات: كروت أصغر شوية = أصناف أكتر تبان مع بعض (أقل اسكرول) */
-body.pos-pro .pos-grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))!important;gap:11px!important}
+body.pos-pro .pos-grid{grid-template-columns:repeat(auto-fit,minmax(155px,1fr))!important;gap:14px!important}
 body.pos-pro .pos-card{padding:12px 10px!important}
 body.pos-pro .pos-card .nm{min-height:36px!important;font-size:14px!important}
 /* (اتنقلت القاعدة لتحت — نسخة موحّدة) */
-/* ═══ أزرار الفاتورة ثابتة — بس منطقة الأصناف تعمل اسكرول ═══ */
+/* ═══ عمود السلة ثابت بارتفاع الشاشة — الأزرار دايمًا في المتناول ═══ */
 @media(min-height:640px){
-  /* عمود السلة ثابت مع تمرير الصفحة */
-  body.pos-pro .pos>div:last-child{position:sticky;top:14px;align-self:start}
-  /* منطقة أصناف السلة بس هي اللي تعمل اسكرول داخلي — بحد أقصى معقول */
-  body.pos-pro #cartItems{max-height:calc(100vh - 470px);min-height:50px;overflow-y:auto;overflow-x:hidden}
-  /* الفوتر (الإجمالي + الأزرار) يفضل ظاهر تحت الأصناف مباشرة */
-  body.pos-pro #cartFoot{background:#fff}
+  /* عمود السلة (.cart) ملتصق بأعلى الشاشة وبياخد ارتفاعها كعمود مرن */
+  body.pos-pro .pos>.cart{position:sticky;top:12px;align-self:start;height:calc(100vh - 110px);max-height:calc(100vh - 110px);display:flex;flex-direction:column;overflow:hidden}
+  /* أي طفل مش الأصناف ولا الفوتر = حجمه الطبيعي (مايتمططش) */
+  body.pos-pro .pos>.cart>*{flex:0 0 auto}
+  /* منطقة الأصناف بس هي اللي تاخد المساحة المرنة وتسكرول */
+  body.pos-pro .pos>.cart>#cartItems{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;min-height:40px}
+  /* الفوتر (الإجمالي + الأزرار) ثابت تحت دايمًا */
+  body.pos-pro .pos>.cart>#cartFoot{flex:0 0 auto;background:#fff;border-top:1px solid #EEF2F6;padding-top:8px}
+  /* أزرار الإجراءات: 4 أعمدة + مضغوطة = ارتفاع أقل، الكل يظهر */
+  body.pos-pro #cartFoot .pos-actions{grid-template-columns:repeat(4,1fr)!important;gap:5px;margin-top:7px}
+  body.pos-pro #cartFoot .pa-btn{font-size:15px!important;padding:7px 3px!important;flex-direction:column;gap:2px}
+  body.pos-pro #cartFoot .pa-btn span{font-size:9.5px!important}
+  /* الإجمالي أصغر شوية */
+  body.pos-pro #cartFoot .cart-total,body.pos-pro #cartFoot .grand,body.pos-pro #cartFoot .pos-grand{font-size:15px!important}
+  body.pos-pro #cartFoot .pos-grand{padding:8px 12px!important}
+  /* زر إتمام البيع مضغوط */
+  body.pos-pro #posCheckoutBtn{padding:12px!important;font-size:15px!important}
+  /* أزرار الإجراءات: لو المساحة ضاقت تسكرول لوحدها (نادرًا) — زر البيع فوقها ثابت */
+  body.pos-pro #cartFoot .pos-actions{max-height:118px;overflow-y:auto}
 }
 /* ═══ وضع ملء الشاشة للكاشير: طي السايدبار ═══ */
 body.pos-fullscreen .sidebar{transform:translateX(100%);transition:transform .25s ease}
@@ -301,6 +314,13 @@ body.pos-pro #posSidebarToggle{display:flex;position:fixed;top:14px;right:14px;z
 body.pos-pro #posSidebarToggle:hover{transform:scale(1.05);background:var(--primary-d,#0b5346)}
 /* لما السايدبار مطوي، الزر يبان إنه هيفتح */
 body.pos-fullscreen #posSidebarToggle{right:14px}
+/* ── لمسة احترافية على الكروت (زي دفترة/سكاي سوفت) ── */
+body.pos-pro .pos-card{padding:16px 12px!important;border-radius:14px!important;min-height:130px;display:flex;flex-direction:column;justify-content:space-between}
+body.pos-pro .pos-card .nm{font-size:14px!important;min-height:38px!important;line-height:1.35;font-weight:700}
+body.pos-pro .pos-card .pr{font-size:16px!important;font-weight:800;margin-top:4px}
+body.pos-pro .pos-grid{gap:14px!important}
+/* التصنيفات: شكل أنضف وأوضح */
+body.pos-pro .cat-chip{font-size:13px!important;padding:7px 15px!important;border-radius:20px!important}
 /* ══ نهاية CALM MODE ══ */
 /* ══ تكبير الخطوط لضعاف النظر — استغلال المساحات ══ */
 body.pos-pro .pos-card .nm{font-size:13.5px!important;min-height:34px!important;font-weight:700}
@@ -4191,7 +4211,7 @@ function viewInvoice(kind,id){const isSale=kind==='sale';const s=(isSale?db.sale
       <div style="text-align:center"><div id="invQR" style="padding:6px;background:#fff;border-radius:8px;display:inline-block"></div><div style="font-size:10px;color:var(--muted);margin-top:4px">${L('امسح للتحقق','Scan to verify')}</div></div>
       <div class="inv-totals" style="margin:0"><div class="row"><span>${L('الإجمالي الفرعي','Subtotal')}</span><span class="t-num">${money(s.sub)}</span></div><div class="row"><span>${L('الخصم','Discount')}</span><span class="t-num">- ${money(s.disc)}</span></div><div class="row"><span>${L('الضريبة','Tax')} (${s.vatP}%)</span><span class="t-num">${money(s.vat)}</span></div>${(s.deliveryFee||0)>0?`<div class="row"><span>🛵 ${L('رسوم التوصيل','Delivery')}</span><span class="t-num">${money(s.deliveryFee)}</span></div>`:''}<div class="row grand"><span>${L('الإجمالي','Total')}</span><span>${s.subKind==='delivery'?money(0):money(s.total)}</span></div>${s.subKind==='delivery'?`<div class="row" style="color:var(--ok);font-size:12.5px"><span>🟢 ${L('قيمة ضمن الاشتراك (مدفوعة مقدمًا)','Subscription value (prepaid)')}</span><span class="t-num">${money(s.prepaidValue||0)}</span></div>`:''}<div class="row"><span>${L('المدفوع','Paid')}</span><span class="t-num">${money(s.paidAmount||0)}</span></div>${s.payMethod==='split'?`<div class="row" style="font-size:12px;color:var(--muted)"><span>💵 ${L('نقدي','Cash')}</span><span class="t-num">${money(s.splitCash||0)}</span></div><div class="row" style="font-size:12px;color:var(--muted)"><span>💳 ${L('بطاقة','Card')}</span><span class="t-num">${money(s.splitCard||0)}</span></div>`:''}${(s.received!=null&&s.payMethod==='cash'&&(s.change||0)>0)?`<div class="row"><span>${L('المستلم','Received')}</span><span class="t-num">${money(s.received)}</span></div><div class="row" style="color:var(--primary-d)"><span>${L('الباقي','Change')}</span><span class="t-num">${money(s.change)}</span></div>`:''}${(s.dueAmount||0)>0?`<div class="row" style="color:var(--danger)"><span>${L('المتبقي','Due')}</span><span class="t-num">${money(s.dueAmount)}</span></div>${s.dueDate?`<div class="row" style="color:var(--danger)"><span>${L('تاريخ الاستحقاق','Due date')}</span><span class="t-num">${s.dueDate}</span></div>`:''}`:''}</div></div>
     <div style="text-align:center;color:var(--muted);font-size:12px;margin-top:20px">${L('شكرًا لتعاملكم معنا 🌿','Thank you for your business 🌿')}</div></div>
-  <div class="modal-f"><button class="btn btn-ghost" onclick="printThermal('${kind}','${id}')">🧾 ${L('إيصال حراري','Thermal receipt')}</button>${kind==='sale'?`<button class="btn btn-ghost" onclick="printKitchen('${id}')">🍳 ${L('أمر تجهيز','Prep ticket')}</button>`:''}<button class="btn btn-ghost" onclick="window.print()">🖨️ ${L('طباعة A4','Print A4')}</button><button class="btn" style="background:#25D366;color:#fff" onclick="waSend('${kind}','${id}')">📱 ${L('واتساب','WhatsApp')}</button>${kind==='sale'?`<button class="btn btn-ghost" onclick="saveAsRecurring('${id}')">🔁 ${L('حفظ كمتكررة','Save recurring')}</button>`:''}<button class="btn btn-primary" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`,true);
+  <div class="modal-f"><button class="btn btn-ghost" onclick="printThermal('${kind}','${id}')">🧾 ${L('إيصال حراري','Thermal receipt')}</button>${(kind==='sale'&&fatBizHasOrderTypes())?`<button class="btn btn-ghost" onclick="printKitchen('${id}')">🍳 ${L('أمر تجهيز','Prep ticket')}</button>`:''}<button class="btn btn-ghost" onclick="window.print()">🖨️ ${L('طباعة A4','Print A4')}</button><button class="btn" style="background:#25D366;color:#fff" onclick="waSend('${kind}','${id}')">📱 ${L('واتساب','WhatsApp')}</button>${kind==='sale'?`<button class="btn btn-ghost" onclick="saveAsRecurring('${id}')">🔁 ${L('حفظ كمتكررة','Save recurring')}</button>`:''}<button class="btn btn-primary" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`,true);
   renderQR('invQR',`${esc(st.company)}|INV#${s.no}|${s.date}|${L('إجمالي','Total')}:${fmt(s.total)} ${cur()}|${st.taxNumber||''}`);}
 function waNumber(raw){let d=(raw||'').replace(/\D/g,'');if(!d)return '';if(d.startsWith('00'))d=d.slice(2);else if(d.startsWith('0'))d='20'+d.slice(1);return d;}
 async function waSend(kind,id){const isSale=kind==='sale';const s=(isSale?db.sales:db.purchases).find(x=>x.id===id);if(!s)return;const st=db.settings;
@@ -4204,12 +4224,12 @@ async function waSend(kind,id){const isSale=kind==='sale';const s=(isSale?db.sal
   waSendMsg(num,lines.join('\n'),{title:L('رسالة الفاتورة','Invoice message')});}
 function printThermal(kind,id){const isSale=kind==='sale';const srcArr=kind==='quote'?db.quotes:(isSale?db.sales:db.purchases);const s=srcArr.find(x=>x.id===id);if(!s)return;const st=db.settings;
   const w=window.open('','_print','width=320,height=600');if(!w)return toast(L('اسمح بالنوافذ المنبثقة','Allow pop-ups'),'err');
-  const rows=s.items.map(it=>`<tr><td>${esc(it.name)}${it.note?`<div style=\"font-size:10px\">📝 ${esc(it.note)}</div>`:''}</td><td style="text-align:center">${it.qty}</td><td style="text-align:left">${fmt(it.qty*it.price)}</td></tr>`).join('');
+  const rows=s.items.map(it=>`<tr><td style="width:58%;word-break:break-word">${esc(it.name)}${it.note?`<div style=\"font-size:10px\">📝 ${esc(it.note)}</div>`:''}</td><td style="text-align:center;width:16%">${it.qty}</td><td style="text-align:left;width:26%">${fmt(it.qty*it.price)}</td></tr>`).join('');
   w.document.write(`<html dir="${LANG==='ar'?'rtl':'ltr'}"><head><meta charset="utf-8"><title>Receipt #${s.no}</title>
   <style>@page{size:${(db.settings.receiptWidth||'80')}mm auto;margin:0}body{width:${(db.settings.receiptWidth||'80')}mm;margin:0;padding:6px ${db.settings.receiptWidth==='58'?'4':'8'}px;font-family:'Courier New',monospace;font-size:${db.settings.receiptWidth==='58'?'11':'12'}px;color:#000}
   h2{text-align:center;margin:2px 0;font-size:15px}.c{text-align:center}.muted{color:#444;font-size:10px}
   table{width:100%;border-collapse:collapse;margin:6px 0}td{padding:2px 0;font-size:11px;vertical-align:top}
-  .line{border-top:1px dashed #000;margin:5px 0}.tot{display:flex;justify-content:space-between;font-weight:bold;font-size:13px}
+  .line{border-top:1px dashed #000;margin:5px 0}.tot{display:flex;justify-content:space-between;font-weight:bold;font-size:17px;padding:6px 4px;margin:4px 0;border-top:2px solid #000;border-bottom:2px solid #000;background:#f5f5f5}
   .rowf{display:flex;justify-content:space-between;font-size:11px}</style></head><body>
 ${st.logo?('<div style="text-align:center;margin-bottom:4px"><img src="'+st.logo+'" style="max-width:'+(db.settings.receiptWidth==='58'?'88px':'128px')+';max-height:56px;object-fit:contain;display:inline-block"></div>'):''}  
   <h2>${esc(st.company)}</h2>
@@ -4217,9 +4237,9 @@ ${st.logo?('<div style="text-align:center;margin-bottom:4px"><img src="'+st.logo
   <div class="line"></div>
   <div class="rowf"><span>${kind==='quote'?L('بيان أسعار (بدون بيع)','Price inquiry (no sale)'):L('فاتورة','Invoice')} ${invNo(s)}</span><span>${s.date}</span></div>
   ${db.branches.length>1&&s.branch?`<div class="muted">🏢 ${esc(branchName(s.branch))}</div>`:''}
-  <div class="muted">${(isSale||kind==='quote')?L('العميل','Customer'):L('المورد','Supplier')}: ${esc((isSale||kind==='quote')?s.customerName:s.supplierName)||L('نقدي','Cash')}</div>${isSale&&s.orderType?`<div class="muted">${L('نوع الطلب','Order type')}: ${orderTypeLabel(s.orderType)}</div>`:''}${isSale&&s.tableNo?`<div class="muted">🪑 ${L('طاولة','Table')}: ${esc(s.tableNo)}</div>`:''}${isSale&&s.cashier?`<div class="muted">👤 ${L('الكاشير','Cashier')}: ${esc(s.cashier)}</div>`:''}
+  <div class="muted">${(isSale||kind==='quote')?L('العميل','Customer'):L('المورد','Supplier')}: ${esc((isSale||kind==='quote')?s.customerName:s.supplierName)||L('نقدي','Cash')}</div>${(function(){try{if((isSale||kind==='quote')&&s.customerId){var _c=findCustomer(s.customerId);if(_c){var extra='';if(_c.phone2)extra+='<div class="muted">'+L('رقم إضافي','Extra phone')+': '+esc(_c.phone2)+'</div>';if(_c.address)extra+='<div class="muted">'+L('العنوان','Address')+': '+esc(_c.address)+'</div>';return extra;}}}catch(e){}return '';})()}${isSale&&s.orderType?`<div class="muted">${L('نوع الطلب','Order type')}: ${orderTypeLabel(s.orderType)}</div>`:''}${isSale&&s.tableNo?`<div class="muted">🪑 ${L('طاولة','Table')}: ${esc(s.tableNo)}</div>`:''}${isSale&&s.cashier?`<div class="muted">👤 ${L('الكاشير','Cashier')}: ${esc(s.cashier)}</div>`:''}
   <div class="line"></div>
-  <table><tr style="font-weight:bold"><td>${L('الصنف','Item')}</td><td style="text-align:center">${L('كمية','Qty')}</td><td style="text-align:left">${L('إجمالي','Total')}</td></tr>${rows}</table>
+  <table><tr style="font-weight:bold"><td style="width:58%">${L('الصنف','Item')}</td><td style="text-align:center;width:16%">${L('كمية','Qty')}</td><td style="text-align:left;width:26%">${L('إجمالي','Total')}</td></tr>${rows}</table>
   <div class="line"></div>
   <div class="rowf"><span>${L('الإجمالي الفرعي','Subtotal')}</span><span>${fmt(s.sub)}</span></div>
   ${s.disc?`<div class="rowf"><span>${L('خصم','Disc')}</span><span>-${fmt(s.disc)}</span></div>`:''}
@@ -7027,7 +7047,7 @@ function _legacy_posSaveCustomer(){
   var name=(document.getElementById('pac_name').value||'').trim();
   if(!name)return toast(L('اكتب الاسم','Enter name'),'err');
   var phone=(document.getElementById('pac_phone').value||'').trim();
-  var c={id:uid(),name:name,phone:phone,address:'',balance:0,points:0,creditLimit:0,tier:'',bday:''};
+  var phone2=(document.getElementById('pac_phone2')||{}).value||'';var address=(document.getElementById('pac_address')||{}).value||'';var c={id:uid(),name:name,phone:phone,phone2:phone2.trim(),address:address.trim(),balance:0,points:0,creditLimit:0,tier:'',bday:''};
   db.customers.push(c); save(); closeModal();
   var sel=document.getElementById('posCustomer');
   if(sel){sel.innerHTML='<option value="">'+L('عميل نقدي','Cash customer')+'</option>'+db.customers.map(function(x){return '<option value="'+x.id+'">'+(isSubscriber(x.id)?'🟢 ':'')+esc(x.name)+(x.phone?' — '+esc(x.phone):'')+'</option>';}).join('');sel.value=c.id;}
@@ -7854,7 +7874,7 @@ function posAddCustomer(){
     :'';
   openModal('<div class="modal-h"><h3>'+L('عميل جديد','New Customer')+'</h3><button class="x" onclick="closeModal()">×</button></div>'+
   '<div class="modal-b"><div class="field"><label>'+L('الاسم','Name')+'</label><input id="pac_name"></div>'+
-  '<div class="field"><label>'+L('الهاتف','Phone')+'</label><input id="pac_phone" inputmode="tel"></div>'+srcField+'</div>'+
+  '<div class="field"><label>'+L('الهاتف','Phone')+'</label><input id="pac_phone" inputmode="tel"></div>'+'<div class="field"><label>'+L('رقم إضافي (اختياري)','Extra phone (optional)')+'</label><input id="pac_phone2" inputmode="tel"></div>'+'<div class="field"><label>'+L('العنوان (اختياري)','Address (optional)')+'</label><input id="pac_address"></div>'+srcField+'</div>'+
   '<div class="modal-f"><button class="btn btn-primary" onclick="posSaveCustomer()">'+L('حفظ','Save')+'</button><button class="btn btn-ghost" onclick="closeModal()">'+L('إلغاء','Cancel')+'</button></div>');
   setTimeout(function(){var n=document.getElementById('pac_name');if(n)n.focus();},50);}
 function posSaveCustomer(){
@@ -7867,7 +7887,7 @@ function posSaveCustomer(){
     var r=findByRef((document.getElementById('pac_ref')||{}).value);
     if(!r)return toast(L('كود/هاتف المحيل غير صحيح','Referrer not found'),'err');
     referredBy=r.id;}
-  var c={id:uid(),name:name,phone:phone,address:'',balance:0,points:0,creditLimit:0,tier:'',bday:'',source:src,firstVisit:today()};
+  var phone2=(document.getElementById('pac_phone2')||{}).value||'';var address=(document.getElementById('pac_address')||{}).value||'';var c={id:uid(),name:name,phone:phone,phone2:phone2.trim(),address:address.trim(),balance:0,points:0,creditLimit:0,tier:'',bday:'',source:src,firstVisit:today()};
   if(referredBy)c.referredBy=referredBy;
   db.customers.push(c);save();closeModal();
   var sel=document.getElementById('posCustomer');
@@ -11922,7 +11942,7 @@ function fatShowActivationScreen(){
   wrap.innerHTML =
     '<div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:32px 26px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">'+
       '<div style="font-size:46px;margin-bottom:8px">🔐</div>'+
-      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v2.7</div>'+
+      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v2.9</div>'+
       '<p style="color:#667;font-size:14px;margin:0 0 22px;line-height:1.6">'+(_expiredPlan ? ('انتهى '+_expiredPlan+' بتاعك. جدّد عشان تكمّل. ابعت رقم جهازك للدعم.') : 'علشان تستخدم البرنامج على الجهاز ده، محتاج كود تفعيل. ابعت رقم جهازك للدعم وهنبعتلك الكود.')+'</p>'+
 
       '<div style="background:#f0f7f5;border:2px dashed #0f6b5c;border-radius:14px;padding:16px;margin-bottom:18px">'+
