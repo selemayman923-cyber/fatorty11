@@ -231,6 +231,25 @@ html[dir=ltr] .search .si{right:auto;left:11px}
    ═══════════════════════════════════════════════════════════ */
 body.pos-pro .content{background:#F8FAFC}
 body.pos-pro .pos{gap:16px}
+/* ══ تكبير الخطوط لضعاف النظر — استغلال المساحات ══ */
+body.pos-pro .pos-card .nm{font-size:15px!important;min-height:40px!important;font-weight:700}
+body.pos-pro .pos-card .pr{font-size:18px!important;font-weight:800}
+body.pos-pro .ps-chip{font-size:11.5px!important;padding:3px 11px!important}
+body.pos-pro .stock-badge{font-size:12px!important;padding:3px 10px!important}
+body.pos-pro .cat-chip{font-size:13.5px!important;padding:8px 16px!important}
+body.pos-pro .pos-kpi .lbl,body.pos-pro .pos-kpi .val{}
+body.pos-pro .pos-kpi>div .lbl{font-size:13px!important}
+body.pos-pro .pos-kpi>div .val{font-size:22px!important;font-weight:800}
+body.pos-pro .pos .search input{font-size:15.5px!important;padding:13px 14px!important}
+body.pos-pro .pos .panel-h h3{font-size:18px!important}
+body.pos-pro .pos .citem,body.pos-pro .pos .cart-row{font-size:14.5px!important}
+body.pos-pro .search-suggest .ss-nm,body.pos-pro .search-suggest .ss-pr{font-size:15px!important}
+body.pos-pro .search-suggest .ss-item{padding:12px 16px!important}
+body.pos-pro #posCheckoutBtn{font-size:18px!important;padding:17px!important}
+body.pos-pro .pa-btn{font-size:20px!important}
+body.pos-pro .pa-btn span{font-size:12.5px!important}
+/* كروت أكبر شوية عشان الخط الكبير يرتاح */
+body.pos-pro .pos-grid{grid-template-columns:repeat(auto-fill,minmax(165px,1fr))!important}
 /* ── قائمة اقتراحات البحث المنسدلة ── */
 .search-suggest{display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #E2E8F0;border-radius:12px;box-shadow:0 12px 32px -8px rgba(16,24,40,.18);z-index:50;max-height:340px;overflow-y:auto}
 .search-suggest .ss-item{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;border-bottom:1px solid #F1F5F9;transition:background .1s}
@@ -1528,6 +1547,16 @@ function fatItemType(p){
   return 'simple';
 }
 // هل الصنف يظهر في المخزون/الجرد؟ (الخامات + العادي، مش المنيو)
+function fatBizHasOrderTypes(){
+  // نوع الأوردر (توصيل/استلام/بالمحل) للمطاعم والكافيهات فقط
+  try{
+    var p=db.settings.bizProfile;
+    if(p&&p.flags){return !!(p.flags.kitchen||p.flags.tables);}
+    // بيانات قديمة بدون bizProfile: نرجع للأنواع المعروفة
+    var bt=db.settings.businessType||'';
+    return ['restaurant','cafe','bakery'].indexOf(bt)>=0;
+  }catch(e){return false;}
+}
 function fatShowsInStock(p){ var t=fatItemType(p); return t==='raw' || t==='simple'; }
 // هل الصنف يظهر في المنيو/البيع؟ (المنيو + العادي، مش الخامات)
 function fatShowsInMenu(p){ var t=fatItemType(p); return t==='menu' || t==='simple'; }
@@ -2251,7 +2280,7 @@ views.pos=()=>{try{if(_activeShift&&_activeShift.openDate&&_activeShift.openDate
         <select id="posCustomer" onchange="renderPosMemberCard();posUpdateChange()"><option value="">${L('عميل نقدي','Cash customer')}</option>${db.customers.map(c=>`<option value="${c.id}">${isSubscriber(c.id)?'🟢 ':''}${esc(c.name)}${c.phone?' — '+esc(c.phone):''}</option>`).join('')}</select></div>
       <div id="posHistBtn" style="padding:4px 16px 0"></div><div id="posMemberCard" style="padding:0 16px"></div>
       <div id="posPriceTierRow" style="padding:8px 16px 0"></div>
-      <div style="padding:8px 16px 0;${db.settings.hideOrderTypes?'display:none':''}">
+      <div style="padding:8px 16px 0;${(db.settings.hideOrderTypes||!fatBizHasOrderTypes())?'display:none':''}">
         <label style="font-size:12px;color:var(--muted)">${L('نوع الأوردر','Order type')}</label>
         <div style="display:flex;gap:6px;margin-top:5px">
           <button type="button" id="ot_dinein" onclick="setOrderType('dinein')" style="flex:1;padding:8px 4px;border:1px solid var(--primary);border-radius:9px;background:var(--primary);color:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">${(function(){var l=fatOrderTypeLabels().dinein;return l[0]+' '+L(l[1],l[2]);})()}</button>
@@ -6893,7 +6922,7 @@ function setOrderType(t){
     :'';}
   var tb=document.getElementById('posTableBox');
   // رقم الطاولة: للمطاعم والكافيهات فقط (يُخفى لباقي الأنشطة)
-  var _isRest=['restaurant','cafe','bakery'].indexOf(db.settings.businessType||'')>=0||(!db.settings.businessType);
+  var _isRest=(function(){try{var p=db.settings.bizProfile;if(p&&p.flags)return !!p.flags.tables;return ['restaurant','cafe','bakery'].indexOf(db.settings.businessType||'')>=0;}catch(e){return false;}})();
   if(tb){tb.innerHTML=(t==='dinein'&&_isRest)
     ?('<div style="display:flex;align-items:center;gap:8px"><label style="font-size:12px;color:var(--muted);white-space:nowrap">🪑 '+L('رقم الطاولة','Table no.')+'</label><input id="posTableNo" value="'+esc(posTable||'')+'" oninput="posTableChanged()" placeholder="'+L('اختياري','optional')+'" style="width:100px;padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)"></div>')
     :'';}
@@ -11810,7 +11839,7 @@ function fatShowActivationScreen(){
   wrap.innerHTML =
     '<div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:32px 26px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">'+
       '<div style="font-size:46px;margin-bottom:8px">🔐</div>'+
-      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v2.1</div>'+
+      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v2.2</div>'+
       '<p style="color:#667;font-size:14px;margin:0 0 22px;line-height:1.6">'+(_expiredPlan ? ('انتهى '+_expiredPlan+' بتاعك. جدّد عشان تكمّل. ابعت رقم جهازك للدعم.') : 'علشان تستخدم البرنامج على الجهاز ده، محتاج كود تفعيل. ابعت رقم جهازك للدعم وهنبعتلك الكود.')+'</p>'+
 
       '<div style="background:#f0f7f5;border:2px dashed #0f6b5c;border-radius:14px;padding:16px;margin-bottom:18px">'+
