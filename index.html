@@ -833,6 +833,73 @@ body.pos-pro #posGrid{padding-bottom:2px!important}
   body.pos-pro .pos-card .pr{font-size:16px!important}
   body.pos-pro .pos-grid{gap:8px!important}
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   POS PREFS v3.3 — العميل يختار حجم الأزرار وكثافة المنتجات
+   كل تركيبة مضمون إنها تتسع بدون سكرول (متحقّق منها آليًا)
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── حجم أزرار الفاتورة ── */
+body.pos-pro.pos-btn-sm #cartFoot .pa-btn{min-height:42px!important;font-size:16px!important}
+body.pos-pro.pos-btn-sm #cartFoot .pa-btn span{font-size:11px!important}
+body.pos-pro.pos-btn-sm #posCheckoutBtn{padding:10px!important;font-size:15.5px!important}
+body.pos-pro.pos-btn-sm #cartFoot .pos-grand{font-size:24px!important}
+
+body.pos-pro.pos-btn-lg #cartFoot .pa-btn{min-height:64px!important;font-size:23px!important}
+body.pos-pro.pos-btn-lg #cartFoot .pa-btn span{font-size:13.5px!important}
+body.pos-pro.pos-btn-lg #posCheckoutBtn{padding:17px!important;font-size:20px!important}
+body.pos-pro.pos-btn-lg #cartFoot .pos-grand{font-size:33px!important}
+body.pos-pro.pos-btn-lg .pos>.cart>.field input,
+body.pos-pro.pos-btn-lg .pos>.cart>.field select{font-size:16px!important;padding:9px 11px!important}
+body.pos-pro.pos-btn-lg .citem,body.pos-pro.pos-btn-lg .cart-row{font-size:15.5px!important}
+
+/* حارس أمان: على الشاشات القصيرة نقيّد «الكبير» عشان مايكسرش التخطيط */
+@media(max-height:820px){
+  body.pos-pro.pos-btn-lg #cartFoot .pa-btn{min-height:54px!important;font-size:20px!important}
+  body.pos-pro.pos-btn-lg #cartFoot .pa-btn span{font-size:12.5px!important}
+  body.pos-pro.pos-btn-lg #posCheckoutBtn{padding:12px!important;font-size:17.5px!important}
+  body.pos-pro.pos-btn-lg #cartFoot .pos-grand{font-size:27px!important}
+  body.pos-pro.pos-btn-lg .pos>.cart>#cartItems{min-height:42px!important}
+  body.pos-pro.pos-btn-sm .pos>.cart>#cartItems{min-height:74px!important}
+  /* استرجاع 19px: الحقول ماتكبرش على الشاشات القصيرة + زر 52px */
+  body.pos-pro.pos-btn-lg .pos>.cart>.field input,
+  body.pos-pro.pos-btn-lg .pos>.cart>.field select{font-size:14px!important;padding:7px 9px!important}
+  body.pos-pro.pos-btn-lg .citem,body.pos-pro.pos-btn-lg .cart-row{font-size:14px!important}
+  body.pos-pro.pos-btn-lg #cartFoot .pa-btn{min-height:52px!important}
+  body.pos-pro.pos-btn-lg #posCheckoutBtn{padding:11px!important}
+}
+
+/* ── كثافة المنتجات ── */
+body.pos-pro.pos-d-compact .pos-grid{grid-template-columns:repeat(auto-fit,minmax(148px,1fr))!important;gap:7px!important}
+body.pos-pro.pos-d-compact .pos-card{max-height:128px;padding:4px 5px 5px!important}
+body.pos-pro.pos-d-compact .pos-card>div:not([class]){height:34px!important}
+body.pos-pro.pos-d-compact .pos-card .nm{font-size:13px!important;min-height:28px!important}
+body.pos-pro.pos-d-compact .pos-card .pr{font-size:15px!important}
+body.pos-pro.pos-d-compact .ps-chip,body.pos-pro.pos-d-compact .stock-badge{font-size:10.5px!important}
+
+body.pos-pro.pos-d-large .pos-grid{grid-template-columns:repeat(auto-fit,minmax(205px,1fr))!important;gap:11px!important}
+body.pos-pro.pos-d-large .pos-card{max-height:216px;padding:8px 9px 9px!important}
+body.pos-pro.pos-d-large .pos-card>div:not([class]){height:92px!important}
+body.pos-pro.pos-d-large .pos-card img,body.pos-pro.pos-d-large .pos-card .thumb{max-height:88px!important}
+body.pos-pro.pos-d-large .pos-card .nm{font-size:16.5px!important;min-height:38px!important}
+body.pos-pro.pos-d-large .pos-card .pr{font-size:19.5px!important}
+body.pos-pro.pos-d-large .ps-chip{font-size:12px!important}
+@media(max-height:820px){
+  body.pos-pro.pos-d-large .pos-card{max-height:176px}
+  body.pos-pro.pos-d-large .pos-card>div:not([class]){height:62px!important}
+}
+
+/* زر «شكل الكاشير» */
+body.pos-pro #posLookBtn{background:transparent;border:none;color:var(--muted);font-size:11.5px;
+  cursor:pointer;padding:1px 8px;opacity:.75;font-family:inherit}
+body.pos-pro #posLookBtn:hover{opacity:1;color:var(--primary)}
+/* اختيارات المودال */
+.lookOpt{display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px 8px;border-radius:12px;
+  border:2px solid var(--line);background:#fff;cursor:pointer;font-family:inherit;font-weight:700;font-size:13px;transition:.15s}
+.lookOpt:hover{border-color:var(--primary)}
+.lookOpt.on{border-color:var(--primary);background:var(--primary-soft,#e3f0ec);color:var(--primary)}
+.lookOpt .ic{font-size:22px}
+/* ══ نهاية POS PREFS v3.3 ══ */
 /* ══ نهاية DENSITY PASS v3.2 ══ */
 /* ══ نهاية POS SHELL v3 ══ */
 </style>
@@ -2042,7 +2109,7 @@ function go(view){
   if(typeof views[view]!=='function'||!PG[view]){ view='dashboard'; }
   current=view;try{var _sf=document.getElementById('supportFab');if(_sf)_sf.style.display=(view==='pos')?'none':'';}catch(_e){}try{typeof fatEmit==='function'&&fatEmit('view:changed',{view:view});}catch(_e){}
 
-  try{document.body.classList.toggle('pos-pro',view==='pos');if(view==='pos'){document.body.classList.add('pos-fullscreen');}else{document.body.classList.remove('pos-fullscreen');}document.body.classList.toggle('fat-no-promoters',!((db.promoters||[]).length));}catch(e){}
+  try{document.body.classList.toggle('pos-pro',view==='pos');if(view==='pos'){document.body.classList.add('pos-fullscreen');}else{document.body.classList.remove('pos-fullscreen');}document.body.classList.toggle('fat-no-promoters',!((db.promoters||[]).length));if(view==='pos'&&typeof fatApplyPosPrefs==='function')fatApplyPosPrefs();}catch(e){}
   document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===view));
   const p=PG[view]?PG[view][LANG==='ar'?0:1]:[view,''];document.getElementById('pageTitle').textContent=p[0];document.getElementById('pageSub').textContent=p[1];
   document.getElementById('topActions').innerHTML='';try{views[view]();}catch(_e){if(view!=='dashboard'){current='dashboard';try{views.dashboard();}catch(__e){}}}renderBackupBanner();updateAlertBadge();window.scrollTo(0,0);}
@@ -2553,7 +2620,7 @@ views.pos=()=>{try{if(_activeShift&&_activeShift.openDate&&_activeShift.openDate
       ${[['F2',L('بحث','Search')],['F4',L('باركود','Barcode')],['F6',L('تعليق','Hold')],['F7',L('المعلّقة','Held')],['F8',L('خصم','Disc.')],['F9',L('بيع','Pay')],['Esc×2',L('تفريغ','Clear')]].map(x=>`<span style="background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:2px 7px"><b style="color:var(--primary)">${x[0]}</b> ${x[1]}</span>`).join('')}
     </div>
       <div style="padding:0 16px 12px;font-size:11px;color:var(--muted)">⌨️ ${L('اختصارات','Shortcuts')}: <b>F2</b> ${L('بحث','search')} · <b>F4</b> ${L('باركود','barcode')} · <b>F9</b> ${L('إتمام البيع','checkout')} · <b>Esc</b> ${L('تفريغ','clear')}</div></div>
-    <div style="display:flex;justify-content:flex-end;margin:2px 0 0"><button id="posKpiToggle" onclick="togglePosKpi()" style="background:transparent;border:none;color:var(--muted);font-size:11.5px;cursor:pointer;padding:3px 8px;opacity:.7">▼ ${L('ملخص سريع','Quick summary')}</button></div><div id="posKpiBar" class="pos-kpi" style="display:none"></div>
+    <div style="display:flex;justify-content:flex-end;gap:4px;margin:2px 0 0"><button id="posLookBtn" onclick="posLookModal()">⚙️ ${L('شكل الكاشير','POS look')}</button><button id="posKpiToggle" onclick="togglePosKpi()" style="background:transparent;border:none;color:var(--muted);font-size:11.5px;cursor:pointer;padding:3px 8px;opacity:.7">▼ ${L('ملخص سريع','Quick summary')}</button></div><div id="posKpiBar" class="pos-kpi" style="display:none"></div>
     <div id="posCatBar" style="display:none;gap:6px;flex-wrap:wrap;margin:0 0 10px"></div><div class="pos-grid" id="posGrid"></div><div id="posPagination" class="pos-pagination" style="display:none"></div></div>
     <div class="cart"><div class="cart-h" style="flex-wrap:wrap;gap:4px"><button id="shiftStatusBtn" onclick="_activeShift?shiftClose():shiftOpen()" style="width:100%;padding:6px;border:none;border-radius:8px;background:var(--primary);color:#fff;font-weight:600;cursor:pointer;font-family:inherit;font-size:12px;margin-bottom:4px">⏱️ ${_activeShift?('⏹️ '+L('أغلق الشيفت','Close Shift')+': '+esc(_activeShift.cashier)):L('فتح شيفت جديد','Open New Shift')}</button><span>🛒 ${L('السلة','Cart')} <span id="cartCountBadge" style="font-size:11px;background:var(--primary);color:#fff;padding:1px 8px;border-radius:20px;font-weight:700;vertical-align:middle;display:none"></span></span><button class="btn btn-ghost btn-sm" onclick="cart=[];posDiscount=0;posPromo='';renderCart()">${L('تفريغ','Clear')}</button></div>
       <div class="field" style="padding:12px 16px 0;margin:0"><label style="display:flex;justify-content:space-between;align-items:center">${L('العميل','Customer')} <button type="button" class="btn btn-ghost btn-sm" onclick="posAddCustomer()" style="padding:2px 9px">+ ${L('جديد','New')}</button></label>
@@ -2783,6 +2850,46 @@ function renderPosKPI(){
     var _tgl=document.getElementById('posKpiToggle');
     if(_tgl)_tgl.innerHTML=_kpiOpen?('▲ '+L('إخفاء الملخص','Hide summary')):('▼ '+L('ملخص سريع','Quick summary'));
   }catch(e){bar.style.display='none';}
+}
+function fatApplyPosPrefs(){
+  try{
+    var d=(db.settings&&db.settings.posDensity)||'normal';
+    var s=(db.settings&&db.settings.posBtnSize)||'md';
+    var b=document.body;
+    ['pos-d-compact','pos-d-normal','pos-d-large'].forEach(function(c){b.classList.remove(c);});
+    ['pos-btn-sm','pos-btn-md','pos-btn-lg'].forEach(function(c){b.classList.remove(c);});
+    b.classList.add('pos-d-'+d); b.classList.add('pos-btn-'+s);
+  }catch(e){}
+}
+function fatSetPosPref(k,v){
+  try{db.settings[k]=v;save();fatApplyPosPrefs();
+    if(current==='pos'){views.pos();fatApplyPosPrefs();}
+    posLookModal();
+  }catch(e){}
+}
+function posLookModal(){
+  var d=(db.settings&&db.settings.posDensity)||'normal';
+  var s=(db.settings&&db.settings.posBtnSize)||'md';
+  var btn=function(k,v,ic,txt,cur){
+    return '<button class="lookOpt'+(cur===v?' on':'')+'" onclick="fatSetPosPref(\''+k+'\',\''+v+'\')">'+
+      '<span class="ic">'+ic+'</span><span>'+txt+'</span></button>';};
+  openModal('<div class="modal-h"><h3>⚙️ '+L('شكل الكاشير','POS look')+'</h3><button class="x" onclick="closeModal()">×</button></div>'+
+  '<div class="modal-b">'+
+    '<div class="hint">'+L('اختار اللي يريّح عينك — كل الاختيارات مضمون إنها تظهر كاملة بدون سكرول.','All options are tested to fit without scrolling.')+'</div>'+
+    '<div class="field"><label>🔘 '+L('حجم أزرار الفاتورة','Action button size')+'</label>'+
+      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">'+
+        btn('posBtnSize','sm','▫️',L('صغير','Small'),s)+
+        btn('posBtnSize','md','◻️',L('متوسط','Medium'),s)+
+        btn('posBtnSize','lg','⬜',L('كبير','Large'),s)+
+      '</div></div>'+
+    '<div class="field"><label>🧱 '+L('كثافة المنتجات','Product density')+'</label>'+
+      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">'+
+        btn('posDensity','compact','▦',L('مضغوط (منتجات أكتر)','Compact'),d)+
+        btn('posDensity','normal','▤',L('عادي','Normal'),d)+
+        btn('posDensity','large','▢',L('كبير (نظر ضعيف)','Large'),d)+
+      '</div></div>'+
+    '<div class="hint" style="background:#eff6ff">💡 '+L('«كبير» بيكبّر الأزرار والإجمالي — مناسب لو نظر الكاشير ضعيف.','Large mode suits weak eyesight.')+'</div>'+
+  '</div><div class="modal-f"><button class="btn btn-primary" onclick="closeModal()">'+L('تمام','Done')+'</button></div>');
 }
 function togglePosSidebar(){
   document.body.classList.toggle('pos-fullscreen');
@@ -12131,7 +12238,7 @@ function fatShowActivationScreen(){
   wrap.innerHTML =
     '<div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:32px 26px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">'+
       '<div style="font-size:46px;margin-bottom:8px">🔐</div>'+
-      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v3.2</div>'+
+      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v3.3</div>'+
       '<p style="color:#667;font-size:14px;margin:0 0 22px;line-height:1.6">'+(_expiredPlan ? ('انتهى '+_expiredPlan+' بتاعك. جدّد عشان تكمّل. ابعت رقم جهازك للدعم.') : 'علشان تستخدم البرنامج على الجهاز ده، محتاج كود تفعيل. ابعت رقم جهازك للدعم وهنبعتلك الكود.')+'</p>'+
 
       '<div style="background:#f0f7f5;border:2px dashed #0f6b5c;border-radius:14px;padding:16px;margin-bottom:18px">'+
