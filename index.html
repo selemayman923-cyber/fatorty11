@@ -639,7 +639,8 @@ body.pos-pro .content{flex:1 1 auto;min-height:0;overflow:hidden;padding:10px 14
 /* 2) الشبكة الأم: منتجات (مرنة) + فاتورة (356px ثابت) */
 body.pos-pro .pos{height:100%;min-height:0;gap:12px!important;
   grid-template-columns:1fr 356px!important;align-items:stretch!important}
-@media(min-width:1700px){ body.pos-pro .pos{grid-template-columns:1fr 380px!important} }
+@media(min-width:1500px){ body.pos-pro .pos{grid-template-columns:1fr 392px!important} }
+@media(min-width:1800px){ body.pos-pro .pos{grid-template-columns:1fr 424px!important} }
 
 /* 3) عمود المنتجات: عمود flex — الشبكة بس هي اللي تسكرول */
 body.pos-pro .pos>div:first-child{display:flex;flex-direction:column;min-height:0;height:100%}
@@ -647,8 +648,8 @@ body.pos-pro .pos>div:first-child>.panel{flex:0 0 auto;margin-bottom:8px!importa
 body.pos-pro #posKpiBar{flex:0 0 auto}
 body.pos-pro #posCatBar{flex:0 0 auto;margin:2px 0 8px!important}
 body.pos-pro #posGrid{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;
-  align-content:start!important;padding-bottom:6px}
-body.pos-pro #posPagination{flex:0 0 auto;margin-top:6px!important}
+  align-content:start!important;grid-auto-rows:max-content!important;padding-bottom:6px}
+body.pos-pro #posPagination{flex:0 0 auto;margin-top:5px!important;padding:6px 10px!important;font-size:12.5px!important}
 
 /* 4) لوحة البحث: مضغوطة */
 body.pos-pro .pos>div:first-child>.panel .panel-b,
@@ -657,7 +658,8 @@ body.pos-pro .pos .search input{font-size:15px!important;padding:10px 12px!impor
 body.pos-pro #posKeysHint{font-size:12px!important;margin-top:6px!important;opacity:.62}
 
 /* 5) كارت المنتج: ارتفاع مقيّد ≤200px */
-body.pos-pro .pos-grid{grid-template-columns:repeat(auto-fill,minmax(178px,1fr))!important;gap:10px!important}
+body.pos-pro .pos-grid{grid-template-columns:repeat(auto-fit,minmax(178px,1fr))!important;gap:10px!important}
+body.pos-pro .pos-card{max-width:300px}
 body.pos-pro .pos-card{min-height:0!important;max-height:200px;padding:8px 8px 10px!important;
   border-radius:12px!important;display:flex;flex-direction:column;gap:2px}
 body.pos-pro .pos-card .ph,body.pos-pro .pos-card .img,body.pos-pro .pos-card>div:first-child{flex:0 0 auto}
@@ -726,6 +728,8 @@ body.pos-pro #posTableBox input,body.pos-pro #posDeliveryBox input{padding:6px 8
 @media(min-height:1000px){
   body.pos-pro #cartFoot .pa-btn{min-height:64px}
   body.pos-pro #cartFoot .pos-grand{font-size:32px!important}
+  body.pos-pro .pos-card .nm{font-size:15px!important}
+  body.pos-pro .pos-card .pr{font-size:17px!important}
 }
 
 /* 12) ضغط دقيق للشاشات ≤820px ارتفاع (1366×768) — استرجاع 148px */
@@ -12074,7 +12078,7 @@ function fatShowActivationScreen(){
   wrap.innerHTML =
     '<div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:32px 26px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">'+
       '<div style="font-size:46px;margin-bottom:8px">🔐</div>'+
-      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v3.0</div>'+
+      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v3.1</div>'+
       '<p style="color:#667;font-size:14px;margin:0 0 22px;line-height:1.6">'+(_expiredPlan ? ('انتهى '+_expiredPlan+' بتاعك. جدّد عشان تكمّل. ابعت رقم جهازك للدعم.') : 'علشان تستخدم البرنامج على الجهاز ده، محتاج كود تفعيل. ابعت رقم جهازك للدعم وهنبعتلك الكود.')+'</p>'+
 
       '<div style="background:#f0f7f5;border:2px dashed #0f6b5c;border-radius:14px;padding:16px;margin-bottom:18px">'+
