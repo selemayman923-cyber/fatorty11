@@ -281,28 +281,7 @@ body.pos-pro .pos-grid{grid-template-columns:repeat(auto-fit,minmax(155px,1fr))!
 body.pos-pro .pos-card{padding:12px 10px!important}
 body.pos-pro .pos-card .nm{min-height:36px!important;font-size:14px!important}
 /* (اتنقلت القاعدة لتحت — نسخة موحّدة) */
-/* ═══ عمود السلة ثابت بارتفاع الشاشة — الأزرار دايمًا في المتناول ═══ */
-@media(min-height:640px){
-  /* عمود السلة (.cart) ملتصق بأعلى الشاشة وبياخد ارتفاعها كعمود مرن */
-  body.pos-pro .pos>.cart{position:sticky;top:12px;align-self:start;height:calc(100vh - 110px);max-height:calc(100vh - 110px);display:flex;flex-direction:column;overflow:hidden}
-  /* أي طفل مش الأصناف ولا الفوتر = حجمه الطبيعي (مايتمططش) */
-  body.pos-pro .pos>.cart>*{flex:0 0 auto}
-  /* منطقة الأصناف بس هي اللي تاخد المساحة المرنة وتسكرول */
-  body.pos-pro .pos>.cart>#cartItems{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;min-height:40px}
-  /* الفوتر (الإجمالي + الأزرار) ثابت تحت دايمًا */
-  body.pos-pro .pos>.cart>#cartFoot{flex:0 0 auto;background:#fff;border-top:1px solid #EEF2F6;padding-top:8px}
-  /* أزرار الإجراءات: 4 أعمدة + مضغوطة = ارتفاع أقل، الكل يظهر */
-  body.pos-pro #cartFoot .pos-actions{grid-template-columns:repeat(4,1fr)!important;gap:5px;margin-top:7px}
-  body.pos-pro #cartFoot .pa-btn{font-size:15px!important;padding:7px 3px!important;flex-direction:column;gap:2px}
-  body.pos-pro #cartFoot .pa-btn span{font-size:9.5px!important}
-  /* الإجمالي أصغر شوية */
-  body.pos-pro #cartFoot .cart-total,body.pos-pro #cartFoot .grand,body.pos-pro #cartFoot .pos-grand{font-size:15px!important}
-  body.pos-pro #cartFoot .pos-grand{padding:8px 12px!important}
-  /* زر إتمام البيع مضغوط */
-  body.pos-pro #posCheckoutBtn{padding:12px!important;font-size:15px!important}
-  /* أزرار الإجراءات: لو المساحة ضاقت تسكرول لوحدها (نادرًا) — زر البيع فوقها ثابت */
-  body.pos-pro #cartFoot .pos-actions{max-height:118px;overflow-y:auto}
-}
+/* (اتشال البلوك القديم — استبدل بـ POS SHELL v3 تحت) */
 /* ═══ وضع ملء الشاشة للكاشير: طي السايدبار ═══ */
 body.pos-fullscreen .sidebar{transform:translateX(100%);transition:transform .25s ease}
 html body.pos-fullscreen .main,html[dir=ltr] body.pos-fullscreen .main,html[dir=rtl] body.pos-fullscreen .main{margin-right:0!important;margin-left:0!important;transition:margin .25s ease}
@@ -646,6 +625,159 @@ body.pos-pro .modal .cat-chip.active{background:#0f6b5c!important;color:#fff!imp
   body { font-size: 14px; }
 }
 
+
+/* ══════════════════════════════════════════════════════════════════
+   POS SHELL v3 — إعادة بناء كاملة لتخطيط الكاشير
+   الهدف: كل شغل البيع في شاشة واحدة على زوم 100% بدون أي اسكرول
+   القاعدة: الصفحة ماتسكرولش · العمود مايسكرولش · الأصناف بس تسكرول
+   ══════════════════════════════════════════════════════════════════ */
+
+/* 1) الشِل: ارتفاع ثابت بالشاشة — يتأقلم تلقائيًا مع التوب بار وأي شريط تحذير */
+body.pos-pro .main{height:100vh;display:flex;flex-direction:column;overflow:hidden}
+body.pos-pro .content{flex:1 1 auto;min-height:0;overflow:hidden;padding:10px 14px 10px!important;background:#FAFBFC}
+
+/* 2) الشبكة الأم: منتجات (مرنة) + فاتورة (356px ثابت) */
+body.pos-pro .pos{height:100%;min-height:0;gap:12px!important;
+  grid-template-columns:1fr 356px!important;align-items:stretch!important}
+@media(min-width:1700px){ body.pos-pro .pos{grid-template-columns:1fr 380px!important} }
+
+/* 3) عمود المنتجات: عمود flex — الشبكة بس هي اللي تسكرول */
+body.pos-pro .pos>div:first-child{display:flex;flex-direction:column;min-height:0;height:100%}
+body.pos-pro .pos>div:first-child>.panel{flex:0 0 auto;margin-bottom:8px!important}
+body.pos-pro #posKpiBar{flex:0 0 auto}
+body.pos-pro #posCatBar{flex:0 0 auto;margin:2px 0 8px!important}
+body.pos-pro #posGrid{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;
+  align-content:start!important;padding-bottom:6px}
+body.pos-pro #posPagination{flex:0 0 auto;margin-top:6px!important}
+
+/* 4) لوحة البحث: مضغوطة */
+body.pos-pro .pos>div:first-child>.panel .panel-b,
+body.pos-pro .pos>div:first-child>.panel>div{padding:10px 12px!important}
+body.pos-pro .pos .search input{font-size:15px!important;padding:10px 12px!important}
+body.pos-pro #posKeysHint{font-size:12px!important;margin-top:6px!important;opacity:.62}
+
+/* 5) كارت المنتج: ارتفاع مقيّد ≤200px */
+body.pos-pro .pos-grid{grid-template-columns:repeat(auto-fill,minmax(178px,1fr))!important;gap:10px!important}
+body.pos-pro .pos-card{min-height:0!important;max-height:200px;padding:8px 8px 10px!important;
+  border-radius:12px!important;display:flex;flex-direction:column;gap:2px}
+body.pos-pro .pos-card .ph,body.pos-pro .pos-card .img,body.pos-pro .pos-card>div:first-child{flex:0 0 auto}
+body.pos-pro .pos-card img,body.pos-pro .pos-card .thumb{max-height:74px!important;object-fit:contain}
+body.pos-pro .pos-card .nm{font-size:14px!important;min-height:34px!important;line-height:1.25;font-weight:700;margin:2px 0 0}
+body.pos-pro .pos-card .pr{font-size:16px!important;font-weight:800;margin:2px 0 0}
+body.pos-pro .ps-chip{font-size:11px!important;padding:2px 0!important}
+body.pos-pro .stock-badge{font-size:11.5px!important;padding:2px 8px!important}
+
+/* 6) عمود الفاتورة: عمود flex بارتفاع الشاشة — مايسكرولش أبدًا */
+body.pos-pro .pos>.cart{height:100%;min-height:0;display:flex;flex-direction:column;
+  overflow:hidden;position:relative;top:0;border-radius:14px}
+body.pos-pro .pos>.cart>*{flex:0 0 auto}
+
+/* حشو مضغوط لأقسام الفاتورة (استرجاع ~190px) */
+body.pos-pro .pos>.cart>.cart-h{padding:8px 12px!important;gap:6px!important}
+body.pos-pro #shiftStatusBtn{width:auto!important;flex:1 1 auto;margin-bottom:0!important;
+  padding:6px 10px!important;font-size:12.5px!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.pos-pro .pos>.cart>.field{padding:8px 12px 0!important}
+body.pos-pro .pos>.cart>.field label{font-size:14px!important;margin-bottom:4px!important}
+body.pos-pro .pos>.cart>.field input,body.pos-pro .pos>.cart>.field select{
+  font-size:14.5px!important;padding:8px 10px!important;margin-bottom:5px!important}
+body.pos-pro #posPriceTierRow{padding:6px 12px 0!important}
+body.pos-pro #posPriceTierRow button{padding:6px 10px!important;font-size:12.5px!important}
+/* شريط «قد يحتاج أيضًا» بيسرق 98px من مساحة البيع — مخفي في الكاشير */
+body.pos-pro #posSuggest{display:none!important}
+
+/* 7) أصناف الفاتورة = العنصر الوحيد اللي يسكرول */
+body.pos-pro .pos>.cart>#cartItems{flex:1 1 auto!important;min-height:56px!important;
+  max-height:none!important;overflow-y:auto!important;overflow-x:hidden;padding:4px 12px!important}
+body.pos-pro .citem,body.pos-pro .cart-row{font-size:14px!important}
+
+/* 8) الفوتر: ثابت تحت — الإجمالي كبير وزر البيع دايمًا ظاهر */
+body.pos-pro .pos>.cart>#cartFoot{flex:0 0 auto!important;background:#fff;
+  border-top:1px solid #EEF2F6;padding:8px 12px 10px!important;box-shadow:0 -4px 14px -10px rgba(16,24,40,.18)}
+body.pos-pro #cartFoot .tt{font-size:14.5px!important;padding:2px 0!important}
+body.pos-pro #cartFoot .pos-grand{font-size:29px!important;font-weight:900!important;
+  padding:8px 12px!important;margin:6px 0!important;border-radius:12px!important;line-height:1.1}
+body.pos-pro #cartFoot .pos-grand span:first-child{font-size:15px!important;font-weight:700!important}
+body.pos-pro #cartFoot input,body.pos-pro #cartFoot select{font-size:14.5px!important;padding:7px 9px!important}
+body.pos-pro #posCheckoutBtn{padding:14px!important;font-size:18px!important;font-weight:800!important;
+  border-radius:12px!important;margin-top:2px!important}
+
+/* 9) أزرار الإجراءات: 3 أعمدة عريضة (110px) — أكبر وأوضح، بدون سكرول نهائيًا */
+body.pos-pro #cartFoot .pos-actions{display:grid!important;
+  grid-template-columns:repeat(3,1fr)!important;gap:7px!important;margin-top:8px!important;
+  max-height:none!important;overflow:visible!important}
+body.pos-pro #cartFoot .pa-btn{display:flex!important;flex-direction:column!important;
+  align-items:center;justify-content:center;gap:3px;min-height:56px;padding:8px 4px!important;
+  font-size:20px!important;border-radius:11px!important}
+body.pos-pro #cartFoot .pa-btn span{font-size:12.5px!important;font-weight:700!important;line-height:1}
+
+/* 10) نوع الأوردر (مطاعم): مضغوط عشان مياكلش مساحة الأصناف */
+body.pos-pro #ot_dinein,body.pos-pro #ot_takeaway,body.pos-pro #ot_delivery{padding:6px 4px!important;font-size:12px!important}
+body.pos-pro #posTableBox input,body.pos-pro #posDeliveryBox input{padding:6px 8px!important}
+
+/* 11) شاشات صغيرة الارتفاع: ضغط إضافي تلقائي */
+@media(max-height:780px){
+  body.pos-pro #cartFoot .pa-btn{min-height:50px;font-size:18px!important}
+  body.pos-pro #cartFoot .pa-btn span{font-size:11.5px!important}
+  body.pos-pro #cartFoot .pos-grand{font-size:26px!important;padding:6px 10px!important}
+  body.pos-pro #posCheckoutBtn{padding:12px!important;font-size:17px!important}
+  body.pos-pro .pos-card{max-height:186px}
+}
+/* شاشات كبيرة: نتنفس */
+@media(min-height:1000px){
+  body.pos-pro #cartFoot .pa-btn{min-height:64px}
+  body.pos-pro #cartFoot .pos-grand{font-size:32px!important}
+}
+
+/* 12) ضغط دقيق للشاشات ≤820px ارتفاع (1366×768) — استرجاع 148px */
+@media(max-height:820px){
+  /* العميل: 114 → 92 */
+  body.pos-pro .pos>.cart>.field{padding:6px 12px 0!important}
+  body.pos-pro .pos>.cart>.field label{font-size:13.5px!important;margin-bottom:2px!important}
+  body.pos-pro .pos>.cart>.field input,body.pos-pro .pos>.cart>.field select{padding:7px 9px!important;margin-bottom:4px!important;font-size:14px!important}
+  /* مستوى السعر: 81 → 48 */
+  body.pos-pro #posPriceTierRow{padding:4px 12px 0!important}
+  body.pos-pro #posPriceTierRow>*{margin:0!important}
+  body.pos-pro #posPriceTierRow label,body.pos-pro #posPriceTierRow>div:first-child{font-size:11.5px!important;margin-bottom:2px!important}
+  body.pos-pro #posPriceTierRow button{padding:5px 8px!important;font-size:11.5px!important}
+  /* بلوك نوع الأوردر (مطاعم): 109 → 48 */
+  body.pos-pro .pos>.cart>div:has(#ot_dinein){padding:4px 12px 0!important}
+  body.pos-pro .pos>.cart>div:has(#ot_dinein)>label{font-size:11px!important}
+  body.pos-pro #ot_dinein,body.pos-pro #ot_takeaway,body.pos-pro #ot_delivery{padding:5px 3px!important;font-size:11.5px!important}
+  body.pos-pro #posTableBox,body.pos-pro #posDeliveryBox{margin-top:4px!important}
+  body.pos-pro #posTableBox input,body.pos-pro #posDeliveryBox input{padding:5px 8px!important;font-size:13px!important}
+  /* الفوتر: 411 → 336 */
+  body.pos-pro .pos>.cart>#cartFoot{padding:5px 12px 6px!important}
+  body.pos-pro #cartFoot .tt{font-size:13.5px!important;padding:1px 0!important}
+  body.pos-pro #cartFoot input,body.pos-pro #cartFoot select{padding:5px 8px!important;font-size:13.5px!important}
+  body.pos-pro #cartFoot #posGrandRow,body.pos-pro #cartFoot .pos-grand{margin:4px 0!important;padding:5px 10px!important}
+  body.pos-pro #posCheckoutBtn{padding:11px!important;font-size:17px!important}
+  body.pos-pro #cartFoot .pos-actions{gap:5px!important;margin-top:5px!important}
+  body.pos-pro #cartFoot .pa-btn{min-height:50px;font-size:19px!important;padding:5px 3px!important}
+  body.pos-pro #cartFoot .pa-btn span{font-size:12px!important}
+  /* الأصناف تاخد اللي فضل */
+  body.pos-pro .pos>.cart>#cartItems{min-height:48px!important;padding:2px 12px!important}
+
+  /* --- الضغط الحاسم (استرجاع 78px إضافية) --- */
+  /* مستوى السعر: نشيل اللِيبل ونمنع لف الأزرار على سطرين (72 → 30) */
+  body.pos-pro #posPriceTierRow>div:first-child{display:none!important}
+  body.pos-pro #posPriceTierRow>div:last-child{flex-wrap:nowrap!important;overflow-x:auto;scrollbar-width:none}
+  body.pos-pro #posPriceTierRow>div:last-child::-webkit-scrollbar{display:none}
+  body.pos-pro #posPriceTierRow>div:last-child>button{white-space:nowrap}
+  /* نوع الأوردر: نشيل اللِيبل (الأزرار واضحة بأيقوناتها) (92 → 56) */
+  body.pos-pro .pos>.cart>div:has(#ot_dinein)>label{display:none!important}
+  body.pos-pro #posTableBox{margin-top:3px!important}
+  /* إصلاح: الإجمالي الكلي كان بياخد حجم .tt الصغير — نرجّعه كبير */
+  body.pos-pro #cartFoot .tt.pos-grand,body.pos-pro #cartFoot .pos-grand{
+    font-size:26px!important;line-height:1.05;padding:5px 10px!important;margin:4px 0!important}
+  body.pos-pro #cartFoot .tt.pos-grand span:first-child{font-size:14px!important}
+  /* (اتراجعت: nth-child(2) هو صف الخصم مش المسوّق — إخفاؤه كان هيكسر الخصم) */
+  /* رأس السلة أنحف */
+  body.pos-pro .pos>.cart>.cart-h{padding:6px 12px!important}
+  body.pos-pro #shiftStatusBtn{padding:5px 9px!important;font-size:12px!important}
+  /* بعد الاسترجاع: الأصناف تاخد مساحة محترمة */
+  body.pos-pro .pos>.cart>#cartItems{min-height:50px!important}
+}
+/* ══ نهاية POS SHELL v3 ══ */
 </style>
 </head>
 <body>
@@ -1853,7 +1985,7 @@ function go(view){
   if(typeof views[view]!=='function'||!PG[view]){ view='dashboard'; }
   current=view;try{var _sf=document.getElementById('supportFab');if(_sf)_sf.style.display=(view==='pos')?'none':'';}catch(_e){}try{typeof fatEmit==='function'&&fatEmit('view:changed',{view:view});}catch(_e){}
 
-  try{document.body.classList.toggle('pos-pro',view==='pos');if(view==='pos'){document.body.classList.add('pos-fullscreen');}else{document.body.classList.remove('pos-fullscreen');}}catch(e){}
+  try{document.body.classList.toggle('pos-pro',view==='pos');if(view==='pos'){document.body.classList.add('pos-fullscreen');}else{document.body.classList.remove('pos-fullscreen');}document.body.classList.toggle('fat-no-promoters',!((db.promoters||[]).length));}catch(e){}
   document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===view));
   const p=PG[view]?PG[view][LANG==='ar'?0:1]:[view,''];document.getElementById('pageTitle').textContent=p[0];document.getElementById('pageSub').textContent=p[1];
   document.getElementById('topActions').innerHTML='';try{views[view]();}catch(_e){if(view!=='dashboard'){current='dashboard';try{views.dashboard();}catch(__e){}}}renderBackupBanner();updateAlertBadge();window.scrollTo(0,0);}
@@ -11942,7 +12074,7 @@ function fatShowActivationScreen(){
   wrap.innerHTML =
     '<div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:32px 26px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">'+
       '<div style="font-size:46px;margin-bottom:8px">🔐</div>'+
-      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v2.9</div>'+
+      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v3.0</div>'+
       '<p style="color:#667;font-size:14px;margin:0 0 22px;line-height:1.6">'+(_expiredPlan ? ('انتهى '+_expiredPlan+' بتاعك. جدّد عشان تكمّل. ابعت رقم جهازك للدعم.') : 'علشان تستخدم البرنامج على الجهاز ده، محتاج كود تفعيل. ابعت رقم جهازك للدعم وهنبعتلك الكود.')+'</p>'+
 
       '<div style="background:#f0f7f5;border:2px dashed #0f6b5c;border-radius:14px;padding:16px;margin-bottom:18px">'+
