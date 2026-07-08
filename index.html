@@ -781,6 +781,59 @@ body.pos-pro #posTableBox input,body.pos-pro #posDeliveryBox input{padding:6px 8
   /* بعد الاسترجاع: الأصناف تاخد مساحة محترمة */
   body.pos-pro .pos>.cart>#cartItems{min-height:50px!important}
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   DENSITY PASS v3.2 — كثافة كاشير حقيقي (SkySoft / Square)
+   المكسب: صفوف منتجات أكتر · صفر مساحة ميتة فوق الشبكة
+   ══════════════════════════════════════════════════════════════════ */
+
+/* 1) لوحة البحث: كان فيها صفّين اختصارات مكرّرين (77px) — نسيب واحد */
+body.pos-pro .pos>div:first-child>.panel>#posKeysHint+div{display:none!important}
+body.pos-pro #posKeysHint{display:flex!important;flex-wrap:nowrap!important;overflow-x:auto;
+  white-space:nowrap;margin-top:5px!important;scrollbar-width:none;font-size:12px!important;opacity:.62}
+body.pos-pro #posKeysHint::-webkit-scrollbar{display:none}
+body.pos-pro .pos>div:first-child>.panel .panel-b,
+body.pos-pro .pos>div:first-child>.panel>div:first-child{padding:8px 11px!important}
+body.pos-pro .pos .search input{padding:9px 12px!important;font-size:14.5px!important}
+body.pos-pro .pos>div:first-child>.panel{margin-bottom:6px!important;border-radius:12px!important}
+
+/* 2) صف زر الملخص + شريط الإحصائيات: مطوي افتراضيًا وصفر هامش ميت */
+body.pos-pro #posKpiToggle{padding:1px 8px!important;font-size:11.5px!important}
+body.pos-pro #posKpiBar{margin:0 0 6px!important}
+body.pos-pro #posCatBar{margin:2px 0 6px!important}
+body.pos-pro .cat-chip{padding:5px 12px!important;font-size:12.5px!important}
+
+/* 3) شريط الترقيم: 48px → 32px */
+body.pos-pro #posPagination{padding:3px 9px!important;margin-top:4px!important;font-size:12px!important}
+body.pos-pro #posPagination select,body.pos-pro #posPagination button{padding:3px 7px!important;font-size:12px!important}
+
+/* 4) الكارت: ميزانية ارتفاع محسوبة — حشو أقل وخط أكبر */
+body.pos-pro .pos-grid{gap:9px!important;grid-template-columns:repeat(auto-fit,minmax(172px,1fr))!important}
+body.pos-pro .pos-card{padding:5px 7px 7px!important;gap:1px;overflow:hidden}
+/* صندوق الصورة = العنصر المرن (بيتحكم في ارتفاع الكارت) */
+body.pos-pro .pos-card>div:not([class]){height:64px!important;min-height:0!important;
+  display:flex;align-items:center;justify-content:center;overflow:hidden}
+body.pos-pro .pos-card img,body.pos-pro .pos-card .thumb{max-height:60px!important}
+body.pos-pro .pos-card .nm{font-size:14.5px!important;min-height:31px!important;line-height:1.2;margin:1px 0 0!important}
+body.pos-pro .pos-card .pr{font-size:17px!important;margin:0!important;line-height:1.25}
+body.pos-pro .pos-status{margin-top:1px!important}
+body.pos-pro .pos-card{max-height:176px}
+@media(min-height:1000px){ body.pos-pro .pos-card{max-height:200px}
+  body.pos-pro .pos-card>div:not([class]){height:80px!important} }
+
+/* 5) الشبكة تاخد كل اللي فضل */
+body.pos-pro #posGrid{padding-bottom:2px!important}
+
+/* شاشات ضيقة الارتفاع: ضغط إضافي للكارت عشان نكسب صف زيادة */
+@media(max-height:820px){
+  body.pos-pro .pos-card{max-height:146px;padding:4px 6px 6px!important}
+  body.pos-pro .pos-card>div:not([class]){height:42px!important}
+  body.pos-pro .pos-card img,body.pos-pro .pos-card .thumb{max-height:40px!important}
+  body.pos-pro .pos-card .nm{font-size:13.5px!important;min-height:29px!important}
+  body.pos-pro .pos-card .pr{font-size:16px!important}
+  body.pos-pro .pos-grid{gap:8px!important}
+}
+/* ══ نهاية DENSITY PASS v3.2 ══ */
 /* ══ نهاية POS SHELL v3 ══ */
 </style>
 </head>
@@ -12078,7 +12131,7 @@ function fatShowActivationScreen(){
   wrap.innerHTML =
     '<div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:32px 26px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">'+
       '<div style="font-size:46px;margin-bottom:8px">🔐</div>'+
-      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v3.1</div>'+
+      '<h2 style="margin:0 0 6px;color:#0f6b5c;font-size:23px">تفعيل فاتورتي</h2>\'+\n      \'<div style="font-size:10px;color:#bbb;margin-bottom:8px">v3.2</div>'+
       '<p style="color:#667;font-size:14px;margin:0 0 22px;line-height:1.6">'+(_expiredPlan ? ('انتهى '+_expiredPlan+' بتاعك. جدّد عشان تكمّل. ابعت رقم جهازك للدعم.') : 'علشان تستخدم البرنامج على الجهاز ده، محتاج كود تفعيل. ابعت رقم جهازك للدعم وهنبعتلك الكود.')+'</p>'+
 
       '<div style="background:#f0f7f5;border:2px dashed #0f6b5c;border-radius:14px;padding:16px;margin-bottom:18px">'+
