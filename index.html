@@ -3557,7 +3557,7 @@ function posCheckout(){if(!cart.length)return;
   for(const pid in need){const p=findProduct(pid);if(p&&need[pid]>effAvail(p)+1e-9)return toast(`${L('الكمية أكبر من المتاح','Exceeds stock')}: ${esc(p.name)} (${fmtStock(p)})`,'err');}
   const items=cart.map(c=>{const p=findProduct(c.pid);return {pid:p.id,name:lineName(c),qty:c.qty,price:lineUnit(c),cost:effCost(p),byWeight:!!c.byWeight,grams:c.grams||0,variant:c.variant||'',note:c.note||''};});
   const cost=items.reduce((s,i)=>s+i.cost*i.qty,0);const party=cid?findCustomer(cid):null;let _ptsU=0,_ptsV=0;if(window.posPointsUse&&party&&posPointsUse.cid===party.id&&(T.ptsVal||0)>0){_ptsV=T.ptsVal;const pv=db.settings.loyaltyValue||0.1;_ptsU=Math.min(party.points||0,Math.ceil(_ptsV/pv));}let _wal=(T.walVal||0),_wel=(T.welVal||0);
-  if(db.sales.some(s=>s.no===db.seq.sale)){db.seq.sale=Math.max(...db.sales.map(s=>s.no||0))+1;}const rec={id:uid(),no:db.seq.sale++,date:today(),ts:new Date().toISOString(),customerId:cid,customerName:party?party.name:'',items,sub:T.sub,disc:T.disc,vat:T.vat,vatP:T.vatP,total:T.total,cost,profit:T.total-T.vat-cost,paidAmount:paidNow,dueAmount:dueNow,dueDate:dueNow>0?addDays(today(),30):'',payMethod,received,change,splitCash,splitCard,priceTier:posPriceTier,branch:activeBranch(),orderType:posOrderType||'dinein',deliveryFee:T.deliv||0,tableNo:posTable||'',cashier:currentUserName(),pointsUsed:_ptsU,pointsValue:_ptsV,walletUsed:_wal,welcomeDisc:_wel,shiftSessionId:(_activeShift?_activeShift.id:''),source:'pos',promoCode:(posPromo&&findPromoterByCode(posPromo))?posPromo.toUpperCase():''};
+  if(db.sales.some(s=>s.no===db.seq.sale)){db.seq.sale=Math.max(...db.sales.map(s=>s.no||0))+1;}const rec={id:uid(),no:db.seq.sale++,date:today(),ts:new Date().toISOString(),customerId:cid,customerName:party?party.name:'',items,sub:T.sub,disc:T.disc,vat:T.vat,vatP:T.vatP,total:T.total,cost,profit:T.total-T.vat-cost,paidAmount:paidNow,dueAmount:dueNow,dueDate:dueNow>0?addDays(today(),30):'',payMethod,received,change,splitCash,splitCard,priceTier:posPriceTier,branch:activeBranch(),orderType:posOrderType||'dinein',deliveryFee:T.deliv||0,tableNo:posTable||'',cashier:(typeof fatInvoiceCashierName==='function'?fatInvoiceCashierName():currentUserName()),pointsUsed:_ptsU,pointsValue:_ptsV,walletUsed:_wal,welcomeDisc:_wel,shiftSessionId:(_activeShift?_activeShift.id:''),source:'pos',promoCode:(posPromo&&findPromoterByCode(posPromo))?posPromo.toUpperCase():''};
   var _payAcct=(payMethod==='cash'||payMethod==='credit')?'cash':((document.getElementById('posPayAcct')||{}).value||'cash');var _splitAcct=(document.getElementById('posSplitAcct')||{}).value||'cash';rec.payAcct=_payAcct;rec.acct=(payMethod==='split')?'cash':_payAcct;if(payMethod==='split'){rec.splitCash=splitCash;rec.splitCard=splitCard;rec.splitAcct=_splitAcct;}db.sales.push(rec);try{typeof fatEmit==='function'&&fatEmit('sale:completed',rec);}catch(_e){}saleStockOut(items,`بيع #${rec.no}`,rec.id);if(payMethod==='split'){if(splitCash>0)addCash('in',splitCash,`POS #${rec.no} · نقدي`,rec.id,'cash');if(splitCard>0)addCash('in',splitCard,`POS #${rec.no} · بطاقة`,rec.id,_splitAcct);}else if(paidNow>0){addCash('in',paidNow,`POS #${rec.no}`,rec.id,_payAcct);}if(dueNow>0&&party)party.balance=(party.balance||0)+dueNow;
   if(_wal>0&&party){walletPush(party,'use',_wal,L('استخدام في فاتورة','Used on sale')+' #'+rec.no,rec.id);}
   if(_ptsU>0&&party){party.points=Math.max(0,(party.points||0)-_ptsU);}if(party)awardPoints(party,T.total);refProcess(party,rec);bumpOps();
@@ -4778,7 +4778,7 @@ function saveInvoice(){const isSale=(invKind!=='purchase');const lines=invLines.
     let saleNo,saleId=uid(),src='invoice';
     if(editSaleCtx&&editSaleCtx.orig){const o=editSaleCtx.orig;reverseSaleEffects(o);db.sales=db.sales.filter(x=>x.id!==o.id);saleNo=o.no;src=o.source||'invoice';db.editLog.push({id:uid(),at:new Date().toISOString(),user:isManager()?'manager':'cashier',saleNo,oldTotal:o.total,newTotal:T.total});}
     else saleNo=db.seq.sale++;
-    const rec={id:saleId,no:saleNo,date,ts:new Date().toISOString(),customerId:partyId,customerName:party?party.name:'',items,sub:T.sub,disc:T.disc,vat:T.vat,vatP:T.vatP,total:T.total,cost,profit:T.total-T.vat-cost,paidAmount:paid,dueAmount:due,dueDate,payMethod:pm,acct,shiftSessionId:((typeof _activeShift!=='undefined'&&_activeShift)?_activeShift.id:''),...(!isSale?purchExtraRead():{}),invoiceImage:window._invImg||'',branch:activeBranch(),orderType:((document.getElementById('inv_channel')||{}).value)||((editSaleCtx&&editSaleCtx.orig&&editSaleCtx.orig.orderType)||'dinein'),cashier:currentUserName(),promoCode:((document.getElementById('inv_promo')||{}).value||'').trim().toUpperCase()||'',source:src,edited:!!editSaleCtx};
+    const rec={id:saleId,no:saleNo,date,ts:new Date().toISOString(),customerId:partyId,customerName:party?party.name:'',items,sub:T.sub,disc:T.disc,vat:T.vat,vatP:T.vatP,total:T.total,cost,profit:T.total-T.vat-cost,paidAmount:paid,dueAmount:due,dueDate,payMethod:pm,acct,shiftSessionId:((typeof _activeShift!=='undefined'&&_activeShift)?_activeShift.id:''),...(!isSale?purchExtraRead():{}),invoiceImage:window._invImg||'',branch:activeBranch(),orderType:((document.getElementById('inv_channel')||{}).value)||((editSaleCtx&&editSaleCtx.orig&&editSaleCtx.orig.orderType)||'dinein'),cashier:(typeof fatInvoiceCashierName==='function'?fatInvoiceCashierName():currentUserName()),promoCode:((document.getElementById('inv_promo')||{}).value||'').trim().toUpperCase()||'',source:src,edited:!!editSaleCtx};
     db.sales.push(rec);saleStockOut(items,`بيع #${rec.no}`,rec.id);addCash('in',paid,`بيع #${rec.no}`,rec.id,acct);if(due>0&&party)party.balance+=due;
     if(party)awardPoints(party,T.total);bumpOps();const wasEdit=!!editSaleCtx;editSaleCtx=null;
     logAudit(wasEdit?L('تعديل فاتورة بيع','Edit sale'):L('فاتورة بيع','Sale invoice'),`${invNo(rec)} — ${money(T.total)}`);save();closeModal();go('sales');toast(wasEdit?L('تم تعديل الفاتورة','Invoice updated'):L('تم حفظ الفاتورة','Invoice saved'));viewInvoice('sale',rec.id);
@@ -15834,6 +15834,101 @@ css.textContent=[
 'body.pos-pro .pos>div:last-child input,body.pos-pro .pos>div:last-child select{height:42px!important;font-size:13.5px!important}'
 ].join('\n');
 document.head.appendChild(css);
+})();
+
+/* ============================================================
+   FATORTY v5.7 — مراجعة احترافية شاملة للكاشير
+   1) تحكم العميل في عرض السلة (3 مستويات، من إعدادات "شكل الكاشير")
+   2) تكبير خط بيانات صف السلة (السطر تحت اسم الصنف)
+   3) تكبير كل الأزرار الصغيرة في السلة (+/- ملاحظة تعديل حذف تفريغ الشيفت)
+   ============================================================ */
+(function(){
+'use strict';
+
+/* ───────── 1) عرض السلة: تحكم العميل ───────── */
+var CART_W={
+  normal:{c:'440px',cw:'470px',mw:'900px',mwl:'1020px'},
+  wide:  {c:'490px',cw:'520px',mw:'820px',mwl:'930px'},
+  xwide: {c:'540px',cw:'570px',mw:'740px',mwl:'840px'}
+};
+window.fatApplyCartWidth=function(){
+  try{
+    var k=(db.settings&&db.settings.posCartW)||'normal';
+    var cfg=CART_W[k]||CART_W.normal;
+    var el=document.getElementById('fatCartWidthVars');
+    if(!el){el=document.createElement('style');el.id='fatCartWidthVars';document.head.appendChild(el);}
+    el.textContent=
+      'body.pos-pro .pos{grid-template-columns:1fr '+cfg.c+'!important}'+
+      '@media(min-width:1600px){body.pos-pro .pos{grid-template-columns:1fr '+cfg.cw+'!important}}'+
+      'body.pos-pro .pos-grid{max-width:'+cfg.mw+'!important}'+
+      '@media(min-width:1600px){body.pos-pro .pos-grid{max-width:'+cfg.mwl+'!important}}';
+  }catch(e){}
+};
+// دمج مع دالة تطبيق التفضيلات الموجودة
+var _origApplyPrefs=window.fatApplyPosPrefs;
+window.fatApplyPosPrefs=function(){
+  _origApplyPrefs();
+  fatApplyCartWidth();
+};
+fatApplyCartWidth();
+
+// إضافة الخيار في مودال "شكل الكاشير" الموجود
+var _origLookModal=window.posLookModal;
+window.posLookModal=function(){
+  _origLookModal();
+  try{
+    var w=(db.settings&&db.settings.posCartW)||'normal';
+    var body=document.querySelector('#modal .modal-b');
+    if(!body||document.getElementById('cartWField'))return;
+    var wrap=document.createElement('div');
+    wrap.className='field';wrap.id='cartWField';
+    wrap.innerHTML='<label>\ud83d\uded2 '+L('عرض قسم السلة (والفاتورة)','Cart panel width')+'</label>'+
+      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">'+
+      ['normal','wide','xwide'].map(function(k){
+        var labels={normal:['\u25b3',L('متوسط','Normal')],wide:['\u25b2',L('واسع','Wide')],xwide:['\u2b1b',L('أوسع (يقلل مساحة المنتجات)','Extra wide')]};
+        return '<button class="lookOpt'+(w===k?' on':'')+'" onclick="fatSetPosPref(\'posCartW\',\''+k+'\')"><span class="ic">'+labels[k][0]+'</span><span>'+labels[k][1]+'</span></button>';
+      }).join('')+'</div>';
+    var hint=body.querySelector('.hint[style*="eff6ff"]');
+    if(hint)body.insertBefore(wrap,hint); else body.appendChild(wrap);
+  }catch(e){}
+};
+
+/* ───────── 2 و 3) مراجعة احترافية: خطوط وأزرار السلة ───────── */
+var css=document.createElement('style');
+css.id='fatPosDensity57';
+css.textContent=[
+// السطر الفرعي تحت اسم الصنف (الوزن/الكمية × السعر = الإجمالي) — كان صغير أوي
+'body.pos-pro .cart-row .ci-p{font-size:13px!important;font-weight:600!important;color:var(--muted)!important;margin-top:3px!important}',
+'body.pos-pro .cart-row .ci-n{font-size:14.5px!important;font-weight:700!important}',
+'body.pos-pro .cart-row{padding:12px 14px!important;gap:8px!important}',
+// أزرار +/- الكمية: كانت 30px — بقت مقاس لمس مريح
+'body.pos-pro .qstep button{width:34px!important;height:34px!important;font-size:16px!important;border-radius:9px!important}',
+'body.pos-pro .qstep{gap:6px!important}',
+// أزرار ملاحظة/تعديل/حذف في صف السلة
+'body.pos-pro .cart-row .iconbtn,body.pos-pro .cart-row button[onclick*="cartNote"],body.pos-pro .cart-row button[onclick*="openItemPicker"]{width:32px!important;height:32px!important;font-size:14px!important;border-radius:8px!important}',
+'body.pos-pro .cart-row .iconbtn.del{width:32px!important;height:32px!important}',
+// زرار فتح/إغلاق الشيفت وزرار تفريغ — كانوا نص صغير
+'body.pos-pro #shiftStatusBtn{padding:10px!important;font-size:13.5px!important;font-weight:700!important}',
+'body.pos-pro .cart-h{padding:10px 14px!important}',
+'body.pos-pro .cart-h .btn-sm{padding:7px 14px!important;font-size:12.5px!important;font-weight:700!important}',
+'body.pos-pro .cart-h>span{font-size:13.5px!important;font-weight:700!important}'
+].join('\n');
+document.head.appendChild(css);
+})();
+
+/* ============================================================
+   FATORTY v5.8 — دقة اسم الكاشير في الفاتورة
+   لو في شيفت مفتوح، اسم الكاشير في الفاتورة = اسم فاتح الشيفت (مش المستخدم المسجل دخوله)
+   ده أدق لمطابقة "مين باع إيه" عند تقفيل الشيفت
+   ============================================================ */
+(function(){
+'use strict';
+window.fatInvoiceCashierName=function(){
+  try{
+    if(typeof _activeShift!=='undefined'&&_activeShift&&_activeShift.cashier)return _activeShift.cashier;
+  }catch(e){}
+  return currentUserName();
+};
 })();
 
 try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{version:'v1.0-GM'});},800);}catch(_e){}
