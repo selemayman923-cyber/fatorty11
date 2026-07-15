@@ -1,5 +1,5 @@
-/* فاتورتي — Service Worker v9.5 (Network-First for app, safe offline fallback) */
-const CACHE = 'fatorty-v9.5';
+/* فاتورتي — Service Worker v10.0 (Network-First + تحديث تلقائي فوري) */
+const CACHE = 'fatorty-v10.0';
 const ASSETS = ['/', '/index.html', '/manifest.json'];
 
 /* صفحة أوفلاين نظيفة — تظهر فقط لو مفيش نت ومفيش نسخة محفوظة */
@@ -18,7 +18,7 @@ button{background:#0f6b5c;color:#fff;border:none;border-radius:10px;padding:12px
 const offlineResponse = () =>
   new Response(OFFLINE_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
 
-// التثبيت: خزّن الملفات الأساسية
+// التثبيت: خزّن الملفات الأساسية + فعّل نفسك فورًا (متستناش التاب يتقفل)
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE)
@@ -28,7 +28,7 @@ self.addEventListener('install', e => {
   );
 });
 
-// التفعيل: امسح كل الكاش القديم
+// التفعيل: امسح كل الكاش القديم + تحكم في كل التابات المفتوحة فورًا
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
@@ -45,10 +45,9 @@ self.addEventListener('fetch', e => {
   const isAppShell = url.pathname === '/' || url.pathname === '/index.html';
 
   if (isAppShell) {
-    // NETWORK-FIRST: جيب أحدث نسخة من النت دايمًا (لو في نت)
-    // ولو مفيش نت → النسخة المحفوظة، ولو مفيش نسخة → صفحة أوفلاين نظيفة (مش undefined)
+    // NETWORK-FIRST بدون أي كاش HTTP وسيط — دايمًا يجيب أحدث نسخة فعليًا من السيرفر
     e.respondWith(
-      fetch(e.request)
+      fetch(e.request, { cache: 'no-store' })
         .then(res => {
           if (res && res.status === 200) {
             const clone = res.clone();

@@ -16232,6 +16232,39 @@ window.fatReplaceLegacyEmoji=function(){
 })();
 })();
 
+/* ============================================================
+   FATORTY v6.3 — إصلاح جذري: التحديثات كانت بتتعلق بسبب الكاش
+   دلوقتي أي نسخة جديدة بتترفع، النظام بيكتشفها لوحده ويعمل تحديث تلقائي
+   ============================================================ */
+(function(){
+'use strict';
+if(!('serviceWorker' in navigator)) return;
+var _reloaded=false;
+// لو الـ Service Worker اتغيّر (نسخة جديدة استلمت التحكم) → ريفريش تلقائي مرة واحدة
+navigator.serviceWorker.addEventListener('controllerchange',function(){
+  if(_reloaded) return; _reloaded=true;
+  try{ sessionStorage.setItem('fat_just_updated','1'); }catch(e){}
+  location.reload();
+});
+// افحص فيه تحديث جديد كل مرة التاب يرجع نشط (يقفل مشكلة "التاب فاضل فاتح من الصبح")
+document.addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='visible'){
+    navigator.serviceWorker.getRegistration().then(function(reg){ if(reg) reg.update(); }).catch(function(){});
+  }
+});
+// وفحص دوري كل 20 دقيقة كمان (لو التاب فاضل مفتوح طول اليوم من غير ما يتقفل)
+setInterval(function(){
+  navigator.serviceWorker.getRegistration().then(function(reg){ if(reg) reg.update(); }).catch(function(){});
+},20*60*1000);
+// تنبيه لطيف بعد أي تحديث تلقائي (مرة واحدة بس بعد الريفريش)
+try{
+  if(sessionStorage.getItem('fat_just_updated')==='1'){
+    sessionStorage.removeItem('fat_just_updated');
+    setTimeout(function(){ try{ toast('✅ '+L('تم تحديث النظام لآخر نسخة','Updated to the latest version')); }catch(e){} },1200);
+  }
+}catch(e){}
+})();
+
 try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{version:'v1.0-GM'});},800);}catch(_e){}
 </script>
 </body>
