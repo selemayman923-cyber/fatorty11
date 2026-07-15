@@ -16133,6 +16133,34 @@ css.textContent=[
 document.head.appendChild(css);
 })();
 
+/* ============================================================
+   FATORTY v6.1 — ملاحظة الصنف بمثال يناسب نوع نشاطك
+   بدل "بدون بصل" الثابتة (خاصة بالمطاعم)، المثال بيتغيّر حسب نشاطك المسجّل
+   ============================================================ */
+(function(){
+'use strict';
+window.fatNotePlaceholder=function(){
+  var bt=(db.settings&&db.settings.businessType)||'';
+  var map={
+    restaurant:L('مثال: بدون بصل','e.g. no onions'),
+    cafe:L('مثال: سكر زيادة','e.g. extra sugar'),
+    bakery:L('مثال: بدون سكر','e.g. no sugar'),
+    grocery:L('مثال: تاريخ الصلاحية قريب','e.g. near expiry'),
+    clothing:L('مثال: مقاس L','e.g. size L'),
+    electronics:L('مثال: بالكرتونة الأصلية','e.g. original box'),
+    pharmacy:L('مثال: حسب الروشتة','e.g. per prescription'),
+    hardware:L('مثال: مقاس 20 مم — درجة أولى','e.g. 20mm — grade A'),
+    general:L('مثال: تفصيلة خاصة بالطلب','e.g. special request')
+  };
+  return map[bt]||map.general;
+};
+window.cartNote=async function(lid){
+  var c=cart.find(function(x){return x.lid===lid;});if(!c)return;
+  var v=await promptBox(L('ملاحظة على الصنف','Item note')+' ('+fatNotePlaceholder()+')',{value:c.note||''});
+  if(v===null)return;c.note=(v||'').trim();renderCart();
+};
+})();
+
 try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{version:'v1.0-GM'});},800);}catch(_e){}
 </script>
 </body>
