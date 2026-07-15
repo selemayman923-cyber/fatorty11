@@ -16265,6 +16265,60 @@ try{
 }catch(e){}
 })();
 
+/* ============================================================
+   FATORTY v6.4 — جدول الصلاحيات بشكل مختصر واحترافي
+   بدل الشبكة المزدحمة (3 أعمدة × 9 صفوف)، اختار الدور من كبسولات وشوف صلاحياته لوحده مجمّعة في فئات
+   ============================================================ */
+(function(){
+'use strict';
+
+var FAT_PERM_GROUPS=[
+  {id:'money',label:L('المالية والفواتير','Finance & Invoices'),ic:'\ud83d\udcb0',keys:['viewCost','editPrice','deleteInvoice','refund','openDrawer']},
+  {id:'stock',label:L('المخزون والمنتجات','Stock & Products'),ic:'\ud83d\udce6',keys:['editProduct']},
+  {id:'admin',label:L('الإدارة والنظام','Admin & System'),ic:'\u2699\ufe0f',keys:['manageStaff','exportData','editSettings']}
+];
+
+window.fatPermsEditorHTML=function(){
+  var roles=[['cashier','\ud83d\udcb5',L('كاشير','Cashier')],['stockkeeper','\ud83d\udce6',L('أمين مخزن','Stock keeper')],['accountant','\ud83e\uddee',L('محاسب','Accountant')]];
+  var activeRole=window._permRole||'cashier';
+  var allKeys=Object.keys(FAT_PERMS);
+  function countOn(role){return allKeys.filter(function(k){return fatCanRole(role,k);}).length;}
+
+  var tabs=roles.map(function(r){
+    var on=r[0]===activeRole;
+    var n=countOn(r[0]);
+    return '<button type="button" onclick="window._permRole=\''+r[0]+'\';fatRefreshSettingsPanel()" style="flex:1;min-width:110px;padding:12px 10px;border-radius:12px;border:1.5px solid '+(on?'var(--primary)':'var(--line)')+';background:'+(on?'var(--primary-soft)':'var(--panel)')+';cursor:pointer;text-align:center;transition:all .12s">'+
+      '<div style="font-size:20px;margin-bottom:3px">'+r[1]+'</div>'+
+      '<div style="font-size:12.5px;font-weight:800;color:var(--ink)">'+r[2]+'</div>'+
+      '<div style="font-size:10.5px;color:var(--muted);margin-top:2px">'+n+' / '+allKeys.length+' '+L('مفعّلة','on')+'</div></button>';
+  }).join('');
+
+  var groupsHtml=FAT_PERM_GROUPS.map(function(g){
+    var rows=g.keys.filter(function(k){return FAT_PERMS[k];}).map(function(pk){
+      var p=FAT_PERMS[pk];
+      var on=fatCanRole(activeRole,pk);
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:11px 4px;border-bottom:1px solid var(--line)">'+
+        '<div style="display:flex;align-items:center;gap:9px;font-size:13px"><span>'+p.ic+'</span><span>'+L(p.ar,p.en)+'</span></div>'+
+        '<button type="button" onclick="fatTogglePerm(\''+activeRole+'\',\''+pk+'\');fatRefreshSettingsPanel()" style="width:46px;height:26px;border-radius:999px;border:none;position:relative;cursor:pointer;background:'+(on?'var(--primary)':'#D8DEE4')+';transition:background .15s">'+
+        '<span style="position:absolute;top:3px;'+(on?'right:3px':'left:3px')+';width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:all .15s"></span></button></div>';
+    }).join('');
+    return '<div style="margin-bottom:14px"><div style="font-size:11.5px;font-weight:800;color:var(--muted);margin-bottom:4px;padding:0 4px">'+g.ic+' '+g.label+'</div>'+rows+'</div>';
+  }).join('');
+
+  return '<div style="margin:4px 0 16px;padding:16px 18px;border:1px solid var(--line);border-radius:14px" id="fatPermsPanel">'+
+    '<div style="font-size:13.5px;font-weight:800;margin-bottom:3px">\ud83d\udd10 '+L('صلاحيات كل دور','Role permissions')+'</div>'+
+    '<div style="font-size:11.5px;color:var(--muted);margin-bottom:14px">'+L('المدير له كل الصلاحيات دائمًا. اختار الدور وحدد المسموح له بالظبط.','Manager always has all. Pick a role and toggle what it can do.')+'</div>'+
+    '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">'+tabs+'</div>'+
+    groupsHtml+
+    '</div>';
+};
+window.fatRefreshSettingsPanel=function(){
+  var p=document.getElementById('fatPermsPanel');
+  if(!p)return;
+  p.outerHTML=fatPermsEditorHTML();
+};
+})();
+
 try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{version:'v1.0-GM'});},800);}catch(_e){}
 </script>
 </body>
