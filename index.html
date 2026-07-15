@@ -16319,6 +16319,31 @@ window.fatRefreshSettingsPanel=function(){
 };
 })();
 
+/* ============================================================
+   FATORTY v6.5 — إصلاح نهائي لإيموجي "لوحة التحكم"
+   السبب الحقيقي: ▣ رمز يونيكود نصي (مش إيموجي حقيقي) — بدّلناه بإيموجي لوحة قياس ملوّن
+   ============================================================ */
+(function(){
+'use strict';
+window.fatFixDashboardIcon=function(){
+  try{
+    var nav=document.getElementById('nav');
+    if(nav) nav.innerHTML=nav.innerHTML.split('\u25a3').join('\ud83d\udcca');
+  }catch(e){}
+};
+(function(){
+  var _origRenderNav=window.renderNav;
+  if(typeof _origRenderNav==='function'){
+    window.renderNav=function(){
+      var r=_origRenderNav.apply(null,arguments);
+      fatFixDashboardIcon();
+      return r;
+    };
+  }
+})();
+fatFixDashboardIcon();
+})();
+
 try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{version:'v1.0-GM'});},800);}catch(_e){}
 </script>
 </body>
