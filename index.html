@@ -17223,6 +17223,328 @@ window.fatBuildJournal=function(f,t){
 };
 })();
 
+/* ============================================================
+   FATORTY v6.9 — تحويل الوحدات + تكلفة الشحن/الجمارك (Landed Cost)
+   ============================================================ */
+(function(){
+'use strict';
+
+/* ═══════════ 1) تحويل الوحدات (اشتري بالطن، بيع بالكيلو) ═══════════ */
+window.fatUnitFactor=function(p){return (p&&+p.unitFactor>0)?+p.unitFactor:1;};
+// حقن حقول وحدة الشراء ومعامل التحويل في فورم الصنف
+(function(){
+  var _origForm=window.productForm;
+  if(typeof _origForm==='function'){
+    window.productForm=function(id){
+      var r=_origForm(id);
+      try{
+        var p=id?findProduct(id):null;
+        var modalB=document.querySelector('#modal .modal-b');
+        if(modalB&&!document.getElementById('f_buyunit')){
+          var div=document.createElement('div');
+          div.className='field';
+          div.innerHTML='<label>\u2696\ufe0f '+L('وحدة الشراء (لو مختلفة عن وحدة البيع)','Buy unit (if different from sell unit)')+'</label>'+
+            '<div style="display:flex;gap:8px"><input id="f_buyunit" placeholder="'+L('مثال: طن','e.g. ton')+'" value="'+(p&&p.buyUnit?esc(p.buyUnit):'')+'" style="flex:1">'+
+            '<input id="f_unitfactor" type="number" min="0.0001" step="any" placeholder="'+L('كام وحدة بيع في الواحدة؟','Sell units per buy unit?')+'" value="'+(p&&p.unitFactor?p.unitFactor:'')+'" style="flex:1"></div>'+
+            '<div class="hint" style="margin-top:4px">'+L('مثال: وحدة الشراء "طن"، معامل التحويل 1000 (لو وحدة البيع كيلو) — أي فاتورة شراء تدخل الكمية بالطن وهتضاف للمخزون بالكيلو تلقائيًا.','e.g. buy unit "ton", factor 1000 if sell unit is kg — purchase qty entered in tons auto-converts to kg in stock.')+'</div>';
+          modalB.appendChild(div);
+        }
+      }catch(e){}
+      return r;
+    };
+  }
+  var _origSave=window.saveProduct;
+  if(typeof _origSave==='function'){
+    window.saveProduct=async function(id){
+      var bu=document.getElementById('f_buyunit'),uf=document.getElementById('f_unitfactor');
+      var buVal=bu?bu.value.trim():'',ufVal=uf?(+uf.value||0):0;
+      var before=db.products.length;
+      var r=await _origSave(id);
+      try{
+        var p=id?db.products.find(function(x){return x.id===id;}):db.products[db.products.length-1];
+        if(p&&db.products.length>=before){p.buyUnit=buVal;p.unitFactor=ufVal>0?ufVal:1;}
+        save();
+      }catch(e){}
+      return r;
+    };
+  }
+})();
+// تحويل الكمية والتكلفة عند حفظ فاتورة الشراء اليدوية (وحدة الشراء → وحدة البيع في المخزون)
+window._fatPendingUnitConv=null;
+(function(){
+  var _origMoveStock=window.moveStock;
+  if(typeof _origMoveStock==='function'){
+    window.moveStock=function(pid,delta,kind,note,ref){
+      var p=findProduct(pid);
+      if(p&&kind==='in'&&/^\u0634\u0631\u0627\u0621 #/.test(note||'')){
+        var f=fatUnitFactor(p);
+        if(f!==1) delta=delta*f; // تحويل الكمية المُدخلة (وحدة شراء) لوحدة البيع الفعلية بالمخزون
+      }
+      return _origMoveStock(pid,delta,kind,note,ref);
+    };
+  }
+})();
+// تصحيح متوسط التكلفة: الكود الأصلي بيحسبه بالكمية والسعر بوحدة الشراء (غلط لو فيه تحويل) — نعيد حسابه صح بوحدة البيع الفعلية
+(function(){
+  var _origSaveInvoice=window.saveInvoice;
+  if(typeof _origSaveInvoice==='function'){
+    window.saveInvoice=function(){
+      var pre={};
+      try{
+        (invLines||[]).forEach(function(l){
+          if(!l.pid)return;
+          var p=findProduct(l.pid);
+          if(p&&fatUnitFactor(p)!==1)pre[l.pid]={qty:+p.qty||0,cost:+p.cost||0};
+        });
+      }catch(e){}
+      var beforeLen=db.purchases.length;
+      var r=_origSaveInvoice.apply(null,arguments);
+      try{
+        if(db.purchases.length>beforeLen){
+          var rec=db.purchases[db.purchases.length-1];
+          (rec.items||[]).forEach(function(it){
+            if(!it.pid||!pre[it.pid])return;
+            var p=findProduct(it.pid);if(!p)return;
+            var f=fatUnitFactor(p);
+            var addedSellQty=r2(it.qty*f);
+            var costPerSellUnit=r2((it.price||0)/f);
+            var oldQty=pre[it.pid].qty,oldCost=pre[it.pid].cost;
+            var newQty=r2(oldQty+addedSellQty);
+            p.cost=newQty>0?r2((oldQty*oldCost+addedSellQty*costPerSellUnit)/newQty):costPerSellUnit;
+          });
+          save();
+        }
+      }catch(e){}
+      return r;
+    };
+  }
+})();
+
+/* ═══════════ 2) تكلفة الشحن/الجمارك (Landed Cost) ═══════════ */
+window.fatLandedCostModal=function(purchaseId){
+  var pu=db.purchases.find(function(x){return x.id===purchaseId;});if(!pu)return;
+  openModal('<div class="modal-h"><h3>\ud83d\udea2 '+L('توزيع تكلفة شحن/جمارك','Allocate shipping/customs cost')+'</h3><button class="x" onclick="closeModal()">\u00d7</button></div>'+
+  '<div class="modal-b">'+
+  '<div class="hint" style="margin-bottom:12px">\ud83d\udca1 '+L('التكلفة اللي تدخلها هنا هتتوزع على أصناف الفاتورة دي حسب قيمة كل صنف، وتتضاف لتكلفة الوحدة — عشان هامش الربح المعروض يبقى دقيق.','Cost entered here is allocated across this invoice\\u2019s items by value, and added to unit cost for accurate margins.')+'</div>'+
+  '<div class="field"><label>'+L('فاتورة الشراء','Purchase invoice')+'</label><input value="#'+pu.no+' \u2014 '+esc(pu.supplierName||'')+'" readonly style="opacity:.7"></div>'+
+  '<div class="field"><label>'+L('تكلفة الشحن/الجمارك الإجمالية','Total shipping/customs cost')+'</label><input id="lc_amt" type="number" min="0" step="any"></div>'+
+  '<div class="field"><label>'+L('دُفعت من','Paid from')+'</label><select id="lc_acct"><option value="cash">'+L('الخزينة النقدية','Cash')+'</option>'+(db.banks||[]).map(function(b){return '<option value="'+b.id+'">'+esc(b.name)+'</option>';}).join('')+'</select></div>'+
+  '</div><div class="modal-f"><button class="btn btn-primary" onclick="fatLandedCostApply(\''+purchaseId+'\')">'+L('توزيع وتطبيق','Allocate & apply')+'</button><button class="btn btn-ghost" onclick="closeModal()">'+L('إلغاء','Cancel')+'</button></div>',true);
+};
+window.fatLandedCostApply=function(purchaseId){
+  var pu=db.purchases.find(function(x){return x.id===purchaseId;});if(!pu)return;
+  var amt=+((document.getElementById('lc_amt')||{}).value)||0;
+  if(amt<=0)return toast(L('اكتب مبلغ صحيح','Enter a valid amount'),'err');
+  var acct=(document.getElementById('lc_acct')||{}).value||'cash';
+  var totalVal=(pu.items||[]).reduce(function(s,it){return s+(it.qty*it.price);},0);
+  if(totalVal<=0)return toast(L('مفيش قيمة أصناف نوزع عليها','No item value to allocate'),'err');
+  var applied=[];
+  (pu.items||[]).forEach(function(it){
+    if(!it.pid)return;
+    var p=findProduct(it.pid);if(!p)return;
+    var share=r2(amt*(it.qty*it.price)/totalVal);
+    var addPerUnit=it.qty>0?r2(share/it.qty):0;
+    var f=fatUnitFactor(p);
+    var addPerSellUnit=f!==1?r2(addPerUnit/f):addPerUnit;
+    p.cost=r2((+p.cost||0)+addPerSellUnit);
+    applied.push({name:p.name,share:share,addPerUnit:addPerSellUnit});
+  });
+  pu.landedCost=(pu.landedCost||0)+amt;
+  addCash('out',amt,L('شحن/جمارك','Shipping/customs')+' \u2014 '+L('فاتورة شراء','Purchase')+' #'+pu.no,pu.id,acct);
+  logAudit(L('توزيع تكلفة شحن/جمارك','Landed cost allocation'),'#'+pu.no+' \u2014 '+money(amt));
+  save();closeModal();
+  toast('\u2705 '+L('اتوزعت التكلفة على','Allocated across')+' '+applied.length+' '+L('صنف — التكلفة اتحدثت','items — cost updated'));
+};
+// قيد محاسبي لتكلفة الشحن/الجمارك (بتضاف لتكلفة المخزون، مش مصروف فترة منفصل)
+var _origBuildJ4=window.fatBuildJournal;
+window.fatBuildJournal=function(f,t){
+  var J=_origBuildJ4(f,t);
+  var inR=function(d){return (!f||d>=f)&&(!t||d<=t);};
+  (db.purchases||[]).forEach(function(pu){
+    if(!pu.landedCost||pu.landedCost<=0.004||!inR(pu.date))return;
+    J.push({date:pu.date,ref:'#'+pu.no,desc:L('شحن/جمارك على المخزون','Shipping/customs on inventory')+' \u2014 #'+pu.no,lines:[
+      {acct:L('المخزون','Inventory'),debit:pu.landedCost,credit:0},
+      {acct:L('الخزينة النقدية','Cash'),debit:0,credit:pu.landedCost}]});
+  });
+  return J;
+};
+// زرار "توزيع تكلفة شحن" في تفاصيل فاتورة الشراء
+(function(){
+  var _origViewInvoice=window.viewInvoice;
+  if(typeof _origViewInvoice==='function'){
+    window.viewInvoice=function(kind,id){
+      var r=_origViewInvoice.apply(null,arguments);
+      try{
+        if(kind==='purchase'){
+          var f=document.querySelector('#modal .modal-f');
+          if(f&&!f.querySelector('.fat-landed-btn')){
+            var b=document.createElement('button');
+            b.className='btn btn-ghost fat-landed-btn';
+            b.innerHTML='\ud83d\udea2 '+L('شحن/جمارك','Shipping cost');
+            b.onclick=function(){closeModal();setTimeout(function(){fatLandedCostModal(id);},80);};
+            f.insertBefore(b,f.firstChild);
+          }
+        }
+      }catch(e){}
+      return r;
+    };
+  }
+})();
+})();
+
+/* ============================================================
+   FATORTY v7.0 — فحص صحة النظام (System Health Check)
+   أداة مختلفة عن كل الإضافات السابقة: مش ميزة تجارية، دي أداة جودة —
+   بتفحص البيانات الفعلية وتكتشف مشاكل حقيقية قبل ما تتفاقم
+   ============================================================ */
+(function(){
+'use strict';
+
+window.fatHealthCheck=function(){
+  var checks=[];
+  function add(cat,label,ok,detail,fixHint){checks.push({cat:cat,label:label,ok:ok,detail:detail||'',fixHint:fixHint||''});}
+
+  // ── 1) إعداد أساسي ──
+  add('setup',L('اسم المحل مسجّل','Company name set'),!!(db.settings&&db.settings.company),'',L('الإعدادات ← أساسية','Settings → Basic'));
+  add('setup',L('شعار المحل مرفوع','Logo uploaded'),!!(db.settings&&db.settings.logo),'',L('الإعدادات ← الفاتورة والطباعة','Settings → Print'));
+  add('setup',L('نسبة الضريبة مضبوطة','VAT rate configured'),!!(db.settings&&+db.settings.vat>=0&&db.settings.vat!==''),'',L('الإعدادات ← أساسية','Settings → Basic'));
+  add('setup',L('نوع النشاط محدد','Business type set'),!!(db.settings&&db.settings.businessType),'',L('الإعدادات ← أساسية','Settings → Basic'));
+
+  // ── 2) المحاسبة ──
+  var tb=fatTrialBalance('','');
+  add('accounting',L('ميزان المراجعة متوازن','Trial balance is balanced'),tb.balanced,
+    tb.balanced?'':L('مدين','Debit')+' '+money(tb.totalDebit)+' \u2260 '+L('دائن','Credit')+' '+money(tb.totalCredit),
+    L('راجع القيود اليدوية','Review manual journal entries'));
+  var unbalancedJ=fatBuildJournal('','').filter(function(e){var d=e.lines.reduce(function(s,l){return s+l.debit;},0),c=e.lines.reduce(function(s,l){return s+l.credit;},0);return Math.abs(d-c)>=0.01;});
+  add('accounting',L('كل القيود متوازنة فرديًا','All entries individually balanced'),unbalancedJ.length===0,
+    unbalancedJ.length?unbalancedJ.length+' '+L('قيد غير متوازن','unbalanced entries'):'');
+
+  // ── 3) سلامة المخزون ──
+  var negStock=(db.products||[]).filter(function(p){return (+p.qty||0)<0;});
+  add('inventory',L('لا يوجد مخزون بكمية سالبة','No negative stock'),negStock.length===0,
+    negStock.length?negStock.slice(0,3).map(function(p){return p.name;}).join('\u060c '):'');
+  var negCost=(db.products||[]).filter(function(p){return (+p.cost||0)<0;});
+  add('inventory',L('لا يوجد أصناف بتكلفة سالبة','No negative-cost items'),negCost.length===0,'');
+  var noCategory=(db.products||[]).filter(function(p){return !p.cat;});
+  add('inventory',L('كل الأصناف لها تصنيف','All products have a category'),noCategory.length===0,
+    noCategory.length?noCategory.length+' '+L('صنف بدون تصنيف','uncategorized items'):'');
+
+  // ── 4) ربط البيانات (orphaned references) ──
+  var custIds={};(db.customers||[]).forEach(function(c){custIds[c.id]=1;});
+  var orphanSales=(db.sales||[]).filter(function(s){return s.customerId&&!custIds[s.customerId];});
+  add('integrity',L('كل الفواتير مربوطة بعملاء موجودين','All invoices linked to existing customers'),orphanSales.length===0,
+    orphanSales.length?orphanSales.length+' '+L('فاتورة بعميل محذوف','invoices with deleted customer'):'');
+  var supIds={};(db.suppliers||[]).forEach(function(s){supIds[s.id]=1;});
+  var orphanPurch=(db.purchases||[]).filter(function(p){return p.supplierId&&!supIds[p.supplierId];});
+  add('integrity',L('كل فواتير الشراء مربوطة بموردين موجودين','All purchases linked to existing suppliers'),orphanPurch.length===0,'');
+  var prodIds={};(db.products||[]).forEach(function(p){prodIds[p.id]=1;});
+  var orphanItems=0;(db.sales||[]).forEach(function(s){(s.items||[]).forEach(function(it){if(it.pid&&!prodIds[it.pid])orphanItems++;});});
+  add('integrity',L('لا توجد أصناف فواتير محذوفة من المخزون','No sale items referencing deleted products'),orphanItems===0,
+    orphanItems?orphanItems+' '+L('بند مرجعه محذوف','orphaned line items'):'');
+
+  // ── 5) الديون والائتمان ──
+  var overLimit=(db.customers||[]).filter(function(c){return c.creditLimit>0&&c.balance>c.creditLimit;});
+  add('finance',L('لا يوجد عملاء متخطين حد الائتمان','No customers over credit limit'),overLimit.length===0,
+    overLimit.length?overLimit.length+' '+L('عميل متخطي الحد','over limit'):'');
+  var oldDebt=bf(db.sales).filter(function(s){return (+s.dueAmount||0)>0&&s.date<addDays(today(),-90);});
+  add('finance',L('لا توجد ديون أقدم من 90 يوم بدون متابعة','No unfollowed debts older than 90 days'),oldDebt.length===0,
+    oldDebt.length?oldDebt.length+' '+L('فاتورة آجلة قديمة','old open invoices'):'',L('راجع أعمار الديون','Check debt aging report'));
+
+  // ── 6) النسخ الاحتياطي والتخزين ──
+  var s=fatStorageInfo();
+  add('backup',L('مساحة التخزين المحلي آمنة (أقل من 70%)','Local storage healthy (<70%)'),s.pct<70,s.pct+'%');
+  var lastBk=localStorage.getItem('fat_last_cloud_backup')||'';
+  add('backup',L('آخر نسخة سحابية خلال آخر يومين','Cloud backup within last 2 days'),lastBk&&lastBk>=addDays(today(),-2),
+    lastBk?L('آخر نسخة','Last')+': '+lastBk:L('لا توجد نسخة سحابية بعد','No cloud backup yet'),
+    L('اضغط "نسخة سحابية الآن" من الإعدادات','Tap "Cloud backup now" in Settings'));
+
+  // ── 7) الشيفت الحالي ──
+  if(typeof _activeShift!=='undefined'&&_activeShift){
+    add('ops',L('الشيفت الحالي اتفتح النهاردة','Current shift opened today'),_activeShift.openDate===today(),
+      _activeShift.openDate!==today()?L('مفتوح من','Open since')+' '+_activeShift.openDate:'',
+      L('قفّل الشيفت القديم من شاشة الكاشير','Close the old shift from POS'));
+  }
+
+  var okCount=checks.filter(function(c){return c.ok;}).length;
+  var score=Math.round(okCount/checks.length*100);
+  return {checks:checks,score:score,okCount:okCount,total:checks.length};
+};
+
+views.healthCheck=function(){
+  document.getElementById('topActions').innerHTML='<button class="btn btn-ghost" onclick="views.healthCheck()">\ud83d\udd04 '+L('إعادة الفحص','Re-scan')+'</button>';
+  var r=fatHealthCheck();
+  var color=r.score>=90?'var(--ok)':r.score>=70?'var(--gold)':'var(--danger)';
+  var cats={setup:['\u2699\ufe0f',L('الإعداد الأساسي','Basic setup')],accounting:['\ud83d\udcd2',L('المحاسبة','Accounting')],inventory:['\ud83d\udce6',L('المخزون','Inventory')],integrity:['\ud83d\udd17',L('ربط البيانات','Data integrity')],finance:['\ud83d\udcb0',L('الديون والائتمان','Debts & credit')],backup:['\u2601\ufe0f',L('النسخ الاحتياطي','Backup')],ops:['\u23f1\ufe0f',L('التشغيل اليومي','Daily ops')]};
+  var html='<div style="text-align:center;padding:24px;background:var(--card2);border-radius:16px;margin-bottom:18px">'+
+    '<div style="font-size:48px;font-weight:800;color:'+color+'">'+r.score+'%</div>'+
+    '<div style="font-size:13px;color:var(--muted);margin-top:4px">'+r.okCount+' / '+r.total+' '+L('فحص سليم','checks passed')+'</div></div>';
+  Object.keys(cats).forEach(function(cat){
+    var items=r.checks.filter(function(c){return c.cat===cat;});
+    if(!items.length)return;
+    html+='<div class="panel"><div class="panel-h"><h3>'+cats[cat][0]+' '+cats[cat][1]+'</h3></div><div class="panel-b">';
+    items.forEach(function(c){
+      html+='<div style="display:flex;align-items:flex-start;gap:10px;padding:9px 4px;border-bottom:1px solid var(--line)">'+
+        '<span style="font-size:16px">'+(c.ok?'\u2705':'\u26a0\ufe0f')+'</span>'+
+        '<div style="flex:1"><div style="font-size:13px;font-weight:600">'+c.label+'</div>'+
+        (c.detail?'<div style="font-size:11.5px;color:'+(c.ok?'var(--muted)':'var(--danger)')+';margin-top:2px">'+esc(c.detail)+'</div>':'')+
+        (!c.ok&&c.fixHint?'<div style="font-size:11px;color:var(--primary-d);margin-top:2px">\ud83d\udca1 '+c.fixHint+'</div>':'')+
+        '</div></div>';
+    });
+    html+='</div></div>';
+  });
+  document.getElementById('content').innerHTML=html;
+};
+try{
+  PG.healthCheck=[['فحص صحة النظام','فحص شامل لسلامة البيانات والإعدادات قبل ما تعتمد عليها'],['System Health Check','Comprehensive data & setup integrity scan']];
+  var _cv7=window.canView;
+  window.canView=function(v){ if(v==='healthCheck') return isManager(); return _cv7(v); };
+}catch(e){}
+// زرار في الإعدادات وقائمة القفز
+(function(){
+  var _orig=views.settings;
+  views.settings=function(){
+    _orig.apply(null,arguments);
+    try{
+      var panels=document.querySelectorAll('#content .panel');
+      for(var i=0;i<panels.length;i++){
+        var h=panels[i].querySelector('h3');
+        if(h&&(h.textContent.indexOf('\u0625\u062f\u0627\u0631\u0629 \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a')>-1)){
+          var body=panels[i].querySelector('.panel-b');
+          if(body&&!body.querySelector('#healthBtn')){
+            var r=fatHealthCheck();
+            var color=r.score>=90?'var(--ok)':r.score>=70?'var(--gold)':'var(--danger)';
+            var div=document.createElement('div');div.id='healthBtn';
+            div.style.cssText='margin-top:14px;padding:12px 14px;border:1px dashed var(--line);border-radius:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px';
+            div.innerHTML='<div><b style="font-size:13px">\ud83e\ude7a '+L('فحص صحة النظام','System health check')+'</b><div style="font-size:11px;color:var(--muted);margin-top:2px">'+L('نتيجة آخر فحص','Last score')+': <b style="color:'+color+'">'+r.score+'%</b></div></div>'+
+              '<button class="btn btn-primary btn-sm" onclick="go(\'healthCheck\')">'+L('فتح التقرير الكامل','Open full report')+'</button>';
+            body.appendChild(div);
+          }
+          break;
+        }
+      }
+    }catch(e){}
+  };
+  var _origJump=window.fatJumpModal;
+  if(typeof _origJump==='function'){
+    window.fatJumpModal=function(){
+      _origJump();
+      try{
+        var grid=document.getElementById('jumpGrid');
+        if(grid&&!grid.querySelector('[data-t*="\u0641\u062d\u0635 \u0635\u062d\u0629"]')){
+          var b=document.createElement('button');
+          b.className='btn btn-ghost jump-it';
+          b.setAttribute('data-t','\u0641\u062d\u0635 \u0635\u062d\u0629 \u0627\u0644\u0646\u0638\u0627\u0645');
+          b.style.cssText='justify-content:flex-start;text-align:right;font-size:12.5px';
+          b.innerHTML='\ud83e\ude7a '+L('فحص صحة النظام','Health check');
+          b.onclick=function(){closeModal();go('healthCheck');};
+          grid.insertBefore(b,grid.firstChild);
+        }
+      }catch(e){}
+    };
+  }
+})();
+})();
+
 try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{version:'v1.0-GM'});},800);}catch(_e){}
 </script>
 </body>
