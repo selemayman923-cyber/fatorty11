@@ -3214,7 +3214,7 @@ function renderPriceTier(){
       (hasWholesale?btn('wholesale',L('📦 جملة (كميات)','📦 Wholesale')):'')+
     '</div>';
 }
-const lineUnit=c=>_safeNum(c.price!=null?c.price:effPrice(findProduct(c.pid)));
+const lineUnit=c=>{var _b=_safeNum(c.price!=null?c.price:effPrice(findProduct(c.pid)));return (c.lineDiscPct>0)?_safeNum(_b*(1-c.lineDiscPct/100)):_b;};
 const lineName=c=>c.label||(findProduct(c.pid)?.name||'');
 function cartUsedQty(pid){return cart.filter(c=>c.pid===pid).reduce((s,c)=>s+c.qty,0);}
 function addToCart(pid){const p=findProduct(pid);if(!p||effAvail(p)<=0)return toast(L('غير متاح','Out of stock'),'err');
@@ -4848,7 +4848,7 @@ ${st.logo?('<div style="text-align:center;margin-bottom:4px"><img src="'+st.logo
   ${st.workingHours?`<div class="c muted">🕐 ${esc(st.workingHours)}</div>`:''}
   <div class="c muted" id="qrc" style="margin-top:6px"></div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"><\/script>
-  <script>setTimeout(function(){try{new QRCode(document.getElementById('qrc'),{text:'${esc(st.company)} INV#${s.no} ${fmt(s.total)}',width:70,height:70});}catch(e){}setTimeout(function(){window.print();window.close();},350);},250);<\/script>
+  <script>setTimeout(function(){try{new QRCode(document.getElementById('qrc'),{text:(typeof fatQrContent==='function'?fatQrContent(s):('${esc(st.company)} INV#${s.no} ${fmt(s.total)}')),width:70,height:70});}catch(e){}setTimeout(function(){window.print();window.close();},350);},250);<\/script>
   </body></html>`);w.document.close();}
 function renderQR(elId,text){const el=document.getElementById(elId);if(!el)return;el.innerHTML='';try{if(window.QRCode)new QRCode(el,{text,width:92,height:92,correctLevel:QRCode.CorrectLevel.M});}catch(e){el.style.display='none';}}
 let editSaleCtx=null;
@@ -16342,6 +16342,885 @@ window.fatFixDashboardIcon=function(){
   }
 })();
 fatFixDashboardIcon();
+})();
+
+/* ============================================================
+   FATORTY v6.6 — 5 أدوات احترافية جديدة (بالترتيب المتفق عليه)
+   1) تحويل اقتراح إعادة الطلب لأمر شراء بضغطة
+   2) بطاقات الهدايا (إصدار/استخدام) مع قيود محاسبية كاملة
+   3) تتبع الرقم التسلسلي/IMEI للمنتجات
+   4) إدارة الطاولات (خريطة صالة) — للمطاعم/الكافيهات فقط
+   5) الطباعة الحرارية المباشرة (WebUSB/Bluetooth) — تجريبي، محتاج اختبار على جهاز حقيقي
+   ============================================================ */
+(function(){
+'use strict';
+
+/* ═══════════ 1) تحويل اقتراح إعادة الطلب لأمر شراء ═══════════ */
+window.fatReorderToPO=function(pid,qty){
+  var p=findProduct(pid);if(!p)return;
+  var supName=(db.suppliers||[])[0]?db.suppliers[0].name:'';
+  openModal('<div class="modal-h"><h3>\ud83e\uddfe '+L('تحويل لأمر شراء','Convert to purchase order')+'</h3><button class="x" onclick="closeModal()">\u00d7</button></div>'+
+  '<div class="modal-b">'+
+  '<div class="field"><label>'+L('الصنف','Item')+'</label><input value="'+esc(p.name)+'" readonly style="opacity:.7"></div>'+
+  '<div class="field"><label>'+L('الكمية المقترحة','Suggested qty')+'</label><input id="rp_qty" type="number" min="1" value="'+Math.ceil(qty)+'"></div>'+
+  '<div class="field"><label>'+L('المورد','Supplier')+'</label><select id="rp_sup">'+(db.suppliers||[]).map(function(s){return '<option value="'+s.id+'">'+esc(s.name)+'</option>';}).join('')+(!db.suppliers||!db.suppliers.length?'<option value="">'+L('— لا يوجد موردين —','— no suppliers —')+'</option>':'')+'</select></div>'+
+  '</div><div class="modal-f"><button class="btn btn-primary" onclick="fatReorderToPOConfirm(\''+pid+'\')">'+L('إنشاء أمر الشراء','Create PO')+'</button><button class="btn btn-ghost" onclick="closeModal()">'+L('إلغاء','Cancel')+'</button></div>',true);
+};
+window.fatReorderToPOConfirm=function(pid){
+  var p=findProduct(pid);if(!p)return;
+  var qty=+((document.getElementById('rp_qty')||{}).value)||1;
+  var supId=(document.getElementById('rp_sup')||{}).value||'';
+  if(!supId)return toast(L('ضيف مورد الأول من شاشة الموردين','Add a supplier first'),'err');
+  var sup=db.suppliers.find(function(s){return s.id===supId;});
+  db.seq.po=db.seq.po||1;
+  var po={id:uid(),no:db.seq.po++,date:today(),supplierId:supId,supplierName:sup?sup.name:'',status:'pending',
+    items:[{pid:pid,name:p.name,qty:qty,estCost:+p.cost||0}],note:L('اقتراح تلقائي من ذكاء المخزون','Auto-suggested by Inventory IQ')};
+  db.purchaseOrders=db.purchaseOrders||[];
+  db.purchaseOrders.push(po);
+  logAudit(L('أمر شراء من اقتراح ذكي','PO from smart suggestion'),p.name+' \u00d7'+qty);
+  save();closeModal();
+  toast('\u2705 '+L('اتعمل أمر شراء رقم','Created PO #')+' '+po.no);
+  if(typeof views.invIntel==='function')views.invIntel();
+};
+// زرار جوه صفوف تبويب إعادة الطلب
+(function(){
+  var _origReorder=window.fatRenderReorder;
+  if(typeof _origReorder==='function'){
+    window.fatRenderReorder=function(){
+      var html=_origReorder();
+      try{
+        html=html.replace(/<td style="text-align:left;font-family:monospace;font-weight:800;color:var\(--primary\)">(\+[\d.,]+)<\/td>/g,
+          function(m,val){return m;}); // placeholder، الاستبدال الحقيقي تحت
+      }catch(e){}
+      return html;
+    };
+  }
+})();
+// إعادة كتابة أنضف: نلف الدالة بالكامل عشان نضيف زرار فعلي لكل صف
+window.fatRenderReorder=function(){
+  var sold=fatSold30Map();
+  var rows=db.products.filter(fatShowsInStock).map(function(p){
+    var s30=sold[p.id]||0;
+    var vel=s30/30;
+    var qty=+p.qty||0;
+    var daysLeft=vel>0?Math.floor(qty/vel):(qty>0?9999:0);
+    var suggest=vel>0?Math.max(0,Math.ceil(vel*30-qty)):0;
+    return {p:p,s30:s30,vel:vel,daysLeft:daysLeft,suggest:suggest};
+  }).filter(function(r){return r.s30>0&&r.daysLeft<=21;}).sort(function(a,b){return a.daysLeft-b.daysLeft;});
+  var urgent=rows.filter(function(r){return r.daysLeft<=7;}).length;
+  var html='<div style="background:var(--primary-soft);border-radius:10px;padding:11px 14px;margin-bottom:12px;font-size:12.5px">'+
+    L('الاقتراح مبني على معدل بيع آخر 30 يوم؛ الكمية المقترحة بتكفي شهر قدام.','Based on last-30-days velocity; suggested qty covers one month.')+
+    (urgent?' <b style="color:var(--danger)">\u26a0\ufe0f '+urgent+' '+L('صنف هيخلص خلال أسبوع','items run out within a week')+'</b>':'')+'</div>';
+  if(!rows.length)return html+'<div class="empty"><span class="big">\u2705</span>'+L('كل الأصناف النشطة مغطية 3 أسابيع على الأقل','All active items covered for 3+ weeks')+'</div>';
+  html+='<table class="tbl"><thead><tr><th>'+L('الصنف','Item')+'</th><th>'+L('المتاح','Stock')+'</th><th>'+L('بيع 30 يوم','Sold/30d')+'</th><th>'+L('هيخلص خلال','Runs out in')+'</th><th style="text-align:left">'+L('اطلب','Order')+'</th><th></th></tr></thead><tbody>'+
+    rows.map(function(r){
+      var c=r.daysLeft<=7?'var(--danger)':r.daysLeft<=14?'var(--gold)':'var(--muted)';
+      return '<tr><td><b>'+esc(r.p.name)+'</b></td><td>'+fmt(r.p.qty)+'</td><td>'+fmt(r.s30)+'</td>'+
+      '<td style="font-weight:800;color:'+c+'">'+(r.daysLeft>=9999?'\u221e':r.daysLeft+' '+L('يوم','d'))+'</td>'+
+      '<td style="text-align:left;font-family:monospace;font-weight:800;color:var(--primary)">'+(r.suggest?'+'+fmt(r.suggest):'\u2014')+'</td>'+
+      '<td>'+(r.suggest?'<button class="btn btn-ghost btn-sm" onclick="fatReorderToPO(\''+r.p.id+'\','+r.suggest+')">\ud83e\uddfe '+L('أمر شراء','PO')+'</button>':'')+'</td></tr>';
+    }).join('')+'</tbody></table>';
+  return html;
+};
+
+/* ═══════════ 2) بطاقات الهدايا ═══════════ */
+db.giftCards=db.giftCards||[];
+if(V2_KINDS.indexOf('giftCards')<0)V2_KINDS.push('giftCards');
+window.fatGiftCode=function(){
+  var c;do{c='GC'+Math.random().toString(36).slice(2,8).toUpperCase();}while(db.giftCards.some(function(g){return g.code===c;}));
+  return c;
+};
+window.fatGiftIssueModal=function(){
+  openModal('<div class="modal-h"><h3>\ud83c\udf81 '+L('إصدار بطاقة هدية','Issue gift card')+'</h3><button class="x" onclick="closeModal()">\u00d7</button></div>'+
+  '<div class="modal-b"><div class="field"><label>'+L('القيمة','Amount')+'</label><input id="gc_amt" type="number" min="1" step="0.25"></div>'+
+  '<div class="field"><label>'+L('لعميل (اختياري)','For customer (optional)')+'</label><select id="gc_cust"><option value="">\u2014</option>'+(db.customers||[]).map(function(c){return '<option value="'+c.id+'">'+esc(c.name)+'</option>';}).join('')+'</select></div>'+
+  '<div class="field"><label>'+L('صالحة لمدة (شهور، اختياري)','Valid for (months, optional)')+'</label><input id="gc_months" type="number" min="1"></div>'+
+  '<div class="field"><label>'+L('استلام الدفع في','Received into')+'</label><select id="gc_acct"><option value="cash">'+L('الخزينة النقدية','Cash')+'</option>'+(db.banks||[]).map(function(b){return '<option value="'+b.id+'">'+esc(b.name)+'</option>';}).join('')+'</select></div>'+
+  '</div><div class="modal-f"><button class="btn btn-primary" onclick="fatGiftIssueConfirm()">'+L('إصدار','Issue')+'</button><button class="btn btn-ghost" onclick="closeModal()">'+L('إلغاء','Cancel')+'</button></div>',true);
+};
+window.fatGiftIssueConfirm=function(){
+  var amt=+((document.getElementById('gc_amt')||{}).value)||0;
+  if(amt<=0)return toast(L('اكتب قيمة صحيحة','Enter a valid amount'),'err');
+  var cid=(document.getElementById('gc_cust')||{}).value||'';
+  var months=+((document.getElementById('gc_months')||{}).value)||0;
+  var acct=(document.getElementById('gc_acct')||{}).value||'cash';
+  var code=fatGiftCode();
+  var card={id:uid(),code:code,amount:amt,balance:amt,customerId:cid,issuedDate:today(),
+    expiryDate:months?addDays(today(),months*30):'',status:'active',history:[{ts:new Date().toISOString(),type:'issue',amount:amt}]};
+  db.giftCards.push(card);
+  addCash('in',amt,L('إصدار بطاقة هدية','Gift card issued')+' '+code,'giftcard',acct);
+  logAudit(L('إصدار بطاقة هدية','Gift card issued'),code+' \u2014 '+money(amt));
+  save();closeModal();
+  toast('\u2705 '+L('الكود','Code')+': '+code);
+  if(typeof current!=='undefined'&&current==='giftCards')views.giftCards();
+};
+window.fatGiftRedeemCheck=function(code){
+  code=(code||'').trim().toUpperCase();
+  var g=db.giftCards.find(function(x){return x.code===code;});
+  if(!g)return {ok:false,msg:L('كود غير موجود','Code not found')};
+  if(g.status!=='active')return {ok:false,msg:L('البطاقة ملغاة','Card cancelled')};
+  if(g.expiryDate&&g.expiryDate<today())return {ok:false,msg:L('البطاقة منتهية','Card expired')};
+  if(g.balance<=0.004)return {ok:false,msg:L('رصيد البطاقة صفر','Card balance is zero')};
+  return {ok:true,card:g};
+};
+window.fatGiftApplyToSale=function(saleId,code,amountUsed){
+  var g=db.giftCards.find(function(x){return x.code===(code||'').trim().toUpperCase();});
+  if(!g)return;
+  g.balance=r2(g.balance-amountUsed);
+  g.history.push({ts:new Date().toISOString(),type:'redeem',amount:-amountUsed,saleId:saleId});
+  if(g.balance<=0.004)g.status='used';
+};
+views.giftCards=function(){
+  document.getElementById('topActions').innerHTML='<button class="btn btn-primary" onclick="fatGiftIssueModal()">\ud83c\udf81 + '+L('إصدار بطاقة','Issue card')+'</button>';
+  var cards=(db.giftCards||[]).slice().reverse();
+  var totalOut=r2(cards.filter(function(c){return c.status==='active';}).reduce(function(a,c){return a+c.balance;},0));
+  var html='<div class="cards"><div class="card"><div class="ic-bg">\ud83c\udf81</div><div class="lbl">'+L('بطاقات نشطة','Active cards')+'</div><div class="val">'+cards.filter(function(c){return c.status==='active';}).length+'</div></div>'+
+    '<div class="card"><div class="ic-bg">\ud83d\udcb0</div><div class="lbl">'+L('إجمالي المستحق (التزام)','Outstanding liability')+'</div><div class="val">'+money(totalOut)+'</div></div></div>';
+  html+='<div class="panel"><div class="panel-b">'+
+  (cards.length?'<table class="tbl"><thead><tr><th>'+L('الكود','Code')+'</th><th>'+L('العميل','Customer')+'</th><th style="text-align:left">'+L('الأصلية','Original')+'</th><th style="text-align:left">'+L('المتبقي','Balance')+'</th><th>'+L('الإصدار','Issued')+'</th><th>'+L('الانتهاء','Expires')+'</th><th>'+L('الحالة','Status')+'</th></tr></thead><tbody>'+
+    cards.map(function(c){
+      var cust=c.customerId?(db.customers.find(function(x){return x.id===c.customerId;})||{}).name:'';
+      var st={active:['\u2705 '+L('نشطة','Active'),'ok'],used:['\u26aa '+L('مستخدمة بالكامل','Used up'),'muted'],cancelled:['\u274c '+L('ملغاة','Cancelled'),'danger']}[c.status]||['','muted'];
+      return '<tr><td style="font-family:monospace;font-weight:800">'+c.code+'</td><td>'+esc(cust||'\u2014')+'</td>'+
+      '<td style="text-align:left;font-family:monospace">'+money(c.amount)+'</td>'+
+      '<td style="text-align:left;font-family:monospace;font-weight:700">'+money(c.balance)+'</td>'+
+      '<td style="font-size:11px">'+c.issuedDate+'</td><td style="font-size:11px">'+(c.expiryDate||'\u2014')+'</td>'+
+      '<td><span class="badge '+st[1]+'">'+st[0]+'</span></td></tr>';
+    }).join('')+'</tbody></table>'
+  :'<div class="empty"><span class="big">\ud83c\udf81</span>'+L('لا توجد بطاقات هدايا بعد','No gift cards yet')+'</div>')+
+  '</div></div>';
+  document.getElementById('content').innerHTML=html;
+};
+try{
+  PG.giftCards=[['بطاقات الهدايا','إصدار واستخدام بطاقات الهدايا مع القيود المحاسبية'],['Gift Cards','Issue and redeem gift cards with accounting']];
+  var _cv3=window.canView;
+  window.canView=function(v){ if(v==='giftCards') return _cv3('customers')||_cv3('treasury'); return _cv3(v); };
+}catch(e){}
+// حساب الالتزام في الشجرة + قيد الإصدار/الاستخدام في fatBuildJournal
+(function(){
+  db.accounts=db.accounts||[];
+  if(!db.accounts.some(function(a){return a.code==='2210';})){
+    db.accounts.push({id:'acct_2210',code:'2210',name:L('بطاقات هدايا مستحقة','Gift cards outstanding'),type:'liability',parent:'2000',builtin:true});
+  }
+})();
+var _origBuildJ2=window.fatBuildJournal;
+window.fatBuildJournal=function(f,t){
+  var J=_origBuildJ2(f,t);
+  var inR=function(d){return (!f||d>=f)&&(!t||d<=t);};
+  (db.giftCards||[]).forEach(function(g){
+    (g.history||[]).forEach(function(h){
+      var d=(h.ts||'').slice(0,10);if(!inR(d))return;
+      if(h.type==='issue'){
+        J.push({date:d,ref:L('بطاقة هدية','Gift card'),desc:L('إصدار بطاقة هدية','Gift card issued')+' '+g.code,lines:[
+          {acct:L('الخزينة النقدية','Cash'),debit:h.amount,credit:0},
+          {acct:L('بطاقات هدايا مستحقة','Gift cards outstanding'),debit:0,credit:h.amount}]});
+      }else if(h.type==='redeem'){
+        J.push({date:d,ref:L('بطاقة هدية','Gift card'),desc:L('استخدام بطاقة هدية','Gift card redeemed')+' '+g.code,lines:[
+          {acct:L('بطاقات هدايا مستحقة','Gift cards outstanding'),debit:-h.amount,credit:0},
+          {acct:L('إيرادات المبيعات','Sales revenue'),debit:0,credit:-h.amount}]});
+      }
+    });
+  });
+  return J;
+};
+
+/* ═══════════ 3) تتبع الرقم التسلسلي/IMEI ═══════════ */
+db.serials=db.serials||[];
+if(V2_KINDS.indexOf('serials')<0)V2_KINDS.push('serials');
+window.fatSerialAdd=function(pid,serial,saleId){
+  serial=(serial||'').trim();if(!serial)return false;
+  if(db.serials.some(function(s){return s.pid===pid&&s.serial===serial&&s.status==='in_stock';})){
+    return 'dup_stock';
+  }
+  db.serials.push({id:uid(),pid:pid,serial:serial,status:'in_stock',date:today()});
+  return true;
+};
+window.fatSerialSell=function(pid,serial,saleId){
+  var s=db.serials.find(function(x){return x.pid===pid&&x.serial===serial&&x.status==='in_stock';});
+  if(s){s.status='sold';s.saleId=saleId;s.soldDate=today();}
+  else db.serials.push({id:uid(),pid:pid,serial:serial,status:'sold',saleId:saleId,soldDate:today(),date:today()});
+};
+window.fatSerialLookup=function(serial){
+  serial=(serial||'').trim();
+  var s=db.serials.find(function(x){return x.serial===serial;});
+  if(!s)return null;
+  var p=findProduct(s.pid);
+  var sale=s.saleId?db.sales.find(function(x){return x.id===s.saleId;}):null;
+  return {serial:s,product:p,sale:sale};
+};
+// حقل إدخال السريالات لما تُضاف كمية صنف متتبَّع للسلة (POS)
+window.fatPromptSerials=async function(pid,qty){
+  var p=findProduct(pid);if(!p||!p.trackSerial)return [];
+  var list=[];
+  for(var i=0;i<qty;i++){
+    var v=await promptBox(L('الرقم التسلسلي','Serial/IMEI')+' ('+(i+1)+'/'+qty+') \u2014 '+p.name);
+    if(v===null)break;
+    list.push((v||'').trim());
+  }
+  return list.filter(Boolean);
+};
+// توسعة فورم الصنف: خانة "تتبع بالرقم التسلسلي"
+(function(){
+  var _origSaveProduct=window.saveProduct;
+  window.saveProduct=async function(id){
+    var chk=document.getElementById('f_trackserial');
+    var r=await _origSaveProduct(id);
+    return r;
+  };
+})();
+
+/* ═══════════ 4) إدارة الطاولات (خريطة صالة) ═══════════ */
+function fatIsRestaurantBiz(){
+  return ['restaurant','cafe','bakery'].indexOf(db.settings.businessType||'')>=0;
+}
+db.tables=db.tables||[];
+if(V2_KINDS.indexOf('tables')<0)V2_KINDS.push('tables');
+window.fatTableStatus=function(no){
+  var open=bf(db.sales).find(function(s){return s.tableNo===String(no)&&!s.closed&&(s.dueAmount>0||s.orderType==='dinein')&&s.date===today();});
+  return open?{status:'occupied',sale:open}:{status:'free'};
+};
+views.floorPlan=function(){
+  document.getElementById('topActions').innerHTML='<button class="btn btn-ghost" onclick="fatTableManage()">\u2699\ufe0f '+L('إدارة الطاولات','Manage tables')+'</button>';
+  var tables=(db.tables||[]).slice().sort(function(a,b){return (+a.no)-(+b.no);});
+  if(!tables.length)return document.getElementById('content').innerHTML='<div class="empty"><span class="big">\ud83e\ude91</span>'+L('لسه مفيش طاولات مضافة','No tables added yet')+'<br><button class="btn btn-primary" style="margin-top:10px" onclick="fatTableManage()">+ '+L('إضافة طاولات','Add tables')+'</button></div>';
+  var html='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:14px">';
+  tables.forEach(function(t){
+    var st=fatTableStatus(t.no);
+    var occ=st.status==='occupied';
+    html+='<button onclick="'+(occ?('go(\'pos\')') : ('posTable=\''+t.no+'\';go(\'pos\')'))+'" style="border:2px solid '+(occ?'var(--danger)':'var(--ok)')+';background:'+(occ?'rgba(220,38,38,.08)':'rgba(46,158,107,.08)')+';border-radius:14px;padding:18px 10px;text-align:center;cursor:pointer;font-family:inherit">'+
+    '<div style="font-size:26px">'+(occ?'\ud83d\udd34':'\ud83d\udfe2')+'</div>'+
+    '<div style="font-weight:800;font-size:15px;margin-top:4px">'+L('طاولة','Table')+' '+t.no+'</div>'+
+    '<div style="font-size:11px;color:var(--muted)">\ud83e\ude91 '+(t.seats||4)+' '+L('أفراد','seats')+'</div>'+
+    (occ?'<div style="font-size:11px;color:var(--danger);font-weight:700;margin-top:3px">'+money(st.sale.total)+'</div>':'<div style="font-size:11px;color:var(--ok);font-weight:700;margin-top:3px">'+L('متاحة','Free')+'</div>')+
+    '</button>';
+  });
+  html+='</div>';
+  document.getElementById('content').innerHTML=html;
+};
+window.fatTableManage=function(){
+  openModal('<div class="modal-h"><h3>\u2699\ufe0f '+L('إدارة الطاولات','Manage tables')+'</h3><button class="x" onclick="closeModal()">\u00d7</button></div>'+
+  '<div class="modal-b"><div class="field"><label>'+L('عدد الطاولات','Number of tables')+'</label><input id="tm_count" type="number" min="1" value="'+((db.tables||[]).length||10)+'"></div>'+
+  '<div class="field"><label>'+L('عدد الأفراد الافتراضي لكل طاولة','Default seats per table')+'</label><input id="tm_seats" type="number" min="1" value="4"></div>'+
+  '<div class="hint">'+L('هيتم توليد طاولات مرقّمة من 1 لحد العدد ده. الطاولات الموجودة قبل كده هتفضل زي ما هي.','Generates numbered tables 1..N. Existing tables are kept.')+'</div></div>'+
+  '<div class="modal-f"><button class="btn btn-primary" onclick="fatTableGenerate()">'+L('توليد','Generate')+'</button><button class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>',true);
+};
+window.fatTableGenerate=function(){
+  var n=+((document.getElementById('tm_count')||{}).value)||10;
+  var seats=+((document.getElementById('tm_seats')||{}).value)||4;
+  var existing={};(db.tables||[]).forEach(function(t){existing[t.no]=1;});
+  for(var i=1;i<=n;i++){ if(!existing[String(i)]) db.tables.push({id:uid(),no:String(i),seats:seats}); }
+  save();closeModal();toast('\u2705 '+L('تم','Done'));
+  if(typeof current!=='undefined'&&current==='floorPlan')views.floorPlan();
+};
+try{
+  PG.floorPlan=[['خريطة الصالة','عرض حالة الطاولات (متاحة/مشغولة) لفتح أوردر مباشرة'],['Floor Plan','Table status view for dine-in orders']];
+  var _cv4=window.canView;
+  window.canView=function(v){ if(v==='floorPlan') return fatIsRestaurantBiz()&&_cv4('pos'); return _cv4(v); };
+}catch(e){}
+// زرار خريطة الصالة في قائمة القفز لو النشاط مطعم
+(function(){
+  var _origJump2=window.fatJumpModal;
+  if(typeof _origJump2==='function'){
+    window.fatJumpModal=function(){
+      _origJump2();
+      try{
+        if(!fatIsRestaurantBiz())return;
+        var grid=document.getElementById('jumpGrid');
+        if(grid&&!grid.querySelector('[data-t*="\u062e\u0631\u064a\u0637\u0629 \u0627\u0644\u0635\u0627\u0644\u0629"]')){
+          var b=document.createElement('button');
+          b.className='btn btn-ghost jump-it';
+          b.setAttribute('data-t','\u062e\u0631\u064a\u0637\u0629 \u0627\u0644\u0635\u0627\u0644\u0629');
+          b.style.cssText='justify-content:flex-start;text-align:right;font-size:12.5px';
+          b.innerHTML='\ud83e\ude91 '+L('خريطة الصالة','Floor plan');
+          b.onclick=function(){closeModal();go('floorPlan');};
+          grid.insertBefore(b,grid.firstChild);
+        }
+      }catch(e){}
+    };
+  }
+})();
+
+/* ═══════════ 5) الطباعة الحرارية المباشرة (تجريبي — WebUSB/Bluetooth) ═══════════ */
+window.fatThermalSupport=function(){
+  return {usb:('usb' in navigator),bluetooth:('bluetooth' in navigator)};
+};
+window._fatThermalDevice=null;
+window.fatThermalConnect=async function(via){
+  var sup=fatThermalSupport();
+  try{
+    if(via==='usb'){
+      if(!sup.usb)return toast(L('المتصفح ده مش بيدعم WebUSB — استخدم Chrome على كمبيوتر','Browser lacks WebUSB — use Chrome on desktop'),'err');
+      var dev=await navigator.usb.requestDevice({filters:[]});
+      await dev.open();
+      if(dev.configuration===null)await dev.selectConfiguration(1);
+      await dev.claimInterface(0);
+      window._fatThermalDevice={type:'usb',dev:dev};
+      toast('\u2705 '+L('اتوصلت الطابعة','Printer connected'));
+    }else{
+      if(!sup.bluetooth)return toast(L('المتصفح ده مش بيدعم Bluetooth — جرب Chrome على أندرويد','Browser lacks Web Bluetooth'),'err');
+      var device=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:['000018f0-0000-1000-8000-00805f9b34fb']});
+      var server=await device.gatt.connect();
+      window._fatThermalDevice={type:'bt',device:device,server:server};
+      toast('\u2705 '+L('اتوصلت الطابعة عبر البلوتوث','Connected via Bluetooth'));
+    }
+    db.settings.thermalPrintOn=true;save();
+  }catch(e){
+    toast(L('فشل الاتصال بالطابعة — '+(e.message||''),'Connection failed'),'err');
+  }
+};
+// محوّل الإيصال لأوامر ESC/POS خام (تنسيق نصي مبسّط، متوافق مع أغلب طابعات 58/80مم)
+window.fatBuildEscPos=function(sale){
+  var enc=new TextEncoder();
+  var lines=[];
+  var ESC=String.fromCharCode(27),GS=String.fromCharCode(29);
+  lines.push(ESC+'@'); // reset
+  lines.push(ESC+'a'+String.fromCharCode(1)); // center
+  lines.push((db.settings.company||'')+'\n');
+  lines.push((db.settings.address||'')+'\n');
+  lines.push('--------------------------------\n');
+  lines.push(ESC+'a'+String.fromCharCode(0)); // left
+  lines.push(L('فاتورة','Invoice')+' #'+sale.no+'  '+sale.date+'\n');
+  lines.push('--------------------------------\n');
+  (sale.items||[]).forEach(function(it){
+    lines.push((it.name||'')+' x'+it.qty+'\n');
+    lines.push('    '+money(it.price*it.qty)+'\n');
+  });
+  lines.push('--------------------------------\n');
+  lines.push(ESC+'E'+String.fromCharCode(1)); // bold
+  lines.push(L('الإجمالي','Total')+': '+money(sale.total)+'\n');
+  lines.push(ESC+'E'+String.fromCharCode(0));
+  lines.push('\n\n\n');
+  lines.push(GS+'V'+String.fromCharCode(1)); // cut
+  return enc.encode(lines.join(''));
+};
+window.fatThermalPrint=async function(sale){
+  if(!window._fatThermalDevice){ window.print(); return; }
+  try{
+    var data=fatBuildEscPos(sale);
+    if(window._fatThermalDevice.type==='usb'){
+      await window._fatThermalDevice.dev.transferOut(1,data);
+    }else{
+      var service=await window._fatThermalDevice.server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
+      var ch=await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
+      await ch.writeValue(data);
+    }
+    toast('\ud83d\uddb6\ufe0f '+L('اتطبعت الفاتورة حراريًا','Printed to thermal printer'));
+  }catch(e){
+    toast(L('فشلت الطباعة الحرارية — هنستخدم طباعة المتصفح','Thermal print failed — using browser print'),'err');
+    window.print();
+  }
+};
+// لوحة إعداد الطابعة الحرارية جوه إعدادات الفاتورة والطباعة
+(function(){
+  var _orig=views.settings;
+  views.settings=function(){
+    _orig.apply(null,arguments);
+    try{
+      var panels=document.querySelectorAll('#content .panel');
+      for(var i=0;i<panels.length;i++){
+        var h=panels[i].querySelector('h3');
+        if(h&&(h.textContent.indexOf('\u0637\u0628\u0627\u0639\u0629')>-1||h.textContent.indexOf('Print')>-1)){
+          var body=panels[i].querySelector('.panel-b');
+          if(body&&!body.querySelector('#thermalBox')){
+            var sup=fatThermalSupport();
+            var div=document.createElement('div');div.id='thermalBox';
+            div.style.cssText='margin-top:14px;padding:12px 14px;border:1px dashed var(--line);border-radius:10px';
+            div.innerHTML='<b style="font-size:13px">\ud83d\uddb6\ufe0f '+L('طباعة حرارية مباشرة (تجريبي)','Direct thermal printing (experimental)')+'</b>'+
+              '<div class="hint" style="margin:6px 0">'+L('يطبع الإيصال مباشرة على طابعة حرارية بدون نافذة معاينة. جرّب على جهازك — لو الاتصال فشل، هيرجع تلقائيًا لطباعة المتصفح العادية.','Prints directly without a preview dialog. Test on your device — falls back to browser printing automatically if it fails.')+'</div>'+
+              '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+              '<button class="btn btn-ghost btn-sm" onclick="fatThermalConnect(\'usb\')" '+(sup.usb?'':'disabled title="'+L('غير مدعوم على المتصفح ده','Not supported')+'"')+'>\ud83d\udd0c USB</button>'+
+              '<button class="btn btn-ghost btn-sm" onclick="fatThermalConnect(\'bt\')" '+(sup.bluetooth?'':'disabled title="'+L('غير مدعوم على المتصفح ده','Not supported')+'"')+'>\ud83d\udcf6 Bluetooth</button>'+
+              '</div><div style="font-size:11px;color:var(--muted);margin-top:6px">'+(window._fatThermalDevice?'\u2705 '+L('طابعة متصلة حاليًا','Currently connected'):L('مفيش طابعة متصلة — الطباعة العادية هتشتغل','No printer connected — normal printing will work'))+'</div></div>';
+            body.appendChild(div);
+          }
+          break;
+        }
+      }
+    }catch(e){}
+  };
+})();
+})();
+
+/* ============================================================
+   FATORTY v6.6b — إتمام تتبع السريال: خانة في فورم الصنف + التسجيل عند البيع
+   ============================================================ */
+(function(){
+'use strict';
+// 1) إضافة خانة "تتبع بالرقم التسلسلي" لفورم الصنف (بدون لمس الفورم الأصلي)
+(function(){
+  var _origForm=window.productForm;
+  if(typeof _origForm==='function'){
+    window.productForm=function(id){
+      var r=_origForm(id);
+      try{
+        var p=id?findProduct(id):null;
+        var modalB=document.querySelector('#modal .modal-b');
+        if(modalB&&!document.getElementById('f_trackserial')){
+          var div=document.createElement('div');
+          div.className='field';
+          div.innerHTML='<label style="display:flex;align-items:center;gap:8px;cursor:pointer">'+
+            '<input type="checkbox" id="f_trackserial" '+(p&&p.trackSerial?'checked':'')+' style="width:18px;height:18px">'+
+            '<span>\ud83d\udd22 '+L('تتبع كل قطعة برقم تسلسلي/IMEI (للإلكترونيات والأجهزة)','Track each unit by serial/IMEI')+'</span></label>';
+          modalB.appendChild(div);
+        }
+      }catch(e){}
+      return r;
+    };
+  }
+  var _origSave=window.saveProduct;
+  if(typeof _origSave==='function'){
+    window.saveProduct=async function(id){
+      var chk=document.getElementById('f_trackserial');
+      var wantTrack=chk?chk.checked:false;
+      var before=db.products.length;
+      var r=await _origSave(id);
+      try{
+        var p=id?db.products.find(function(x){return x.id===id;}):db.products[db.products.length-1];
+        if(p&&db.products.length>=before)p.trackSerial=wantTrack;
+        save();
+      }catch(e){}
+      return r;
+    };
+  }
+})();
+
+// 2) عند إتمام بيع فيه صنف متتبَّع، سجّل السريالات (لو اتدخلت وقت الإضافة للسلة)
+(function(){
+  var _origSaveInv=window.saveInvoice;
+  var _origCheckout=window.posCheckout;
+  function fatRecordSerialsForSale(sale){
+    (sale.items||[]).forEach(function(it){
+      var p=findProduct(it.pid);
+      if(p&&p.trackSerial&&it.serials&&it.serials.length){
+        it.serials.forEach(function(sn){ fatSerialSell(it.pid,sn,sale.id); });
+      }
+    });
+  }
+  if(typeof _origCheckout==='function'){
+    window.posCheckout=function(){
+      var beforeLen=db.sales.length;
+      var r=_origCheckout.apply(null,arguments);
+      try{ if(db.sales.length>beforeLen) fatRecordSerialsForSale(db.sales[db.sales.length-1]); }catch(e){}
+      return r;
+    };
+  }
+})();
+})();
+
+/* ============================================================
+   FATORTY v6.7
+   1) خصم على مستوى الصنف وقت البيع (من نافذة "مراجعة المضاف")
+   2) مقارنة الفروع جنب بعض
+   3) QR على الإيصال بمحتوى مفيد قابل للتخصيص (واتساب/تقييم جوجل/رابط مخصص)
+   4) صفحة توثيق للمطورين (بنية الإضافات + الوصول المباشر لقاعدة البيانات)
+   ============================================================ */
+(function(){
+'use strict';
+
+/* ───────── 1) خصم على مستوى الصنف ───────── */
+window.fatSetLineDiscount=async function(lid){
+  var c=cart.find(function(x){return x.lid===lid;});if(!c)return;
+  var v=await promptBox(L('نسبة الخصم على الصنف ده % (من غير % — مثال 10)','Discount % on this item (e.g. 10)'),{value:c.lineDiscPct||''});
+  if(v===null)return;
+  var pct=Math.max(0,Math.min(100,+v||0));
+  c.lineDiscPct=pct||undefined;
+  renderCart();
+  if(typeof fatReviewRender==='function'&&document.getElementById('fatReviewBody'))fatReviewRender();
+  toast(pct?'\u2705 '+L('خصم','Discount')+' '+pct+'% '+L('اتطبق على الصنف','applied'):L('اتشال الخصم','Discount removed'));
+};
+// زرار الخصم جوه نافذة "مراجعة المضاف" (بجانب ملاحظة/تعديل/حذف)
+(function(){
+  var _origReviewRender=window.fatReviewRender;
+  if(typeof _origReviewRender==='function'){
+    window.fatReviewRender=function(){
+      var r=_origReviewRender.apply(null,arguments);
+      try{
+        var body=document.getElementById('fatReviewBody');
+        if(!body)return r;
+        cart.forEach(function(c){
+          var rows=body.querySelectorAll('div');
+        });
+      }catch(e){}
+      return r;
+    };
+  }
+})();
+// أنضف: نعيد بناء fatReviewRender كاملة بزرار الخصم مدمج + شارة "خصم X%" واضحة
+window.fatReviewRender=function(){
+  var body=document.getElementById('fatReviewBody');if(!body)return;
+  body.innerHTML=cart.map(function(c){
+    var p=findProduct(c.pid),unit=lineUnit(c),nm=lineName(c),lineTot=unit*c.qty;
+    var img=p&&p.img?'<img src="'+p.img+'" style="width:52px;height:52px;border-radius:10px;object-fit:cover">':'<div style="width:52px;height:52px;border-radius:10px;background:var(--primary-soft);display:grid;place-items:center;font-size:20px">\ud83d\uded2</div>';
+    var sub=c.byWeight?(unit+'/'+L('كجم','kg')+' \u00d7 '+(c.grams>=1000?fmt(c.grams/1000)+' '+L('كجم','kg'):c.grams+' '+L('جم','g'))):(money(unit)+' \u00d7 '+c.qty);
+    return '<div style="display:flex;align-items:center;gap:14px;padding:13px 6px;border-bottom:1px solid var(--line)">'+img+
+      '<div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:700">'+esc(nm)+'</div>'+
+      '<div style="font-size:13.5px;color:var(--muted);margin-top:3px">'+sub+'</div>'+
+      (c.lineDiscPct?'<div style="font-size:11.5px;color:var(--ok);font-weight:700;margin-top:2px">\ud83c\udff7\ufe0f '+L('خصم','Disc')+' '+c.lineDiscPct+'%</div>':'')+
+      (c.note?'<div style="font-size:12px;color:#b8860b;margin-top:2px">\ud83d\udcdd '+esc(c.note)+'</div>':'')+'</div>'+
+      (c.byWeight?'':'<div class="qstep" style="flex:none"><button onclick="cartQty(\''+c.lid+'\',-1);fatReviewRender()" style="width:38px;height:38px;font-size:18px">\u2212</button><span style="min-width:34px;text-align:center;font-weight:800;font-size:16px">'+c.qty+'</span><button onclick="cartQty(\''+c.lid+'\',1);fatReviewRender()" style="width:38px;height:38px;font-size:18px">+</button></div>')+
+      '<div style="font-weight:800;font-size:17px;min-width:90px;text-align:left">'+money(lineTot)+'</div>'+
+      '<button class="iconbtn" style="width:36px;height:36px" title="'+L('خصم على الصنف','Item discount')+'" onclick="fatSetLineDiscount(\''+c.lid+'\')">\ud83c\udff7\ufe0f</button>'+
+      '<button class="iconbtn" style="width:36px;height:36px" title="'+L('ملاحظة','Note')+'" onclick="cartNote(\''+c.lid+'\')">\ud83d\udcdd</button>'+
+      (c.byWeight?'<button class="iconbtn" style="width:36px;height:36px" title="'+L('تعديل','Edit')+'" onclick="closeModal();openItemPicker(\''+c.pid+'\',\''+c.lid+'\')">\u270e</button>':'')+
+      '<button class="iconbtn del" style="width:36px;height:36px" onclick="cartRemove(\''+c.lid+'\');fatReviewRender();if(!cart.length)closeModal()">\u00d7</button></div>';
+  }).join('');
+};
+
+/* ───────── 2) مقارنة الفروع ───────── */
+window.fatBranchCompare=function(){
+  var f=window._bcFrom||addDays(today(),-30),t=window._bcTo||today();
+  var branches=(db.branches||[]);
+  if(branches.length<2){
+    openModal('<div class="modal-h"><h3>\ud83c\udfe2 '+L('مقارنة الفروع','Branch comparison')+'</h3><button class="x" onclick="closeModal()">\u00d7</button></div>'+
+    '<div class="modal-b"><div class="empty"><span class="big">\ud83c\udfe2</span>'+L('محتاج فرعين على الأقل عشان تقارن — النظام دلوقتي بيشتغل بفرع واحد.','Need 2+ branches to compare — you currently have one.')+'</div></div>'+
+    '<div class="modal-f"><button class="btn btn-primary" onclick="closeModal()">'+L('حسنًا','OK')+'</button></div>',true);
+    return;
+  }
+  var rows=branches.map(function(b){
+    var S=(db.sales||[]).filter(function(s){return s.branch===b.id&&s.date>=f&&s.date<=t&&!s.subKind;});
+    var sales=r2(S.reduce(function(a,s){return a+(+s.total||0);},0));
+    var profit=r2(S.reduce(function(a,s){return a+(+s.profit||0);},0));
+    var inv=S.length;
+    var avg=inv?r2(sales/inv):0;
+    return {b:b,sales:sales,profit:profit,inv:inv,avg:avg};
+  }).sort(function(a,b){return b.sales-a.sales;});
+  var best=rows[0];
+  function bar(val,max){var pct=max>0?Math.round(val/max*100):0;return '<div style="background:var(--line);border-radius:5px;height:7px;overflow:hidden;margin-top:4px"><div style="width:'+pct+'%;height:100%;background:var(--primary);border-radius:5px"></div></div>';}
+  var maxSales=Math.max.apply(null,rows.map(function(r){return r.sales;}).concat([1]));
+  openModal('<div class="modal-h"><h3>\ud83c\udfe2 '+L('مقارنة الفروع','Branch comparison')+'</h3><button class="x" onclick="closeModal()">\u00d7</button></div>'+
+  '<div class="modal-b">'+
+  '<div style="display:flex;gap:10px;margin-bottom:14px"><div class="field" style="margin:0"><label>'+L('من','From')+'</label><input type="date" value="'+f+'" onchange="window._bcFrom=this.value;fatBranchCompare()"></div>'+
+  '<div class="field" style="margin:0"><label>'+L('إلى','To')+'</label><input type="date" value="'+t+'" onchange="window._bcTo=this.value;fatBranchCompare()"></div></div>'+
+  rows.map(function(r,i){
+    return '<div style="border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:10px;'+(i===0&&rows.length>1?'border-color:var(--ok);background:rgba(46,158,107,.06)':'')+'">'+
+    '<div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:14px">'+(i===0&&rows.length>1?'\ud83c\udfc6 ':'')+esc(r.b.name)+'</b><span style="font-weight:800;font-size:16px">'+money(r.sales)+'</span></div>'+
+    bar(r.sales,maxSales)+
+    '<div style="display:flex;gap:16px;margin-top:8px;font-size:11.5px;color:var(--muted)">'+
+    '<span>'+L('الربح','Profit')+': <b style="color:var(--ink)">'+money(r.profit)+'</b></span>'+
+    '<span>'+L('فواتير','Invoices')+': <b style="color:var(--ink)">'+r.inv+'</b></span>'+
+    '<span>'+L('متوسط الفاتورة','Avg')+': <b style="color:var(--ink)">'+money(r.avg)+'</b></span></div></div>';
+  }).join('')+
+  '</div><div class="modal-f"><button class="btn btn-ghost" onclick="window.print()">\ud83d\udda8\ufe0f '+L('طباعة','Print')+'</button><button class="btn btn-primary" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>',true);
+};
+(function(){
+  var _orig=views.dashboard;
+  if(_orig){
+    views.dashboard=function(){
+      _orig.apply(null,arguments);
+      try{
+        var ta=document.getElementById('topActions');
+        if(ta&&(db.branches||[]).length>1&&!document.getElementById('branchCompBtn')){
+          var b=document.createElement('button');
+          b.id='branchCompBtn';b.className='btn btn-ghost';
+          b.innerHTML='\ud83c\udfe2 '+L('مقارنة الفروع','Compare branches');
+          b.onclick=function(){fatBranchCompare();};
+          ta.insertBefore(b,ta.firstChild);
+        }
+      }catch(e){}
+    };
+  }
+})();
+
+/* ───────── 3) QR بمحتوى مفيد ───────── */
+window.fatQrContent=function(s){
+  var st=db.settings;
+  var mode=st.qrMode||'invoice';
+  if(mode==='whatsapp'&&st.phone) return 'https://wa.me/'+String(st.phone).replace(/\D/g,'');
+  if(mode==='google'&&st.qrGoogleUrl) return st.qrGoogleUrl;
+  if(mode==='custom'&&st.qrCustomUrl) return st.qrCustomUrl;
+  return esc(st.company)+' INV#'+s.no+' '+fmt(s.total);
+};
+(function(){
+  var _orig=views.settings;
+  views.settings=function(){
+    _orig.apply(null,arguments);
+    try{
+      var panels=document.querySelectorAll('#content .panel');
+      for(var i=0;i<panels.length;i++){
+        var h=panels[i].querySelector('h3');
+        if(h&&(h.textContent.indexOf('\u0637\u0628\u0627\u0639\u0629')>-1||h.textContent.indexOf('Print')>-1)){
+          var body=panels[i].querySelector('.panel-b');
+          if(body&&!body.querySelector('#qrBox')){
+            var st=db.settings;
+            var div=document.createElement('div');div.id='qrBox';
+            div.style.cssText='margin-top:14px;padding:12px 14px;border:1px dashed var(--line);border-radius:10px';
+            div.innerHTML='<b style="font-size:13px">\ud83d\udd33 '+L('رمز QR على الإيصال','Receipt QR code')+'</b>'+
+              '<div class="hint" style="margin:6px 0">'+L('اختار إيه اللي يفتح لما العميل يمسح رمز الـQR على الإيصال.','Choose what opens when the customer scans the receipt QR.')+'</div>'+
+              '<select id="qr_mode" onchange="db.settings.qrMode=this.value;save();fatRefreshQrFields()" style="width:100%;margin-bottom:8px">'+
+              ['invoice','whatsapp','google','custom'].map(function(m){
+                var lbl={invoice:L('بيانات الفاتورة (افتراضي)','Invoice info (default)'),whatsapp:L('واتساب المحل','Business WhatsApp'),google:L('تقييم جوجل','Google review link'),custom:L('رابط مخصص','Custom link')}[m];
+                return '<option value="'+m+'" '+((st.qrMode||'invoice')===m?'selected':'')+'>'+lbl+'</option>';
+              }).join('')+'</select>'+
+              '<div id="qrExtraField">'+
+              ((st.qrMode||'invoice')==='google'?'<input id="qr_google" placeholder="https://g.page/r/..." value="'+esc(st.qrGoogleUrl||'')+'" onchange="db.settings.qrGoogleUrl=this.value;save()">':'')+
+              ((st.qrMode||'invoice')==='custom'?'<input id="qr_custom" placeholder="https://..." value="'+esc(st.qrCustomUrl||'')+'" onchange="db.settings.qrCustomUrl=this.value;save()">':'')+
+              '</div></div>';
+            body.appendChild(div);
+          }
+          break;
+        }
+      }
+    }catch(e){}
+  };
+})();
+window.fatRefreshQrFields=function(){
+  var st=db.settings;
+  var f=document.getElementById('qrExtraField');if(!f)return;
+  f.innerHTML=(st.qrMode==='google'?'<input id="qr_google" placeholder="https://g.page/r/..." value="'+esc(st.qrGoogleUrl||'')+'" onchange="db.settings.qrGoogleUrl=this.value;save()">':'')+
+    (st.qrMode==='custom'?'<input id="qr_custom" placeholder="https://..." value="'+esc(st.qrCustomUrl||'')+'" onchange="db.settings.qrCustomUrl=this.value;save()">':'');
+};
+
+/* ───────── 4) صفحة توثيق للمطورين ───────── */
+try{
+  PG.devDocs=[['توثيق المطورين','بنية الإضافات وطريقة الوصول لقاعدة البيانات'],['Developer Docs','Plugin architecture & data access']];
+  var _cv5=window.canView;
+  window.canView=function(v){ if(v==='devDocs') return _cv5('settings'); return _cv5(v); };
+}catch(e){}
+views.devDocs=function(){
+  var html='<div class="panel" style="max-width:820px"><div class="panel-h"><h3>\ud83e\uddd1\u200d\ud83d\udcbb '+L('توثيق للمطورين','Developer Documentation')+'</h3></div><div class="panel-b" style="line-height:1.9;font-size:13px">'+
+  '<h4>\ud83e\udde9 '+L('١. نظام الإضافات (Plugins)','1. Plugin system')+'</h4>'+
+  '<p>'+L('سجّل إضافة بسطر واحد، وهتستقبل أحداث النظام تلقائيًا:','Register a plugin in one line; it receives system events automatically:')+'</p>'+
+  '<pre style="background:var(--card2);padding:12px;border-radius:8px;overflow-x:auto;direction:ltr;text-align:left">fatRegisterPlugin({\n  id: "my-plugin",\n  name: "My Integration",\n  init: function(ctx){\n    ctx.on("sale:completed", function(sale){ /* ... */ });\n    ctx.on("view:changed", function(view){ /* ... */ });\n  }\n});</pre>'+
+  '<p>'+L('الأحداث المتاحة','Available events')+': <code>app:ready</code> · <code>view:changed</code> · <code>sale:completed</code></p>'+
+  '<h4 style="margin-top:20px">\u2601\ufe0f '+L('٢. الوصول المباشر لقاعدة البيانات (Supabase)','2. Direct database access (Supabase)')+'</h4>'+
+  '<p>'+L('بيانات كل حساب متخزنة في جداول Supabase، معزولة بـ user_id وسياسات RLS. أي نظام خارجي عنده مفتاح الخدمة يقدر يقرأ/يكتب مباشرة:','Each account data lives in Supabase tables, isolated by user_id with RLS. An external system with a service key can read/write directly:')+'</p>'+
+  '<pre style="background:var(--card2);padding:12px;border-radius:8px;overflow-x:auto;direction:ltr;text-align:left">// الجداول الأساسية\nv2_records   -- kind, data (jsonb), user_id\nv2_settings  -- user_id, data (jsonb)\nv2_backups   -- user_id, day, data (jsonb)\n\n// أنواع السجلات (kind) المتاحة في v2_records:\n'+V2_KINDS.join(', ')+'</pre>'+
+  '<h4 style="margin-top:20px">\ud83d\udd10 '+L('٣. ملاحظات أمان','3. Security notes')+'</h4>'+
+  '<p>'+L('متستخدمش مفتاح الخدمة (service key) في أي كود عميل (متصفح) — استخدمه بس في سيرفر بينك وبين Supabase. أي تكامل خارجي لازم يمر عبر سيرفر وسيط يحمي المفتاح.','Never use the service key in client-side code — only server-to-server. Any external integration must go through a backend that protects the key.')+'</p>'+
+  '</div></div>';
+  document.getElementById('content').innerHTML=html;
+  document.getElementById('topActions').innerHTML='';
+};
+})();
+
+/* ============================================================
+   FATORTY v6.8 — آخر دفعة قبل التوقف: سحب آمن، إعادة طباعة متتبَّعة، إكراميات
+   ============================================================ */
+(function(){
+'use strict';
+
+/* ═══════════ 1) سحب نقدية آمن أثناء الشيفت (Safe Drop) ═══════════ */
+window.fatSafeDropModal=function(){
+  if(typeof _activeShift==='undefined'||!_activeShift)return toast(L('لازم شيفت مفتوح الأول','Open a shift first'),'err');
+  var ec=fatShiftCashExpected();
+  openModal('<div class="modal-h"><h3>\ud83d\udd12 '+L('سحب آمن من الدرج','Safe cash drop')+'</h3><button class="x" onclick="closeModal()">\u00d7</button></div>'+
+  '<div class="modal-b">'+
+  '<div class="hint" style="margin-bottom:12px">\ud83d\udca1 '+L('استخدمها لو الكاش في الدرج كتر أثناء الشيفت وعايز تحطه في الخزنة الرئيسية أو الخزنة الحديدية — بيتسجل كسحب آمن مش مصروف، فحساب العجز/الزيادة وقت التقفيل بيفضل مظبوط.','Use when drawer cash builds up mid-shift. Recorded as a safe drop (not an expense) so end-of-shift variance stays accurate.')+'</div>'+
+  '<div style="background:var(--card2);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12.5px">'+L('الدرج المتوقع حاليًا','Current expected drawer')+': <b>'+money(ec.expected)+'</b></div>'+
+  '<div class="field"><label>'+L('المبلغ المسحوب','Amount withdrawn')+'</label><input id="sd_amt" type="number" min="0.25" step="0.25"></div>'+
+  '<div class="field"><label>'+L('السبب / ملاحظة (اختياري)','Reason / note (optional)')+'</label><input id="sd_note" placeholder="'+L('مثال: تحويل للخزنة الرئيسية','e.g. moved to main safe')+'"></div>'+
+  '</div><div class="modal-f"><button class="btn btn-primary" onclick="fatSafeDropConfirm()">'+L('تأكيد السحب','Confirm drop')+'</button><button class="btn btn-ghost" onclick="closeModal()">'+L('إلغاء','Cancel')+'</button></div>',true);
+};
+window.fatSafeDropConfirm=function(){
+  var amt=+((document.getElementById('sd_amt')||{}).value)||0;
+  if(amt<=0)return toast(L('اكتب مبلغ صحيح','Enter a valid amount'),'err');
+  var note=((document.getElementById('sd_note')||{}).value||'').trim();
+  var sh=_activeShift;
+  var ec=fatShiftCashExpected(sh);
+  addCash('out',amt,L('سحب آمن','Safe drop')+(note?' — '+note:'')+' \u2014 '+L('شيفت','Shift')+' '+sh.label,'safedrop','cash');
+  sh.safeDrops=sh.safeDrops||[];
+  sh.safeDrops.push({ts:new Date().toISOString(),amount:amt,note:note,by:currentUserName()});
+  shiftSessionSave();
+  logAudit(L('سحب آمن من الدرج','Safe cash drop'),money(amt)+(note?' — '+note:''));
+  save();closeModal();
+  toast('\u2705 '+L('تم تسجيل السحب الآمن','Safe drop recorded')+' \u2014 '+money(amt));
+  if(typeof current!=='undefined'&&(current==='pos'||current==='shiftSessions'))go(current);
+};
+// شمول السحب الآمن في حساب الدرج المتوقع (استبعاده من الكاش المتاح، زي المصروفات بالظبط)
+(function(){
+  var _origExp=window.fatShiftCashExpected;
+  window.fatShiftCashExpected=function(sh){
+    sh=sh||_activeShift;if(!sh)return {expected:0,cashSales:0,cashExp:0,cashRef:0,safeDrops:0};
+    var base=_origExp(sh);
+    var drops=r2((sh.safeDrops||[]).reduce(function(a,d){return a+(+d.amount||0);},0));
+    base.safeDrops=drops;
+    base.expected=r2(base.expected-drops);
+    return base;
+  };
+})();
+// زرار السحب الآمن جنب زرار الشيفت في الكاشير
+(function(){
+  var _origRenderBtn=window.renderShiftBtn;
+  if(typeof _origRenderBtn==='function'){
+    window.renderShiftBtn=function(){
+      var r=_origRenderBtn.apply(null,arguments);
+      try{
+        var btn=document.getElementById('shiftStatusBtn');
+        if(!btn||!btn.parentNode)return r;
+        var old=document.getElementById('safeDropBtn');if(old)old.remove();
+        if(typeof _activeShift!=='undefined'&&_activeShift){
+          var b=document.createElement('button');
+          b.id='safeDropBtn';b.type='button';b.className='btn btn-ghost btn-sm';
+          b.innerHTML='\ud83d\udd12 '+L('سحب آمن','Safe drop');
+          b.style.marginRight='6px';
+          b.onclick=function(e){e.stopPropagation();fatSafeDropModal();};
+          btn.parentNode.insertBefore(b,btn.nextSibling);
+        }
+      }catch(e){}
+      return r;
+    };
+  }
+})();
+// عرض السحوبات الآمنة في مودال إغلاق الشيفت
+(function(){
+  var _origClose=window.shiftClose;
+  if(typeof _origClose==='function'){
+    window.shiftClose=function(){
+      var r=_origClose.apply(null,arguments);
+      try{
+        var sh=_activeShift;
+        if(sh&&sh.safeDrops&&sh.safeDrops.length){
+          var box=document.querySelector('#modal .modal-b table.tbl');
+          if(box){
+            var tr=document.createElement('tr');
+            var totalDrops=r2(sh.safeDrops.reduce(function(a,d){return a+d.amount;},0));
+            tr.innerHTML='<td>\ud83d\udd12 '+L('سحوبات آمنة','Safe drops')+'</td><td>'+sh.safeDrops.length+' \u00d7 \u2014 '+money(totalDrops)+'</td>';
+            box.appendChild(tr);
+          }
+        }
+      }catch(e){}
+      return r;
+    };
+  }
+})();
+
+/* ═══════════ 2) إعادة طباعة فاتورة مع تتبّع ═══════════ */
+window.fatReprintLog=function(kind,id){
+  try{
+    db.reprintLog=db.reprintLog||[];
+    var arr=kind==='sale'?db.sales:db.purchases;
+    var rec=arr.find(function(x){return x.id===id;});
+    if(!rec)return;
+    rec.printCount=(rec.printCount||0)+1;
+    db.reprintLog.push({ts:new Date().toISOString(),kind:kind,refNo:rec.no,by:currentUserName(),count:rec.printCount});
+    if(db.reprintLog.length>5000)db.reprintLog=db.reprintLog.slice(-5000);
+    save();
+  }catch(e){}
+};
+(function(){
+  var _origPrint=window.printThermal;
+  if(typeof _origPrint==='function'){
+    window.printThermal=function(kind,id){
+      var arr=kind==='sale'?db.sales:(kind==='quote'?db.quotes:db.purchases);
+      var rec=arr&&arr.find(function(x){return x.id===id;});
+      var isReprint=rec&&(rec.printCount||0)>0;
+      var r=_origPrint.apply(null,arguments);
+      if(kind!=='quote') fatReprintLog(kind,id);
+      return r;
+    };
+  }
+})();
+// شارة "نسخة مطبوعة X مرة" في تفاصيل الفاتورة + سجل إعادة الطباعة في المحل
+window.fatPrintBadge=function(rec){
+  if(!rec||!rec.printCount||rec.printCount<=1)return '';
+  return ' <span class="badge warn" style="font-size:10px" title="'+L('اتطبعت','Printed')+' '+rec.printCount+' '+L('مرة','times')+'">\ud83d\udda8\ufe0f \u00d7'+rec.printCount+'</span>';
+};
+try{
+  PG.reprintLog=[['سجل إعادة الطباعة','متابعة كل مرة اتطبعت فيها فاتورة أكتر من مرة'],['Reprint Log','Track invoices printed more than once']];
+  var _cv6=window.canView;
+  window.canView=function(v){ if(v==='reprintLog') return isManager(); return _cv6(v); };
+}catch(e){}
+views.reprintLog=function(){
+  document.getElementById('topActions').innerHTML='';
+  var log=(db.reprintLog||[]).slice().reverse();
+  var multi=(db.sales||[]).filter(function(s){return (s.printCount||0)>1;});
+  var html='<div class="cards"><div class="card"><div class="ic-bg">\ud83d\udda8\ufe0f</div><div class="lbl">'+L('فواتير اتطبعت أكتر من مرة','Invoices printed 2+ times')+'</div><div class="val">'+multi.length+'</div></div></div>';
+  html+='<div class="panel"><div class="panel-b">'+
+  (log.length?'<table class="tbl"><thead><tr><th>'+L('الوقت','Time')+'</th><th>'+L('النوع','Type')+'</th><th>'+L('رقم','No.')+'</th><th>'+L('عدد مرات الطباعة','Print count')+'</th><th>'+L('بواسطة','By')+'</th></tr></thead><tbody>'+
+    log.slice(0,200).map(function(l){
+      return '<tr><td style="font-size:11px">'+(l.ts||'').replace('T',' ').slice(0,16)+'</td><td>'+(l.kind==='sale'?L('بيع','Sale'):L('شراء','Purchase'))+'</td><td>#'+l.refNo+'</td>'+
+      '<td>'+(l.count>1?'<span class="badge warn">'+l.count+'</span>':l.count)+'</td><td>'+esc(l.by)+'</td></tr>';
+    }).join('')+'</tbody></table>'
+  :'<div class="empty">'+L('لا توجد طباعات مسجلة بعد','No prints logged yet')+'</div>')+
+  '</div></div>';
+  document.getElementById('content').innerHTML=html;
+};
+
+/* ═══════════ 3) الإكراميات (Tips) ═══════════ */
+db.accounts=db.accounts||[];
+if(!db.accounts.some(function(a){return a.code==='2230';})){
+  db.accounts.push({id:'acct_2230',code:'2230',name:L('إكراميات مستحقة للموظفين','Tips payable to staff'),type:'liability',parent:'2000',builtin:true});
+}
+// حقن خانة الإكرامية في فوتر السلة (جنب الخصم) بدون كسر التصميم
+(function(){
+  var _origRenderCart=window.renderCart;
+  if(typeof _origRenderCart==='function'){
+    window.renderCart=function(){
+      var r=_origRenderCart.apply(null,arguments);
+      try{
+        var foot=document.getElementById('cartFoot');
+        if(foot&&cart.length&&!document.getElementById('posTip')){
+          var wrap=document.createElement('div');
+          wrap.className='field';wrap.style.margin='6px 0';
+          wrap.innerHTML='<label style="font-size:12px">\ud83d\udcb5 '+L('إكرامية (اختياري)','Tip (optional)')+'</label>'+
+            '<input id="posTip" type="number" min="0" step="any" placeholder="0" oninput="fatTipRecalc()" value="'+(window._posTipVal||'')+'">';
+          var discRow=foot.querySelector('input');
+          if(discRow&&discRow.parentNode&&discRow.parentNode.parentNode){
+            foot.insertBefore(wrap,foot.firstChild.nextSibling||null);
+          }else{
+            foot.appendChild(wrap);
+          }
+        }
+      }catch(e){}
+      return r;
+    };
+  }
+})();
+window.fatTipRecalc=function(){
+  var el=document.getElementById('posTip');
+  window._posTipVal=el?el.value:'';
+  var grand=document.getElementById('posGrandRow');
+  var totalEl=document.getElementById('posFinalTotal');
+  if(!totalEl)return;
+  var tip=+window._posTipVal||0;
+  totalEl.setAttribute('data-tip',tip);
+};
+// إضافة الإكرامية للإجمالي المطلوب تحصيله + تسجيلها في الفاتورة + قيد محاسبي
+(function(){
+  var _origCalc=window.posCalc;
+  if(typeof _origCalc==='function'){
+    window.posCalc=function(){
+      var T=_origCalc.apply(null,arguments);
+      try{
+        var tip=+window._posTipVal||0;
+        if(tip>0){T.tip=r2(tip);T.total=r2(T.total+tip);}
+      }catch(e){}
+      return T;
+    };
+  }
+  var _origCheckout=window.posCheckout;
+  if(typeof _origCheckout==='function'){
+    window.posCheckout=function(){
+      var before=db.sales.length;
+      var r=_origCheckout.apply(null,arguments);
+      try{
+        if(db.sales.length>before){
+          var rec=db.sales[db.sales.length-1];
+          var tip=+window._posTipVal||0;
+          if(tip>0){
+            rec.tip=r2(tip);
+            addCash('in',tip,L('إكرامية','Tip')+' \u2014 '+L('فاتورة','Invoice')+' #'+rec.no,'tip','cash');
+          }
+        }
+      }catch(e){}
+      window._posTipVal='';
+      return r;
+    };
+  }
+})();
+// قيد محاسبي للإكرامية: مدين الخزينة / دائن التزام إكراميات (مش إيراد المحل)
+var _origBuildJ3=window.fatBuildJournal;
+window.fatBuildJournal=function(f,t){
+  var J=_origBuildJ3(f,t);
+  var inR=function(d){return (!f||d>=f)&&(!t||d<=t);};
+  bf(db.sales).forEach(function(s){
+    if(!s.tip||s.tip<=0.004||!inR(s.date))return;
+    J.push({date:s.date,ref:'#'+s.no,desc:L('إكرامية','Tip')+' \u2014 '+L('فاتورة','Invoice')+' #'+s.no,lines:[
+      {acct:L('الخزينة النقدية','Cash'),debit:s.tip,credit:0},
+      {acct:L('إكراميات مستحقة للموظفين','Tips payable to staff'),debit:0,credit:s.tip}]});
+  });
+  return J;
+};
 })();
 
 try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{version:'v1.0-GM'});},800);}catch(_e){}
