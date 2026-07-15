@@ -1624,6 +1624,16 @@ let V2_READY=false;             // true once this account is on v2 storage
 
 function snapStr(o){try{return JSON.stringify(o);}catch(e){return Math.random().toString();}}
 
+let _syncRetryTimer=null, _syncRetryStep=0;
+const SYNC_RETRY_DELAYS=[5000,15000,60000,300000];
+function scheduleSyncRetry(){
+  if(_syncRetryTimer) return;
+  const delay=SYNC_RETRY_DELAYS[Math.min(_syncRetryStep,SYNC_RETRY_DELAYS.length-1)];
+  _syncRetryStep++;
+  _syncRetryTimer=setTimeout(function(){_syncRetryTimer=null;save();},delay);
+}
+function clearSyncRetry(){_syncRetryStep=0;if(_syncRetryTimer){clearTimeout(_syncRetryTimer);_syncRetryTimer=null;}}
+
 async function save(){
   try{updateAlertBadge();const _np=document.getElementById('notifPanel');if(_np&&_np.style.display==='block')renderNotif();}catch(e){}
   try{
@@ -1631,7 +1641,7 @@ async function save(){
     cacheLocal(CURRENT_UID);                       // local safety net first, always
     if(!sb||!CURRENT_UID||!V2_READY)return;        // offline / not-yet-migrated → local only
     if(window._syncLock){window._syncPending=true;return;}window._syncLock=true;setSyncStatus('syncing');
-    try{await syncV2();setSyncStatus('ok');}catch(e){setSyncStatus('err');console.warn('sync error',e);}finally{window._syncLock=false;if(window._syncPending){window._syncPending=false;setTimeout(save,500);}}
+    try{await syncV2();setSyncStatus('ok');clearSyncRetry();}catch(e){setSyncStatus('err');console.warn('sync error',e);scheduleSyncRetry();}finally{window._syncLock=false;if(window._syncPending){window._syncPending=false;setTimeout(save,500);}}
   }catch(e){
     const msg=(e&&e.message)||'';
     if(/PRODUCT_LIMIT/.test(msg)){
@@ -10798,8 +10808,10 @@ function setSyncStatus(state){
   var el=document.getElementById('syncDot');if(!el)return;
   var states={syncing:'🔄',ok:'🟢',err:'🔴',offline:'⚫'};
   el.textContent=states[state]||'⚫';
-  el.title={syncing:L('جاري الحفظ...','Saving...'),ok:L('تم الحفظ','Saved'),err:L('فشل الحفظ — سيعاد المحاولة','Save failed — will retry'),offline:L('بدون إنترنت — يحفظ محليًا','Offline — saving locally')}[state]||'';}
-
+  el.title={syncing:L('جاري الحفظ...','Saving...'),ok:L('تم الحفظ','Saved'),err:L('فشل الحفظ — اضغط لإعادة المحاولة الآن','Save failed — tap to retry now'),offline:L('بدون إنترنت — يحفظ محليًا','Offline — saving locally')}[state]||'';
+  if(state==='err'){el.style.cursor='pointer';el.onclick=function(){clearSyncRetry();save();};}
+  else{el.style.cursor='default';el.onclick=null;}
+}
 
 
 /* ===== سلة المحذوفات الاحترافية (Recycle Bin / Trash) ===== */
@@ -11886,6 +11898,29 @@ var _fatLog = {
   events: [],      // key user events
   maxEntries: 100  // ring buffer cap
 };
+try{
+  var _fatPrev = JSON.parse(localStorage.getItem('fat_error_log')||'[]');
+  if(Array.isArray(_fatPrev)) _fatLog.errors = _fatPrev;
+}catch(e){}
+
+var _fatRemoteSentCounts = {};
+var FAT_REMOTE_MAX_PER_SOURCE = 5;
+
+function fatTrackErrorRemote(entry){
+  try{
+    if(!navigator.onLine || typeof sb==='undefined' || !sb) return;
+    if(typeof CURRENT_UID==='undefined' || !CURRENT_UID) return;
+    if(typeof CURRENT_ORG==='undefined' || !CURRENT_ORG) return;
+    var n = _fatRemoteSentCounts[entry.source] || 0;
+    if(n >= FAT_REMOTE_MAX_PER_SOURCE) return;
+    _fatRemoteSentCounts[entry.source] = n + 1;
+    sb.from('error_logs').insert({
+      org_id: CURRENT_ORG, user_id: CURRENT_UID, ts: entry.ts, source: entry.source,
+      message: String(entry.message||'').slice(0,500), context: String(entry.context||'').slice(0,300),
+      view: entry.view||'', user_agent: navigator.userAgent ? navigator.userAgent.slice(0,200) : ''
+    }).then(function(){},function(){});
+  }catch(e){}
+}
 
 /* Capture an error with context */
 function fatTrackError(source, error, context){
@@ -11902,6 +11937,7 @@ function fatTrackError(source, error, context){
     if(_fatLog.errors.length > _fatLog.maxEntries) _fatLog.errors.pop();
     // Persist last errors to localStorage for post-mortem
     try{ localStorage.setItem('fat_error_log', JSON.stringify(_fatLog.errors.slice(0,30))); }catch(e){}
+    fatTrackErrorRemote(entry);
   }catch(e){}
 }
 
@@ -12141,6 +12177,9 @@ function initOfflineIndicator(){
     function hideOfflineBanner(){
       var b = document.getElementById('offlineBanner');
       updateNetDot(true);
+      try{if(typeof clearSyncRetry==='function')clearSyncRetry();if(typeof save==='function')save();}catch(e){}
+      try{if(typeof fatCloudBackupTick==='function')fatCloudBackupTick();}catch(e){}
+      try{fatCheckCloudHealth();}catch(e){}
       if(b){
         // Show a brief "back online" flash
         b.style.background = '#15803d';
@@ -12151,6 +12190,34 @@ function initOfflineIndicator(){
         }, 2500);
       }
     }
+    function showCloudDownBanner(){
+      if(document.getElementById('offlineBanner') || document.getElementById('cloudDownBanner')) return;
+      var b = document.createElement('div');
+      b.id = 'cloudDownBanner';
+      b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b91c1c;color:#fff;text-align:center;padding:7px 12px;font-size:12.5px;font-weight:600;font-family:inherit;box-shadow:0 2px 8px rgba(0,0,0,.2)';
+      b.innerHTML = '☁️⚠️ ' + L('الاتصال بالسحابة متعطل مؤقتًا — بياناتك بأمان على جهازك وهتتزامن أول ما الخدمة ترجع','Cloud service unreachable — your data is safe on this device and will sync once it is back');
+      document.body.appendChild(b);
+      document.body.style.paddingTop = (b.offsetHeight || 32) + 'px';
+    }
+    function hideCloudDownBanner(){
+      var b = document.getElementById('cloudDownBanner');
+      if(b && b.parentNode){
+        b.parentNode.removeChild(b);
+        if(!document.getElementById('offlineBanner')) document.body.style.paddingTop = '';
+      }
+    }
+    async function fatCheckCloudHealth(){
+      try{
+        if(!navigator.onLine || typeof sb==='undefined' || !sb || typeof CURRENT_UID==='undefined' || !CURRENT_UID){ hideCloudDownBanner(); return; }
+        var timeout = new Promise(function(_,rej){ setTimeout(function(){ rej(new Error('timeout')); }, 8000); });
+        await Promise.race([ sb.from(typeof V2_SETTINGS!=='undefined'?V2_SETTINGS:'v2_settings').select('user_id',{head:true,count:'exact'}).limit(1), timeout ]);
+        hideCloudDownBanner();
+      }catch(e){
+        if(navigator.onLine) showCloudDownBanner();
+      }
+    }
+    window.fatCheckCloudHealth = fatCheckCloudHealth;
+    setInterval(function(){ try{ fatCheckCloudHealth(); }catch(e){} }, 120000);
     // Small permanent dot in the top bar showing connection status
     function updateNetDot(isOnline){
       try{
@@ -14055,7 +14122,24 @@ window.fatRenderBS=function(f,t){
 'use strict';
 
 /* ───────── 1) مؤشر مساحة التخزين ───────── */
+window._fatRealStorageEstimate=null;
+window.fatRefreshRealStorageEstimate=function(){
+  try{
+    if(navigator.storage&&navigator.storage.estimate){
+      navigator.storage.estimate().then(function(est){
+        if(est&&typeof est.usage==='number'&&typeof est.quota==='number'&&est.quota>0){
+          window._fatRealStorageEstimate={usage:est.usage,quota:est.quota};
+        }
+      }).catch(function(){});
+    }
+  }catch(e){}
+};
+try{fatRefreshRealStorageEstimate();}catch(e){}
 window.fatStorageInfo=function(){
+  var real=window._fatRealStorageEstimate;
+  if(real&&real.quota>0){
+    return {used:real.usage,limit:real.quota,pct:Math.min(100,Math.round(real.usage/real.quota*100)),real:true};
+  }
   var used=0;
   try{
     for(var i=0;i<localStorage.length;i++){
@@ -14064,7 +14148,7 @@ window.fatStorageInfo=function(){
     }
   }catch(e){}
   var limit=5*1024*1024;
-  return {used:used,limit:limit,pct:Math.min(100,Math.round(used/limit*100))};
+  return {used:used,limit:limit,pct:Math.min(100,Math.round(used/limit*100)),real:false};
 };
 window.fatStorageBarHtml=function(){
   var s=fatStorageInfo();
