@@ -1660,13 +1660,25 @@ async function save(){
     cacheLocal(CURRENT_UID);                       // local safety net first, always
     if(!sb||!CURRENT_UID||!V2_READY)return;        // offline / not-yet-migrated → local only
     if(window._syncLock){window._syncPending=true;return;}window._syncLock=true;setSyncStatus('syncing');
-    try{await syncV2();setSyncStatus('ok');clearSyncRetry();}catch(e){setSyncStatus('err');console.warn('sync error',e);scheduleSyncRetry();}finally{window._syncLock=false;if(window._syncPending){window._syncPending=false;setTimeout(save,500);}}
+    try{await syncV2();setSyncStatus('ok');clearSyncRetry();}catch(e){
+      setSyncStatus('err');console.warn('sync error',e);
+      // أخطاء منطقية (حدود الباقة/انتهاء الاشتراك) — الخادم بيرفضها بثبات، إعادة المحاولة كل شوية
+      // مجرد إزعاج بلا فايدة (هتفضل ترفض). أخطاء الشبكة/السيرفر المؤقتة بس هي اللي تستاهل retry.
+      const msg=(e&&e.message)||'';
+      if(/PRODUCT_LIMIT/.test(msg)){
+        const m=msg.match(/PRODUCT_LIMIT:(\d+)\/(\d+)/);
+        try{toast(L(`تعذّر الحفظ على السحابة: وصلت لحد المنتجات${m?` (${m[2]})`:''}. رقّي باقتك.`,`Cloud save blocked: product limit${m?` (${m[2]})`:''} reached. Upgrade your plan.`),'err');}catch(_){}
+      }else if(/BRANCH_LIMIT/.test(msg)){
+        const m=msg.match(/BRANCH_LIMIT:(\d+)\/(\d+)/);
+        try{toast(L(`تعذّر الحفظ على السحابة: وصلت لحد الفروع${m?` (${m[2]})`:''}. رقّي باقتك.`,`Cloud save blocked: branch limit${m?` (${m[2]})`:''} reached. Upgrade your plan.`),'err');}catch(_){}
+      }else if(/SUB_EXPIRED/.test(msg)){
+        try{toast(L('انتهى اشتراكك — البيانات بتتحفظ على جهازك بس دلوقتي. جدّد اشتراكك عشان ترجع تتزامن مع السحابة.','Your subscription has expired — data is saved locally only. Renew to resume cloud sync.'),'err');}catch(_){}
+        try{if(typeof renderSubBanner==='function')renderSubBanner();}catch(_){}
+      }else{
+        scheduleSyncRetry();
+      }
+    }finally{window._syncLock=false;if(window._syncPending){window._syncPending=false;setTimeout(save,500);}}
   }catch(e){
-    const msg=(e&&e.message)||'';
-    if(/PRODUCT_LIMIT/.test(msg)){
-      const m=msg.match(/PRODUCT_LIMIT:(\d+)\/(\d+)/);
-      try{toast(L(`تعذّر الحفظ على السحابة: وصلت لحد المنتجات${m?` (${m[2]})`:''}. رقّي باقتك.`,`Cloud save blocked: product limit${m?` (${m[2]})`:''} reached. Upgrade your plan.`),'err');}catch(_){}
-    }
     console.warn('save error',e);
     cacheLocal(CURRENT_UID);
   }
