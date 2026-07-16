@@ -1,0 +1,11 @@
+{
+  "name": "fatorty",
+  "private": true,
+  "scripts": {
+    "check:syntax": "node tools/extract-inline-js.js",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}
