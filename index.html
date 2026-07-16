@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -1394,6 +1395,22 @@ const V2_SETTINGS_KEYS=['settings','seq'];
 const LEGACY_KEY='hesaby_db';           // old shared row (for one-time import only)
 const LEGACY_TABLE='app_data';
 const sb = (window.supabase && window.supabase.createClient) ? window.supabase.createClient(SUPA_URL, SUPA_KEY) : null;
+// sb.auth.getSession() ممكن يعلّق من غير resolve/reject لو الشبكة اتعطلت في نص الطلب (لا try/catch
+// بيحميك من hang، بس من throw) — ده بيسيب المستخدم على شاشة فاضية للأبد. أي استدعاء ليها في الكود
+// بيعدي من هنا عشان يضمن رد بعد أقصى 8 ثواني (بيعتبرها "مفيش جلسة" ويكمّل عادي بدل ما يفضل واقف).
+function fatGetSessionSafe(){
+  return Promise.race([
+    sb.auth.getSession(),
+    new Promise(function(resolve){ setTimeout(function(){ resolve({data:{session:null}}); }, 8000); })
+  ]);
+}
+// نفس الفكرة لأي وعد تاني ممكن يعلّق بلا نهاية — بيرجّع fallbackValue بعد المهلة بدل ما يفضل معلّق
+function fatWithTimeout(promise, ms, fallbackValue){
+  return Promise.race([
+    promise,
+    new Promise(function(resolve){ setTimeout(function(){ resolve(fallbackValue); }, ms); })
+  ]);
+}
 let CURRENT_UID=null, APP_STARTED=false, AUTH_MODE='signin';
 let CURRENT_ORG=null, CURRENT_ROLE='manager';   // which shop, and my role in it (server-enforced)
 let SUB=null;                                   // {plan,status,expires_at} for the current shop
@@ -1502,7 +1519,7 @@ async function authSubmit(){
       const {error}=await sb.auth.updateUser({password:pass});
       if(error)throw error;
       try{history.replaceState(null,'',location.origin+location.pathname);}catch(e){}
-      const {data:{session}}=await sb.auth.getSession();
+      const {data:{session}}=await fatGetSessionSafe();
       if(session&&session.user)CURRENT_UID=session.user.id;
       hideAuthScreen();await startApp();return;
     }
@@ -1639,7 +1656,7 @@ function clearSyncRetry(){_syncRetryStep=0;if(_syncRetryTimer){clearTimeout(_syn
 async function save(){
   try{updateAlertBadge();const _np=document.getElementById('notifPanel');if(_np&&_np.style.display==='block')renderNotif();}catch(e){}
   try{
-    if(!CURRENT_UID&&sb){try{const {data:{session}}=await sb.auth.getSession();CURRENT_UID=session?.user?.id||null;}catch(e){}}
+    if(!CURRENT_UID&&sb){try{const {data:{session}}=await fatGetSessionSafe();CURRENT_UID=session?.user?.id||null;}catch(e){}}
     cacheLocal(CURRENT_UID);                       // local safety net first, always
     if(!sb||!CURRENT_UID||!V2_READY)return;        // offline / not-yet-migrated → local only
     if(window._syncLock){window._syncPending=true;return;}window._syncLock=true;setSyncStatus('syncing');
@@ -1880,7 +1897,7 @@ async function load(){
     // أول مرة فقط (مفيش بيانات أصلاً): ابدأ فاضي
     seedDemo(); migrate(); return;
   }
-  if(!CURRENT_UID&&sb){try{const {data:{session}}=await sb.auth.getSession();CURRENT_UID=session?.user?.id||null;}catch(e){}}
+  if(!CURRENT_UID&&sb){try{const {data:{session}}=await fatGetSessionSafe();CURRENT_UID=session?.user?.id||null;}catch(e){}}
   const uid=CURRENT_UID;
   if(!sb||!uid){seedDemo();migrate();return;}
   try{
@@ -7248,10 +7265,10 @@ async function startApp(){
   APP_STARTED=true;
   try{ if(typeof fatSetupShortcuts==='function') fatSetupShortcuts(); }catch(e){}
   // if this user was invited to a shop, join it before loading (so they land in that shop)
-  try{ if(sb&&CURRENT_UID) await sb.rpc('accept_my_invites'); }catch(e){ console.warn('accept invites',e); }
+  try{ if(sb&&CURRENT_UID) await fatWithTimeout(sb.rpc('accept_my_invites'),8000,null); }catch(e){ console.warn('accept invites',e); }
   await load();
   // stamp the signed-in account (for the badge + audit log)
-  try{if(sb&&sb.auth){const {data:{session}}=await sb.auth.getSession();if(session&&session.user){db.settings.cloudEmail=session.user.email; IS_ADMIN=(session.user.email||'').toLowerCase()==='selemayman923@gmail.com';}}}catch(e){}
+  try{if(sb&&sb.auth){const {data:{session}}=await fatGetSessionSafe();if(session&&session.user){db.settings.cloudEmail=session.user.email; IS_ADMIN=(session.user.email||'').toLowerCase()==='selemayman923@gmail.com';}}}catch(e){}
   applyLang();applyBrand();applyCustomBrand();renderBranchSel();
   try{ if(typeof fatInitOfflineEnhancements==='function') fatInitOfflineEnhancements(); }catch(e){}
   try{ if(typeof fatInitCustomerUX==='function') fatInitCustomerUX(); }catch(e){}
@@ -7376,7 +7393,7 @@ window.addEventListener('popstate',()=>{
   const isRecovery=/(?:[#&?])type=recovery/.test(location.hash)||/(?:[#&?])type=recovery/.test(location.search);
   if(isRecovery){showRecoveryScreen();return;}
   try{
-    const {data:{session}}=await sb.auth.getSession();
+    const {data:{session}}=await fatGetSessionSafe();
     if(session&&session.user){CURRENT_UID=session.user.id;hideLanding();await startApp();}
     else{showLanding();}
   }catch(e){console.warn('auth boot error',e);showLanding();}
