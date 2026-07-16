@@ -9,12 +9,22 @@ test("index.html boots to either the landing page or the sign-in screen, no JS e
   const pageErrors = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
+  // أول حاجة يشوفها متصفح فاضي تمامًا (زي CI) هي شاشة اختيار أونلاين/أوفلاين
+  // (#fatModeChooser، fatModeGate() في index.html) — البووت بيتوقف تمامًا لحد ما
+  // المستخدم يختار. عشان نختبر مسار الإقلاع الفعلي (أونلاين) من غير ما نحتاج نداعب
+  // شاشة الاختيار دي، نحط الاختيار في localStorage قبل ما الصفحة تحمّل أصلًا.
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem("fat_mode", "online");
+    } catch (e) {}
+  });
+
   await page.goto("/index.html");
 
-  // أول زيارة (مفيش session) الطبيعي إنها تعرض صفحة الهبوط (#landing). لو الإنترنت
-  // مقطوعة/محجوبة (زي CDN مكتبة supabase-js)، الكود بيتحوّل بنعومة لشاشة الأوث مباشرة
-  // مع رسالة واضحة بدل ما يفضل تايه — الاتنين نتيجة "بووت ناجح" مقبولة هنا. اللي مش
-  // مقبول هو إن مفيش أي حاجة من الاتنين تظهر (يعني الإقلاع اتوقف تمامًا).
+  // بعد اختيار "أونلاين" مسبقًا، أول زيارة (مفيش session) الطبيعي إنها تعرض صفحة
+  // الهبوط (#landing). لو الإنترنت مقطوعة/محجوبة (زي CDN مكتبة supabase-js)، الكود
+  // بيتحوّل بنعومة لشاشة الأوث مباشرة مع رسالة واضحة بدل ما يفضل تايه — الاتنين نتيجة
+  // "بووت ناجح" مقبولة هنا. اللي مش مقبول هو إن مفيش أي حاجة من الاتنين تظهر.
   const landing = page.locator("#landing");
   const authEmail = page.locator("#authEmail");
   await page.waitForFunction(
