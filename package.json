@@ -1,0 +1,11 @@
+{
+  "name": "fatorty11",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "check:syntax": "node tools/checkInlineJs.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
+}
