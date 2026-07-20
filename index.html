@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -1377,7 +1376,7 @@ const cur=()=>db.settings.currency||'ج.م';
 const money=n=>fmt(n)+' '+cur();
 const today=()=>{const d=new Date(),off=d.getTimezoneOffset(),loc=new Date(d.getTime()-off*60000);return loc.toISOString().slice(0,10);};
 let _uidCounter=0;const uid=()=>Date.now().toString(36)+'-'+(_uidCounter=(_uidCounter+1)%0x100000).toString(36)+Math.random().toString(36).slice(2,6);
-const esc=s=>(s||'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const esc=s=>(s||'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // Normalize for search: lowercase, strip Arabic diacritics, unify alef/taa-marbuta/yaa variants
 const norm=s=>(s||'').toString().toLowerCase().replace(/[\u064B-\u0652\u0670]/g,'').replace(/[أإآ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي').trim();
 const matches=(hay,q)=>{var h=norm(hay);var words=norm(q).split(/\s+/).filter(Boolean);if(!words.length)return true;return words.every(function(w){return h.indexOf(w)>-1;});};
@@ -1395,22 +1394,6 @@ const V2_SETTINGS_KEYS=['settings','seq'];
 const LEGACY_KEY='hesaby_db';           // old shared row (for one-time import only)
 const LEGACY_TABLE='app_data';
 const sb = (window.supabase && window.supabase.createClient) ? window.supabase.createClient(SUPA_URL, SUPA_KEY) : null;
-// sb.auth.getSession() ممكن يعلّق من غير resolve/reject لو الشبكة اتعطلت في نص الطلب (لا try/catch
-// بيحميك من hang، بس من throw) — ده بيسيب المستخدم على شاشة فاضية للأبد. أي استدعاء ليها في الكود
-// بيعدي من هنا عشان يضمن رد بعد أقصى 8 ثواني (بيعتبرها "مفيش جلسة" ويكمّل عادي بدل ما يفضل واقف).
-function fatGetSessionSafe(){
-  return Promise.race([
-    sb.auth.getSession(),
-    new Promise(function(resolve){ setTimeout(function(){ resolve({data:{session:null}}); }, 8000); })
-  ]);
-}
-// نفس الفكرة لأي وعد تاني ممكن يعلّق بلا نهاية — بيرجّع fallbackValue بعد المهلة بدل ما يفضل معلّق
-function fatWithTimeout(promise, ms, fallbackValue){
-  return Promise.race([
-    promise,
-    new Promise(function(resolve){ setTimeout(function(){ resolve(fallbackValue); }, ms); })
-  ]);
-}
 let CURRENT_UID=null, APP_STARTED=false, AUTH_MODE='signin';
 let CURRENT_ORG=null, CURRENT_ROLE='manager';   // which shop, and my role in it (server-enforced)
 let SUB=null;                                   // {plan,status,expires_at} for the current shop
@@ -1519,7 +1502,7 @@ async function authSubmit(){
       const {error}=await sb.auth.updateUser({password:pass});
       if(error)throw error;
       try{history.replaceState(null,'',location.origin+location.pathname);}catch(e){}
-      const {data:{session}}=await fatGetSessionSafe();
+      const {data:{session}}=await sb.auth.getSession();
       if(session&&session.user)CURRENT_UID=session.user.id;
       hideAuthScreen();await startApp();return;
     }
@@ -1641,44 +1624,20 @@ let V2_READY=false;             // true once this account is on v2 storage
 
 function snapStr(o){try{return JSON.stringify(o);}catch(e){return Math.random().toString();}}
 
-// إعادة محاولة تلقائية بـ backoff متزايد لو فشلت المزامنة (شبكة/سيرفر مؤقتًا) —
-// بدون كده كان لازم المستخدم يعمل تعديل تاني يدوي عشان save() تتنادى من جديد.
-let _syncRetryTimer=null, _syncRetryStep=0;
-const SYNC_RETRY_DELAYS=[5000,15000,60000,300000]; // 5s → 15s → 1m → كل 5 دقايق بعد كده
-function scheduleSyncRetry(){
-  if(_syncRetryTimer) return;
-  const delay=SYNC_RETRY_DELAYS[Math.min(_syncRetryStep,SYNC_RETRY_DELAYS.length-1)];
-  _syncRetryStep++;
-  _syncRetryTimer=setTimeout(function(){_syncRetryTimer=null;save();},delay);
-}
-function clearSyncRetry(){_syncRetryStep=0;if(_syncRetryTimer){clearTimeout(_syncRetryTimer);_syncRetryTimer=null;}}
-
 async function save(){
   try{updateAlertBadge();const _np=document.getElementById('notifPanel');if(_np&&_np.style.display==='block')renderNotif();}catch(e){}
   try{
-    if(!CURRENT_UID&&sb){try{const {data:{session}}=await fatGetSessionSafe();CURRENT_UID=session?.user?.id||null;}catch(e){}}
+    if(!CURRENT_UID&&sb){try{const {data:{session}}=await sb.auth.getSession();CURRENT_UID=session?.user?.id||null;}catch(e){}}
     cacheLocal(CURRENT_UID);                       // local safety net first, always
     if(!sb||!CURRENT_UID||!V2_READY)return;        // offline / not-yet-migrated → local only
     if(window._syncLock){window._syncPending=true;return;}window._syncLock=true;setSyncStatus('syncing');
-    try{await syncV2();setSyncStatus('ok');clearSyncRetry();}catch(e){
-      setSyncStatus('err');console.warn('sync error',e);
-      // أخطاء منطقية (حدود الباقة/انتهاء الاشتراك) — الخادم بيرفضها بثبات، إعادة المحاولة كل شوية
-      // مجرد إزعاج بلا فايدة (هتفضل ترفض). أخطاء الشبكة/السيرفر المؤقتة بس هي اللي تستاهل retry.
-      const msg=(e&&e.message)||'';
-      if(/PRODUCT_LIMIT/.test(msg)){
-        const m=msg.match(/PRODUCT_LIMIT:(\d+)\/(\d+)/);
-        try{toast(L(`تعذّر الحفظ على السحابة: وصلت لحد المنتجات${m?` (${m[2]})`:''}. رقّي باقتك.`,`Cloud save blocked: product limit${m?` (${m[2]})`:''} reached. Upgrade your plan.`),'err');}catch(_){}
-      }else if(/BRANCH_LIMIT/.test(msg)){
-        const m=msg.match(/BRANCH_LIMIT:(\d+)\/(\d+)/);
-        try{toast(L(`تعذّر الحفظ على السحابة: وصلت لحد الفروع${m?` (${m[2]})`:''}. رقّي باقتك.`,`Cloud save blocked: branch limit${m?` (${m[2]})`:''} reached. Upgrade your plan.`),'err');}catch(_){}
-      }else if(/SUB_EXPIRED/.test(msg)){
-        try{toast(L('انتهى اشتراكك — البيانات بتتحفظ على جهازك بس دلوقتي. جدّد اشتراكك عشان ترجع تتزامن مع السحابة.','Your subscription has expired — data is saved locally only. Renew to resume cloud sync.'),'err');}catch(_){}
-        try{if(typeof renderSubBanner==='function')renderSubBanner();}catch(_){}
-      }else{
-        scheduleSyncRetry();
-      }
-    }finally{window._syncLock=false;if(window._syncPending){window._syncPending=false;setTimeout(save,500);}}
+    try{await syncV2();setSyncStatus('ok');}catch(e){setSyncStatus('err');console.warn('sync error',e);}finally{window._syncLock=false;if(window._syncPending){window._syncPending=false;setTimeout(save,500);}}
   }catch(e){
+    const msg=(e&&e.message)||'';
+    if(/PRODUCT_LIMIT/.test(msg)){
+      const m=msg.match(/PRODUCT_LIMIT:(\d+)\/(\d+)/);
+      try{toast(L(`تعذّر الحفظ على السحابة: وصلت لحد المنتجات${m?` (${m[2]})`:''}. رقّي باقتك.`,`Cloud save blocked: product limit${m?` (${m[2]})`:''} reached. Upgrade your plan.`),'err');}catch(_){}
+    }
     console.warn('save error',e);
     cacheLocal(CURRENT_UID);
   }
@@ -1792,18 +1751,11 @@ async function fatCloudRestore(){
 
 
 let _saveT;function bumpOps(){db.settings.opsSinceBackup=(db.settings.opsSinceBackup||0)+1;
-  // فحص حجم البيانات كل 20 عملية — تحذير مبكر قبل الامتلاء الكامل
+  // فحص حجم البيانات كل 50 عملية — تحذير مبكر قبل الامتلاء الكامل
   if((db.settings.opsSinceBackup||0)%20===0){try{
-    if(typeof fatRefreshRealStorageEstimate==='function')fatRefreshRealStorageEstimate();
-    // نفضّل الـ quota الحقيقي (navigator.storage.estimate) لو متاح؛ لو مش متاح، نرجع لتقدير طول النص القديم
-    var usedKB, pctReal=-1;
-    if(typeof fatStorageInfo==='function'){var si=fatStorageInfo();usedKB=Math.round(si.used/1024);if(si.real)pctReal=si.pct;}
-    if(usedKB===undefined){
-      var raw=localStorage.getItem('hesaby_cache_'+((typeof CURRENT_UID!=='undefined'&&CURRENT_UID)?CURRENT_UID:'offline'))||localStorage.getItem('hesaby_cache_offline')||'{}';
-      usedKB=Math.round(raw.length/1024);
-    }
-    var full=(pctReal>=0)?(pctReal>=70):(usedKB>3500);
-    if(full&&!window._storageWarned){window._storageWarned=true;
+    var raw=localStorage.getItem('hesaby_cache_'+((typeof CURRENT_UID!=='undefined'&&CURRENT_UID)?CURRENT_UID:'offline'))||localStorage.getItem('hesaby_cache_offline')||'{}';
+    var usedKB=Math.round(raw.length/1024);
+    if(usedKB>3500&&!window._storageWarned){window._storageWarned=true;
       try{toast(L('⚠️ حجم بياناتك كبير ('+usedKB+'KB) — خد نسخة احتياطية من الإعدادات الآن','⚠️ Data size is large ('+usedKB+'KB) — please backup from Settings now'),'err');}catch(_){}
     }
   }catch(_){}}
@@ -1909,7 +1861,7 @@ async function load(){
     // أول مرة فقط (مفيش بيانات أصلاً): ابدأ فاضي
     seedDemo(); migrate(); return;
   }
-  if(!CURRENT_UID&&sb){try{const {data:{session}}=await fatGetSessionSafe();CURRENT_UID=session?.user?.id||null;}catch(e){}}
+  if(!CURRENT_UID&&sb){try{const {data:{session}}=await sb.auth.getSession();CURRENT_UID=session?.user?.id||null;}catch(e){}}
   const uid=CURRENT_UID;
   if(!sb||!uid){seedDemo();migrate();return;}
   try{
@@ -7277,10 +7229,10 @@ async function startApp(){
   APP_STARTED=true;
   try{ if(typeof fatSetupShortcuts==='function') fatSetupShortcuts(); }catch(e){}
   // if this user was invited to a shop, join it before loading (so they land in that shop)
-  try{ if(sb&&CURRENT_UID) await fatWithTimeout(sb.rpc('accept_my_invites'),8000,null); }catch(e){ console.warn('accept invites',e); }
+  try{ if(sb&&CURRENT_UID) await sb.rpc('accept_my_invites'); }catch(e){ console.warn('accept invites',e); }
   await load();
   // stamp the signed-in account (for the badge + audit log)
-  try{if(sb&&sb.auth){const {data:{session}}=await fatGetSessionSafe();if(session&&session.user){db.settings.cloudEmail=session.user.email; IS_ADMIN=(session.user.email||'').toLowerCase()==='selemayman923@gmail.com';}}}catch(e){}
+  try{if(sb&&sb.auth){const {data:{session}}=await sb.auth.getSession();if(session&&session.user){db.settings.cloudEmail=session.user.email; IS_ADMIN=(session.user.email||'').toLowerCase()==='selemayman923@gmail.com';}}}catch(e){}
   applyLang();applyBrand();applyCustomBrand();renderBranchSel();
   try{ if(typeof fatInitOfflineEnhancements==='function') fatInitOfflineEnhancements(); }catch(e){}
   try{ if(typeof fatInitCustomerUX==='function') fatInitCustomerUX(); }catch(e){}
@@ -7405,7 +7357,7 @@ window.addEventListener('popstate',()=>{
   const isRecovery=/(?:[#&?])type=recovery/.test(location.hash)||/(?:[#&?])type=recovery/.test(location.search);
   if(isRecovery){showRecoveryScreen();return;}
   try{
-    const {data:{session}}=await fatGetSessionSafe();
+    const {data:{session}}=await sb.auth.getSession();
     if(session&&session.user){CURRENT_UID=session.user.id;hideLanding();await startApp();}
     else{showLanding();}
   }catch(e){console.warn('auth boot error',e);showLanding();}
@@ -10846,9 +10798,7 @@ function setSyncStatus(state){
   var el=document.getElementById('syncDot');if(!el)return;
   var states={syncing:'🔄',ok:'🟢',err:'🔴',offline:'⚫'};
   el.textContent=states[state]||'⚫';
-  el.title={syncing:L('جاري الحفظ...','Saving...'),ok:L('تم الحفظ','Saved'),err:L('فشل الحفظ — اضغط لإعادة المحاولة الآن','Save failed — tap to retry now'),offline:L('بدون إنترنت — يحفظ محليًا','Offline — saving locally')}[state]||'';
-  if(state==='err'){el.style.cursor='pointer';el.onclick=function(){clearSyncRetry();save();};}
-  else{el.style.cursor='default';el.onclick=null;}}
+  el.title={syncing:L('جاري الحفظ...','Saving...'),ok:L('تم الحفظ','Saved'),err:L('فشل الحفظ — سيعاد المحاولة','Save failed — will retry'),offline:L('بدون إنترنت — يحفظ محليًا','Offline — saving locally')}[state]||'';}
 
 
 
@@ -11936,31 +11886,6 @@ var _fatLog = {
   events: [],      // key user events
   maxEntries: 100  // ring buffer cap
 };
-// Rehydrate from last session so the Diagnostics view isn't empty right after a fresh page load
-try{
-  var _fatPrev = JSON.parse(localStorage.getItem('fat_error_log')||'[]');
-  if(Array.isArray(_fatPrev)) _fatLog.errors = _fatPrev;
-}catch(e){}
-
-var _fatRemoteSentCounts = {};   // source -> count sent this session, to throttle error_logs inserts
-var FAT_REMOTE_MAX_PER_SOURCE = 5;
-
-/* Fire-and-forget: send an error to the remote error_logs table (best-effort, never blocks/throws) */
-function fatTrackErrorRemote(entry){
-  try{
-    if(!navigator.onLine || typeof sb==='undefined' || !sb) return;
-    if(typeof CURRENT_UID==='undefined' || !CURRENT_UID) return;
-    if(typeof CURRENT_ORG==='undefined' || !CURRENT_ORG) return;
-    var n = _fatRemoteSentCounts[entry.source] || 0;
-    if(n >= FAT_REMOTE_MAX_PER_SOURCE) return;
-    _fatRemoteSentCounts[entry.source] = n + 1;
-    sb.from('error_logs').insert({
-      org_id: CURRENT_ORG, user_id: CURRENT_UID, ts: entry.ts, source: entry.source,
-      message: String(entry.message||'').slice(0,500), context: String(entry.context||'').slice(0,300),
-      view: entry.view||'', user_agent: navigator.userAgent ? navigator.userAgent.slice(0,200) : ''
-    }).then(function(){},function(){});
-  }catch(e){}
-}
 
 /* Capture an error with context */
 function fatTrackError(source, error, context){
@@ -11977,7 +11902,6 @@ function fatTrackError(source, error, context){
     if(_fatLog.errors.length > _fatLog.maxEntries) _fatLog.errors.pop();
     // Persist last errors to localStorage for post-mortem
     try{ localStorage.setItem('fat_error_log', JSON.stringify(_fatLog.errors.slice(0,30))); }catch(e){}
-    fatTrackErrorRemote(entry);
   }catch(e){}
 }
 
@@ -12217,10 +12141,6 @@ function initOfflineIndicator(){
     function hideOfflineBanner(){
       var b = document.getElementById('offlineBanner');
       updateNetDot(true);
-      // النت رجع فعلًا — نزامن دلوقتي بدل ما ننتظر أي تعديل يدوي جاي يستدعي save() من نفسه
-      try{if(typeof clearSyncRetry==='function')clearSyncRetry();if(typeof save==='function')save();}catch(e){}
-      try{if(typeof fatCloudBackupTick==='function')fatCloudBackupTick();}catch(e){}
-      try{fatCheckCloudHealth();}catch(e){}
       if(b){
         // Show a brief "back online" flash
         b.style.background = '#15803d';
@@ -12231,37 +12151,6 @@ function initOfflineIndicator(){
         }, 2500);
       }
     }
-    // مفيش نت خالص ≠ النت شغّال بس Supabase نفسه واقع/مش راد — دلوقتي البانر الوحيد كان بيفترض
-    // إن أي مشكلة سببها navigator.onLine. البانر ده بيوضّح الفرق لما الجهاز online والسحابة مش راجعة.
-    function showCloudDownBanner(){
-      if(document.getElementById('offlineBanner') || document.getElementById('cloudDownBanner')) return;
-      var b = document.createElement('div');
-      b.id = 'cloudDownBanner';
-      b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b91c1c;color:#fff;text-align:center;padding:7px 12px;font-size:12.5px;font-weight:600;font-family:inherit;box-shadow:0 2px 8px rgba(0,0,0,.2)';
-      b.innerHTML = '☁️⚠️ ' + L('الاتصال بالسحابة متعطل مؤقتًا — بياناتك بأمان على جهازك وهتتزامن أول ما الخدمة ترجع','Cloud service unreachable — your data is safe on this device and will sync once it is back');
-      document.body.appendChild(b);
-      document.body.style.paddingTop = (b.offsetHeight || 32) + 'px';
-    }
-    function hideCloudDownBanner(){
-      var b = document.getElementById('cloudDownBanner');
-      if(b && b.parentNode){
-        b.parentNode.removeChild(b);
-        if(!document.getElementById('offlineBanner')) document.body.style.paddingTop = '';
-      }
-    }
-    // فحص دوري خفيف: هل Supabase بيرد فعليًا، مش بس "المتصفح شايف نت"
-    async function fatCheckCloudHealth(){
-      try{
-        if(!navigator.onLine || typeof sb==='undefined' || !sb || typeof CURRENT_UID==='undefined' || !CURRENT_UID){ hideCloudDownBanner(); return; }
-        var timeout = new Promise(function(_,rej){ setTimeout(function(){ rej(new Error('timeout')); }, 8000); });
-        await Promise.race([ sb.from(typeof V2_SETTINGS!=='undefined'?V2_SETTINGS:'v2_settings').select('user_id',{head:true,count:'exact'}).limit(1), timeout ]);
-        hideCloudDownBanner();
-      }catch(e){
-        if(navigator.onLine) showCloudDownBanner(); // فرّقنا: لو مفيش نت أصلًا، showOfflineBanner كفاية وده مش هيتنادى
-      }
-    }
-    window.fatCheckCloudHealth = fatCheckCloudHealth;
-    setInterval(function(){ try{ fatCheckCloudHealth(); }catch(e){} }, 120000);
     // Small permanent dot in the top bar showing connection status
     function updateNetDot(isOnline){
       try{
@@ -13975,8 +13864,16 @@ async function fatDupConfirm(what,d){
 var _oSaveProduct=window.saveProduct;
 window.saveProduct=async function(id){
   var name=(document.getElementById('f_name')||{value:''}).value.trim();
-  var d=fatDupCheck(db.products,name,'',id);
-  if(d.byName && !(await fatDupConfirm(L('صنف','Product'),d))) return;
+  var catEl=document.getElementById('f_cat');
+  var cat=catEl?catEl.value:'';
+  if(cat==='__new__'){var newCatEl=document.getElementById('f_cat_new');cat=newCatEl?newCatEl.value.trim():'';}
+  // تحذير التكرار بيظهر بس لو الاسم والتصنيف الاتنين متطابقين — نفس الاسم في تصنيف مختلف = صنف تاني فعليًا
+  var sameNameSameCat=db.products.find(function(x){return x.id!==id&&fatNorm(x.name)===fatNorm(name)&&(x.cat||'')===(cat||'');});
+  if(sameNameSameCat){
+    var ok=await confirmBox('\u26a0\ufe0f '+L('صنف','Product')+' "'+sameNameSameCat.name+'" '+L('موجود بالفعل بنفس التصنيف','already exists in the same category')+'. '+
+      L('الإضافة تاني هتعمل تكرار وتشتّت. متأكد إنك عايز تضيفه برضه؟','Adding again creates a duplicate. Add anyway?'));
+    if(!ok)return;
+  }
   return _oSaveProduct(id);
 };
 // العملاء والموردين (الفورم الرئيسي)
@@ -14166,25 +14063,7 @@ window.fatRenderBS=function(f,t){
 'use strict';
 
 /* ───────── 1) مؤشر مساحة التخزين ───────── */
-window._fatRealStorageEstimate=null; // {usage,quota} from navigator.storage.estimate(), refreshed async
-window.fatRefreshRealStorageEstimate=function(){
-  try{
-    if(navigator.storage&&navigator.storage.estimate){
-      navigator.storage.estimate().then(function(est){
-        if(est&&typeof est.usage==='number'&&typeof est.quota==='number'&&est.quota>0){
-          window._fatRealStorageEstimate={usage:est.usage,quota:est.quota};
-        }
-      }).catch(function(){});
-    }
-  }catch(e){}
-};
-try{fatRefreshRealStorageEstimate();}catch(e){}
 window.fatStorageInfo=function(){
-  var real=window._fatRealStorageEstimate;
-  if(real&&real.quota>0){
-    return {used:real.usage,limit:real.quota,pct:Math.min(100,Math.round(real.usage/real.quota*100)),real:true};
-  }
-  // Fallback (متصفح من غير navigator.storage.estimate — مثلاً Safari قديم أو خاص): تقدير يدوي لـ localStorage بس
   var used=0;
   try{
     for(var i=0;i<localStorage.length;i++){
@@ -14193,7 +14072,7 @@ window.fatStorageInfo=function(){
     }
   }catch(e){}
   var limit=5*1024*1024;
-  return {used:used,limit:limit,pct:Math.min(100,Math.round(used/limit*100)),real:false};
+  return {used:used,limit:limit,pct:Math.min(100,Math.round(used/limit*100))};
 };
 window.fatStorageBarHtml=function(){
   var s=fatStorageInfo();
@@ -15567,13 +15446,19 @@ setInterval(function(){
 })();
 
 /* ───────── 4) أدوات التثبيت الميداني ───────── */
-// ملاحظة: التقاط الأخطاء موحّد دلوقتي في fatTrackError()/_fatLog (قسم MONITORING & ERROR TRACKING) —
-// اتشال الـ listener المكرر اللي كان بيكتب في db.errorLog عشان الخطأ ميتسجّلش مرتين في مخزنين منفصلين.
-// بلاغ المشكلة تحت بيقرأ من _fatLog.errors بدل db.errorLog.
+// التقاط أي خطأ جافاسكريبت بيحصل عند العميل (آخر 30 خطأ)
+window.addEventListener('error',function(e){
+  try{
+    db.errorLog=db.errorLog||[];
+    db.errorLog.push({ts:new Date().toISOString(),msg:String(e.message||'').slice(0,180),src:String(e.filename||'').slice(-40)+':'+(e.lineno||0),view:(typeof current!=='undefined'?current:'')});
+    if(db.errorLog.length>30)db.errorLog=db.errorLog.slice(-30);
+    if(!window._errSaveTimer){window._errSaveTimer=setTimeout(function(){window._errSaveTimer=null;try{cacheLocal(typeof CURRENT_UID!=='undefined'?CURRENT_UID:null);}catch(_e){}},3000);}
+  }catch(_e){}
+});
 // زرار "أبلغ عن مشكلة" بتشخيص كامل
 window.fatReportIssue=async function(){
   var s=fatStorageInfo();
-  var errs=((typeof _fatLog!=='undefined'&&_fatLog.errors)||[]).slice(0,5).map(function(x){return '\u2022 '+x.ts.slice(0,16).replace('T',' ')+' ['+(x.view||'?')+'] '+x.message;}).join('\n');
+  var errs=(db.errorLog||[]).slice(-5).map(function(x){return '\u2022 '+x.ts.slice(0,16).replace('T',' ')+' ['+(x.view||'?')+'] '+x.msg;}).join('\n');
   var diag='\ud83d\udee0\ufe0f '+L('بلاغ مشكلة','Issue report')+' \u2014 '+(db.settings.company||'')+'\n'+
     L('النسخة','Version')+': v5.3\n'+
     L('الجهاز','Device')+': '+(navigator.userAgent||'').slice(0,80)+'\n'+

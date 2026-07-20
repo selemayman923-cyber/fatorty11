@@ -1,6 +1,5 @@
 /* فاتورتي — Service Worker v10.0 (Network-First + تحديث تلقائي فوري) */
 const CACHE = 'fatorty-v10.0';
-const RUNTIME = 'fatorty-runtime-v1';
 const ASSETS = ['/', '/index.html', '/manifest.json'];
 
 /* صفحة أوفلاين نظيفة — تظهر فقط لو مفيش نت ومفيش نسخة محفوظة */
@@ -66,32 +65,18 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // باقي الملفات: stale-while-revalidate مع حد لحجم الـ runtime cache
+  // باقي الملفات: cache-first مع fallback آمن (مفيش respondWith(undefined) أبدًا)
   e.respondWith(
-    caches.match(e.request).then(cached => {
-      const networkFetch = fetch(e.request).then(res => {
+    caches.match(e.request).then(cached =>
+      cached || fetch(e.request).then(res => {
         if (res && res.status === 200) {
           const clone = res.clone();
-          caches.open(RUNTIME).then(cache => {
-            cache.put(e.request, clone).then(() => trimCache(RUNTIME, 60));
-          });
+          caches.open(CACHE).then(cache => cache.put(e.request, clone));
         }
         return res;
-      }).catch(() => null);
-
-      // Return cached if available immediately, otherwise wait for network
-      return cached || networkFetch.then(r => r || cached || new Response('', { status: 504, statusText: 'Offline' }));
-    })
+      }).catch(() =>
+        cached || new Response('', { status: 504, statusText: 'Offline' })
+      )
+    )
   );
 });
-
-// Trim runtime cache to max entries (simple LRU by deleting oldest keys)
-function trimCache(cacheName, maxItems){
-  caches.open(cacheName).then(async cache => {
-    const keys = await cache.keys();
-    if(keys.length <= maxItems) return;
-    for(let i=0;i<keys.length - maxItems;i++){
-      cache.delete(keys[i]);
-    }
-  }).catch(()=>{});
-}
