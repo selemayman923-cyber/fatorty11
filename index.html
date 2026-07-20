@@ -18092,6 +18092,548 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
 })();
 
+
+  /* ============================================================
+   FATORTY v8.1 — مخزون حقيقي لكل فرع
+   المشكلة: p.qty رقم واحد عالمي — كل الفروع بتشوف نفس الكمية،
+   والتحويل بين الفروع كان بيسجّل ورق من غير ما يغيّر أي رصيد.
+   الحل (إضافي بالكامل — من غير أي تعديل في الشاشات الموجودة):
+     • p.bq = {branchId: qty}  ومجموعهم = p.qty دايمًا
+     • تغليف moveStock مرة واحدة — كل بيع/شراء/هدر/جرد يتسجّل على فرعه تلقائيًا
+     • كل حركة مخزون بقت موسومة بالفرع (ماكانش موجود)
+     • تحويل حقيقي متعدد الأصناف يحل محل النسختين القدام
+     • شاشة «مخزون الفروع»: مصفوفة أصناف × فروع + سجل التحويلات
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R3 = function (n) { return Math.round((+n || 0) * 1000) / 1000; };
+
+  /* ═══════════ 1) طبقة كميات الفروع ═══════════ */
+
+  window.fatBranchList = function () {
+    return (db.branches || []).filter(function (b) { return b && b.id && b.id !== '__ALL__'; });
+  };
+
+  // الفرع اللي الحركة تتحسب عليه (لو المستخدم في وضع «كل الفروع» ← الفرع الأول)
+  window.fatCurBranch = function () {
+    var b = '';
+    try { if (typeof activeBranch === 'function') b = activeBranch(); } catch (e) {}
+    if (!b || b === '__ALL__') {
+      var l = window.fatBranchList();
+      b = l.length ? l[0].id : '';
+    }
+    return b;
+  };
+
+  // تهيئة كسولة: أول مرة نلمس صنف، كل كميته بتتحط على الفرع الأول
+  window.fatBQEnsure = function (p) {
+    if (!p) return p;
+    if (!p.bq || typeof p.bq !== 'object' || Array.isArray(p.bq)) {
+      var l = window.fatBranchList();
+      var main = l.length ? l[0].id : '';
+      p.bq = {};
+      if (main) p.bq[main] = R3(p.qty);
+    }
+    return p;
+  };
+
+  window.fatBQOf = function (p, bid) {
+    if (!p) return 0;
+    window.fatBQEnsure(p);
+    return R3(p.bq[bid || window.fatCurBranch()] || 0);
+  };
+
+  window.fatBQSum = function (p) {
+    if (!p) return 0;
+    window.fatBQEnsure(p);
+    var t = 0;
+    for (var k in p.bq) if (Object.prototype.hasOwnProperty.call(p.bq, k)) t += (+p.bq[k] || 0);
+    return R3(t);
+  };
+
+  // الفرق بين إجمالي الفروع والكمية الرسمية (المفروض صفر)
+  window.fatBQDrift = function (p) { return R3(window.fatBQSum(p) - (+p.qty || 0)); };
+
+  window.fatBQApply = function (pid, delta, bid) {
+    var p = findProduct(pid);
+    if (!p) return;
+    window.fatBQEnsure(p);
+    var b = bid || window.fatCurBranch();
+    if (!b) return;
+    p.bq[b] = R3((+p.bq[b] || 0) + (+delta || 0));
+  };
+
+  /* ═══════════ 2) تغليف moveStock — نقطة الاختناق الوحيدة ═══════════ */
+  (function () {
+    var _ms = window.moveStock;
+    if (typeof _ms !== 'function' || window._fatBQWrapped) return;
+    window._fatBQWrapped = true;
+    window.moveStock = function (pid, delta, kind, note, ref) {
+      // حرِج: لازم نهيّئ توزيع الفروع وإحنا لسه شايفين الكمية *قبل* ما تتغيّر.
+      // لو اتأخّرنا لبعد الحركة، التهيئة هتاخد الكمية الجديدة والدلتا هتتخصم مرتين.
+      try { window.fatBQEnsure(findProduct(pid)); } catch (e) {}
+      var before = (db.stockMoves || []).length;
+      var r = _ms.apply(this, arguments);
+      try {
+        var b = window.fatCurBranch();
+        // التحويلات بتتعامل مع الفروع بنفسها — متعدّش عليها هنا
+        if (kind !== 'transfer') window.fatBQApply(pid, delta, b);
+        var mv = (db.stockMoves || [])[db.stockMoves.length - 1];
+        if (mv && db.stockMoves.length > before && mv.pid === pid && !mv.branch) mv.branch = b;
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  /* ═══════════ 3) التحويل الحقيقي (متعدد الأصناف) ═══════════ */
+
+  window._tfRows = null;
+
+  window.fatTransferModal = function () {
+    var brs = window.fatBranchList();
+    if (brs.length < 2) {
+      return toast(L('محتاج فرعين على الأقل — ضيف فرع من الإعدادات',
+        'You need at least 2 branches — add one in Settings'), 'err');
+    }
+    var from = window.fatCurBranch() || brs[0].id;
+    var to = (brs.filter(function (b) { return b.id !== from; })[0] || brs[0]).id;
+    window._tfRows = [{ pid: '', qty: 1 }];
+
+    var opt = function (sel) {
+      return brs.map(function (b) {
+        return '<option value="' + b.id + '"' + (b.id === sel ? ' selected' : '') + '>🏢 ' + esc(b.name) + '</option>';
+      }).join('');
+    };
+
+    openModal('<div class="modal-h"><h3>🔄 ' + L('تحويل مخزون بين الفروع', 'Transfer stock between branches') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div>' +
+      '<div class="modal-b">' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('من فرع', 'From branch') + '</label>' +
+      '<select id="tf_from" onchange="fatTfRender()">' + opt(from) + '</select></div>' +
+      '<div class="field"><label>' + L('إلى فرع', 'To branch') + '</label>' +
+      '<select id="tf_to">' + opt(to) + '</select></div></div>' +
+      '<div class="field"><label>' + L('الأصناف المحوّلة', 'Items to transfer') + '</label>' +
+      '<div id="tf_rows"></div>' +
+      '<button type="button" class="btn btn-ghost btn-sm" onclick="fatTfAddRow()" style="margin-top:6px">+ ' +
+      L('صنف', 'item') + '</button></div>' +
+      '<div class="field"><label>' + L('ملاحظات', 'Notes') + '</label>' +
+      '<input id="tf_note" placeholder="' + L('اختياري', 'optional') + '"></div>' +
+      '<div class="hint">💡 ' + L('الكمية بتتنقل من رصيد الفرع الأول لرصيد الفرع التاني. إجمالي المخزون عندك مبيتغيّرش.',
+        'Quantity moves from one branch balance to the other. Your total stock is unchanged.') + '</div>' +
+      '</div>' +
+      '<div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatTfConfirm()">✅ ' + L('تنفيذ التحويل', 'Execute transfer') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+    window.fatTfRender();
+  };
+
+  window.fatTfAddRow = function () {
+    (window._tfRows = window._tfRows || []).push({ pid: '', qty: 1 });
+    window.fatTfRender();
+  };
+  window.fatTfDelRow = function (i) {
+    (window._tfRows || []).splice(i, 1);
+    if (!window._tfRows.length) window._tfRows.push({ pid: '', qty: 1 });
+    window.fatTfRender();
+  };
+  window.fatTfSet = function (i, k, v) {
+    var a = window._tfRows || [];
+    if (!a[i]) return;
+    a[i][k] = (k === 'qty') ? (+v || 0) : v;
+    if (k === 'pid') window.fatTfRender();
+  };
+
+  window.fatTfRender = function () {
+    var box = document.getElementById('tf_rows');
+    if (!box) return;
+    var fromEl = document.getElementById('tf_from');
+    var from = fromEl ? fromEl.value : window.fatCurBranch();
+    var stockable = (db.products || []).filter(function (p) {
+      try { if (typeof fatShowsInStock === 'function') return fatShowsInStock(p); } catch (e) {}
+      return !(p.components && p.components.length);
+    }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name), 'ar'); });
+
+    box.innerHTML = (window._tfRows || []).map(function (r, i) {
+      var avail = r.pid ? window.fatBQOf(findProduct(r.pid), from) : null;
+      var bad = (avail !== null && r.qty > avail + 1e-9);
+      return '<div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">' +
+        '<select onchange="fatTfSet(' + i + ',\'pid\',this.value)" style="flex:1;min-width:0">' +
+        '<option value="">' + L('اختر صنف…', 'Pick item…') + '</option>' +
+        stockable.map(function (p) {
+          return '<option value="' + p.id + '"' + (r.pid === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+        }).join('') + '</select>' +
+        '<input type="number" step="any" min="0" value="' + (r.qty || '') +
+        '" oninput="fatTfSet(' + i + ',\'qty\',this.value)" style="width:96px' +
+        (bad ? ';border-color:var(--danger);color:var(--danger)' : '') + '">' +
+        '<button type="button" class="iconbtn del" onclick="fatTfDelRow(' + i + ')">×</button>' +
+        '</div>' +
+        (r.pid ? '<div style="font-size:11px;margin:-4px 0 8px 0;color:' +
+          (bad ? 'var(--danger)' : 'var(--muted)') + '">' +
+          L('متاح في الفرع ده', 'Available in this branch') + ': <b>' + fmt(avail) + '</b>' +
+          (bad ? ' — ' + L('الكمية أكبر من المتاح', 'exceeds available') : '') + '</div>' : '');
+    }).join('');
+  };
+
+  window.fatTfConfirm = function () {
+    var from = (document.getElementById('tf_from') || {}).value || '';
+    var to = (document.getElementById('tf_to') || {}).value || '';
+    var note = ((document.getElementById('tf_note') || {}).value || '').trim();
+    if (!from || !to) return;
+    if (from === to) return toast(L('اختار فرعين مختلفين', 'Pick two different branches'), 'err');
+
+    var rows = (window._tfRows || []).filter(function (r) { return r.pid && (+r.qty || 0) > 0; });
+    if (!rows.length) return toast(L('ضيف صنف واحد على الأقل بكمية', 'Add at least one item with a quantity'), 'err');
+
+    // دمج التكرار + التحقق من الأرصدة قبل تنفيذ أي حاجة
+    var merged = {};
+    rows.forEach(function (r) { merged[r.pid] = R3((merged[r.pid] || 0) + (+r.qty || 0)); });
+    var items = [], bad = [];
+    for (var pid in merged) {
+      if (!Object.prototype.hasOwnProperty.call(merged, pid)) continue;
+      var p = findProduct(pid);
+      if (!p) continue;
+      var have = window.fatBQOf(p, from);
+      if (merged[pid] > have + 1e-9) bad.push(p.name + ' (' + L('متاح', 'have') + ' ' + fmt(have) + ')');
+      items.push({ pid: pid, name: p.name, qty: merged[pid] });
+    }
+    if (bad.length) return toast(L('كمية أكبر من المتاح', 'Exceeds available') + ': ' + bad.join('، '), 'err');
+    if (!items.length) return;
+
+    var ref = 'TRF-' + String(uid()).slice(-6).toUpperCase();
+    var fromN = branchName(from), toN = branchName(to);
+
+    items.forEach(function (it) {
+      var p = findProduct(it.pid);
+      window.fatBQEnsure(p);
+      p.bq[from] = R3((+p.bq[from] || 0) - it.qty);
+      p.bq[to] = R3((+p.bq[to] || 0) + it.qty);
+      // إجمالي p.qty مبيتغيّرش — البضاعة لسه عندك، بس مكانها اتغيّر
+      db.stockMoves.push({
+        id: uid(), date: today(), pid: it.pid, name: it.name, delta: -it.qty, kind: 'transfer',
+        balance: R3(p.qty), branch: from, ref: ref,
+        note: L('تحويل إلى', 'Transfer to') + ' ' + toN + (note ? ' — ' + note : '')
+      });
+      db.stockMoves.push({
+        id: uid(), date: today(), pid: it.pid, name: it.name, delta: it.qty, kind: 'transfer',
+        balance: R3(p.qty), branch: to, ref: ref,
+        note: L('تحويل من', 'Transfer from') + ' ' + fromN + (note ? ' — ' + note : '')
+      });
+    });
+
+    db.transfers = db.transfers || [];
+    db.transfers.push({
+      id: uid(), ref: ref, date: today(), ts: new Date().toISOString(),
+      from: from, to: to, note: note, items: items,
+      user: (typeof currentUserName === 'function' ? currentUserName() : '')
+    });
+
+    try {
+      logAudit(L('تحويل مخزون', 'Stock transfer'),
+        ref + ' — ' + fromN + ' → ' + toN + ' · ' + items.length + ' ' + L('صنف', 'items'));
+    } catch (e) {}
+    save();
+    closeModal();
+    toast('✅ ' + L('تم التحويل', 'Transferred') + ' — ' + ref);
+    try { if (current === 'branchStock') views.branchStock(); } catch (e) {}
+  };
+
+  // توحيد المداخل القديمة على نفس النافذة
+  window.stockTransferForm = window.fatTransferModal;
+  window.branchTransfer = window.fatTransferModal;
+
+  /* ═══════════ 4) توزيع أول المدة + تصحيح الفروق ═══════════ */
+
+  window.fatBQDistribute = function (pid) {
+    var p = findProduct(pid);
+    if (!p) return;
+    window.fatBQEnsure(p);
+    var brs = window.fatBranchList();
+    openModal('<div class="modal-h"><h3>📍 ' + L('توزيع', 'Distribute') + ' — ' + esc(p.name) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div>' +
+      '<div class="modal-b">' +
+      '<div class="hint" style="margin-bottom:12px">💡 ' +
+      L('اكتب الموجود فعليًا في كل فرع. المجموع لازم يساوي الكمية الكلية.',
+        'Enter what is physically in each branch. The sum must equal the total quantity.') + '</div>' +
+      brs.map(function (b) {
+        return '<div class="field"><label>🏢 ' + esc(b.name) + '</label>' +
+          '<input type="number" step="any" id="bqd_' + b.id + '" value="' + window.fatBQOf(p, b.id) +
+          '" oninput="fatBQDistSum(\'' + p.id + '\')"></div>';
+      }).join('') +
+      '<div id="bqd_sum" style="padding:11px 14px;border-radius:10px;background:var(--card2);font-size:13px;font-weight:700"></div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatBQDistSave(\'' + p.id + '\')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+    window.fatBQDistSum(p.id);
+  };
+
+  window.fatBQDistSum = function (pid) {
+    var p = findProduct(pid);
+    var el = document.getElementById('bqd_sum');
+    if (!p || !el) return;
+    var t = 0;
+    window.fatBranchList().forEach(function (b) {
+      var i = document.getElementById('bqd_' + b.id);
+      if (i) t += (+i.value || 0);
+    });
+    t = R3(t);
+    var q = R3(p.qty), d = R3(t - q);
+    el.innerHTML = L('مجموع الفروع', 'Branches total') + ': <b>' + fmt(t) + '</b> · ' +
+      L('الكمية الكلية', 'Total qty') + ': <b>' + fmt(q) + '</b>' +
+      (Math.abs(d) < 1e-6
+        ? ' · <span style="color:var(--ok)">✅ ' + L('مظبوط', 'balanced') + '</span>'
+        : ' · <span style="color:var(--danger)">⚠️ ' + L('فرق', 'diff') + ' ' + (d > 0 ? '+' : '') + fmt(d) + '</span>');
+  };
+
+  window.fatBQDistSave = function (pid) {
+    var p = findProduct(pid);
+    if (!p) return;
+    var bq = {}, t = 0;
+    window.fatBranchList().forEach(function (b) {
+      var i = document.getElementById('bqd_' + b.id);
+      var v = i ? R3(i.value) : 0;
+      bq[b.id] = v; t += v;
+    });
+    if (Math.abs(R3(t) - R3(p.qty)) > 1e-6) {
+      return toast(L('مجموع الفروع لازم يساوي الكمية الكلية', 'Branch total must equal total quantity') +
+        ' (' + fmt(p.qty) + ')', 'err');
+    }
+    p.bq = bq;
+    try { logAudit(L('توزيع مخزون على الفروع', 'Branch distribution'), p.name); } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('تم التوزيع', 'Distributed'));
+    try { if (current === 'branchStock') views.branchStock(); } catch (e) {}
+  };
+
+  /* ═══════════ 5) شاشة مخزون الفروع ═══════════ */
+
+  try {
+    PG.branchStock = [
+      ['مخزون الفروع', 'كل صنف موجود فين — وسجل التحويلات'],
+      ['Branch Stock', 'Where every item is — and transfer history']
+    ];
+    var _cvB = window.canView;
+    window.canView = function (v) {
+      if (v === 'branchStock') return _cvB('products') || _cvB('reports');
+      return _cvB(v);
+    };
+  } catch (e) {}
+
+  window.fatBQTab = function (t) { window._bqTab = t; views.branchStock(); };
+  window.fatBQFilter = function (f) { window._bqFilter = f; views.branchStock(); };
+  window.fatBQSearch = function (q) { window._bqQ = q; views.branchStock(); };
+
+  window.fatBranchStockCSV = function () {
+    var brs = window.fatBranchList();
+    var head = [L('الصنف', 'Item'), L('الكود', 'SKU')]
+      .concat(brs.map(function (b) { return b.name; }))
+      .concat([L('الإجمالي', 'Total'), L('فرق', 'Drift')]);
+    var out = [head];
+    (db.products || []).forEach(function (p) {
+      window.fatBQEnsure(p);
+      out.push([p.name, p.sku || '']
+        .concat(brs.map(function (b) { return window.fatBQOf(p, b.id); }))
+        .concat([R3(p.qty), window.fatBQDrift(p)]));
+    });
+    downloadCSV('branch-stock-' + today() + '.csv', out);
+  };
+
+  views.branchStock = function () {
+    var brs = window.fatBranchList();
+    var tab = window._bqTab || 'matrix';
+    var flt = window._bqFilter || 'all';
+    var q = (window._bqQ || '').trim().toLowerCase();
+
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-primary btn-sm" onclick="fatTransferModal()">🔄 ' + L('تحويل', 'Transfer') + '</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="fatBranchStockCSV()">📊 CSV</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="window.print()">🖨️ ' + L('طباعة', 'Print') + '</button>';
+
+    if (brs.length < 2) {
+      document.getElementById('content').innerHTML =
+        '<div class="panel"><div class="panel-b pad" style="text-align:center;padding:36px">' +
+        '<div style="font-size:48px">🏢</div>' +
+        '<h3 style="margin:12px 0 6px">' + L('عندك فرع واحد بس', 'You only have one branch') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.8;max-width:420px;margin:0 auto">' +
+        L('الشاشة دي بتوضّح كل صنف موجود في أي فرع، وبتخليك تحوّل بضاعة بينهم. ضيف فرع تاني من الإعدادات وهتشتغل على طول.',
+          'This screen shows where each item is and lets you move stock between branches. Add a second branch in Settings.') +
+        '</p><button class="btn btn-primary" style="margin-top:16px" onclick="go(\'settings\')">⚙️ ' +
+        L('إضافة فرع', 'Add a branch') + '</button></div></div>';
+      return;
+    }
+
+    var tabs = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px" class="no-print">' +
+      '<button class="btn ' + (tab === 'matrix' ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatBQTab(\'matrix\')">📍 ' +
+      L('التوزيع', 'Distribution') + '</button>' +
+      '<button class="btn ' + (tab === 'log' ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatBQTab(\'log\')">🔄 ' +
+      L('سجل التحويلات', 'Transfer log') + '</button></div>';
+
+    /* ── تبويب سجل التحويلات ── */
+    if (tab === 'log') {
+      var tr = (db.transfers || []).slice().reverse().slice(0, 200);
+      document.getElementById('content').innerHTML = tabs +
+        '<div class="panel"><div class="panel-h"><h3>🔄 ' + L('سجل التحويلات', 'Transfer log') + '</h3></div><div class="panel-b">' +
+        (tr.length
+          ? '<table><thead><tr><th>' + L('المرجع', 'Ref') + '</th><th>' + L('التاريخ', 'Date') + '</th><th>' +
+          L('من', 'From') + '</th><th>' + L('إلى', 'To') + '</th><th>' + L('الأصناف', 'Items') + '</th><th>' +
+          L('بواسطة', 'By') + '</th></tr></thead><tbody>' +
+          tr.map(function (t) {
+            return '<tr><td><b>' + esc(t.ref) + '</b></td><td>' + esc(t.date) + '</td>' +
+              '<td>' + esc(branchName(t.from)) + '</td><td>' + esc(branchName(t.to)) + '</td>' +
+              '<td><div style="font-size:12px">' +
+              (t.items || []).map(function (i) { return esc(i.name) + ' ×' + fmt(i.qty); }).join('، ') +
+              (t.note ? '<div style="color:var(--muted);font-size:11px">' + esc(t.note) + '</div>' : '') +
+              '</div></td><td style="font-size:11.5px">' + esc(t.user || '—') + '</td></tr>';
+          }).join('') + '</tbody></table>'
+          : '<div class="empty"><span class="big">🔄</span>' +
+          L('مفيش تحويلات لسه — اضغط «تحويل» فوق', 'No transfers yet — press Transfer above') + '</div>') +
+        '</div></div>';
+      return;
+    }
+
+    /* ── تبويب التوزيع ── */
+    var all = (db.products || []).filter(function (p) {
+      try { if (typeof fatShowsInStock === 'function') return fatShowsInStock(p); } catch (e) {}
+      return !(p.components && p.components.length);
+    });
+    all.forEach(window.fatBQEnsure);
+
+    var negCount = 0, driftCount = 0;
+    all.forEach(function (p) {
+      var neg = false;
+      brs.forEach(function (b) { if (window.fatBQOf(p, b.id) < -1e-6) neg = true; });
+      if (neg) negCount++;
+      if (Math.abs(window.fatBQDrift(p)) > 1e-6) driftCount++;
+    });
+
+    var list = all.filter(function (p) {
+      if (q) {
+        var hay = (String(p.name || '') + ' ' + String(p.sku || '')).toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
+      if (flt === 'neg') {
+        var n = false;
+        brs.forEach(function (b) { if (window.fatBQOf(p, b.id) < -1e-6) n = true; });
+        return n;
+      }
+      if (flt === 'drift') return Math.abs(window.fatBQDrift(p)) > 1e-6;
+      return true;
+    });
+
+    var CAP = 300;
+    var shown = list.slice(0, CAP);
+
+    var branchTotals = brs.map(function (b) {
+      var v = 0;
+      all.forEach(function (p) { v += window.fatBQOf(p, b.id) * (+p.cost || 0); });
+      return R3(v);
+    });
+
+    var cards = '<div class="cards">' +
+      brs.map(function (b, i) {
+        return '<div class="card"><div class="ic-bg">🏢</div><div class="lbl">' + esc(b.name) + '</div>' +
+          '<div class="val">' + money(branchTotals[i]) + '</div>' +
+          '<div class="sub">' + L('قيمة المخزون بالتكلفة', 'Stock value at cost') + '</div></div>';
+      }).join('') +
+      (negCount
+        ? '<div class="card"><div class="ic-bg">⚠️</div><div class="lbl">' + L('أصناف برصيد سالب', 'Negative in a branch') +
+        '</div><div class="val" style="color:var(--danger)">' + negCount + '</div>' +
+        '<div class="sub">' + L('محتاجة توزيع', 'need distributing') + '</div></div>'
+        : '') +
+      '</div>';
+
+    var filters = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px" class="no-print">' +
+      '<input placeholder="🔍 ' + L('دوّر على صنف…', 'Search item…') + '" value="' + esc(window._bqQ || '') +
+      '" oninput="clearTimeout(window._bqT);window._bqT=setTimeout(function(v){fatBQSearch(v)}.bind(null,this.value),300)" ' +
+      'style="flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink)">' +
+      [['all', L('الكل', 'All'), all.length],
+       ['neg', '⚠️ ' + L('رصيد سالب', 'Negative'), negCount],
+       ['drift', '🔧 ' + L('فيه فرق', 'Drift'), driftCount]]
+        .map(function (f) {
+          return '<button class="btn ' + (flt === f[0] ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatBQFilter(\'' + f[0] + '\')">' +
+            f[1] + ' (' + f[2] + ')</button>';
+        }).join('') + '</div>';
+
+    var table = shown.length
+      ? '<table><thead><tr><th>' + L('الصنف', 'Item') + '</th>' +
+      brs.map(function (b) { return '<th style="text-align:center">🏢 ' + esc(b.name) + '</th>'; }).join('') +
+      '<th>' + L('الإجمالي', 'Total') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+      shown.map(function (p) {
+        var drift = window.fatBQDrift(p);
+        return '<tr><td><b>' + esc(p.name) + '</b>' +
+          (p.sku ? '<div style="font-size:10.5px;color:var(--muted)">' + esc(p.sku) + '</div>' : '') +
+          (Math.abs(drift) > 1e-6
+            ? '<div style="font-size:10.5px;color:var(--danger)">⚠️ ' + L('فرق', 'drift') + ' ' +
+              (drift > 0 ? '+' : '') + fmt(drift) + '</div>'
+            : '') + '</td>' +
+          brs.map(function (b) {
+            var v = window.fatBQOf(p, b.id);
+            var col = v < -1e-6 ? 'var(--danger)' : (v > 0 ? 'var(--ink)' : 'var(--muted)');
+            return '<td class="t-num" style="text-align:center;color:' + col +
+              (v < -1e-6 ? ';font-weight:800' : '') + '">' + fmt(v) + '</td>';
+          }).join('') +
+          '<td class="t-num"><b>' + fmt(p.qty) + '</b></td>' +
+          '<td class="no-print"><button class="iconbtn" title="' + L('توزيع على الفروع', 'Distribute') +
+          '" onclick="fatBQDistribute(\'' + p.id + '\')">📍</button></td></tr>';
+      }).join('') + '</tbody></table>' +
+      (list.length > CAP
+        ? '<div class="hint" style="margin:12px">' + L('عرض أول', 'Showing first') + ' ' + CAP + ' ' +
+          L('من', 'of') + ' ' + list.length + ' — ' + L('استخدم البحث للتصفية', 'use search to narrow down') + '</div>'
+        : '')
+      : '<div class="empty"><span class="big">📦</span>' + L('مفيش أصناف مطابقة', 'No matching items') + '</div>';
+
+    document.getElementById('content').innerHTML = tabs + cards + filters +
+      '<div class="panel"><div class="panel-h"><h3>📍 ' + L('كل صنف موجود فين', 'Where each item is') + '</h3></div>' +
+      '<div class="panel-b">' + table + '</div></div>' +
+      (negCount
+        ? '<div class="hint" style="margin-top:12px">⚠️ <b>' + L('رصيد سالب معناه إيه؟', 'What does a negative balance mean?') + '</b><br>' +
+          L('يعني الفرع ده باع صنف مسجّل إنه موجود في فرع تاني. اضغط 📍 جنب الصنف ووزّع الكميات على الفروع صح.',
+            'It means the branch sold an item that was recorded as being in another branch. Press 📍 next to the item and set the correct quantities.') +
+          '</div>'
+        : '<div class="hint" style="margin-top:12px">💡 ' +
+          L('كل بيع وشراء وهدر وجرد بيتسجّل تلقائيًا على الفرع النشط وقتها. التحويل بينقل الرصيد بين الفروع من غير ما يغيّر إجمالي مخزونك.',
+            'Every sale, purchase, waste and count is recorded against the active branch. A transfer moves balance between branches without changing your total stock.') +
+          '</div>');
+  };
+
+  /* ═══════════ 6) إضافة الشاشة للقائمة ═══════════ */
+  function fatInjectBranchNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="branchStock"]')) return;
+      if (typeof canView === 'function' && !canView('branchStock')) return;
+      var hidden = (db.settings && db.settings.hiddenSections) || [];
+      if (hidden.indexOf('branchStock') > -1) return;
+      var anchor = nav.querySelector('a[data-view="stocktake"]') ||
+                   nav.querySelector('a[data-view="dailystock"]') ||
+                   nav.querySelector('a[data-view="products"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'branchStock');
+      a.innerHTML = '<span class="ic">📍</span> ' + L('مخزون الفروع', 'Branch Stock');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('branchStock'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+      if (typeof current !== 'undefined' && current === 'branchStock') a.classList.add('active');
+    } catch (e) {}
+  }
+
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        fatInjectBranchNav();
+        return r;
+      };
+    }
+    setTimeout(fatInjectBranchNav, 1400);
+    setTimeout(fatInjectBranchNav, 4200);
+  })();
+
+})();
+
 </script>
 </body>
 </html>
