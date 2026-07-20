@@ -20174,6 +20174,599 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   })();
 
 })();
+
+  /* ============================================================
+   FATORTY v8.5 — تتبع التشغيلات والصلاحيات (Batch / Lot + FEFO)
+   بتتركّب فوق طبقة الفروع بتاعة v8.1 — من غير ما تلمس أي شاشة موجودة.
+     • تتبع اختياري لكل صنف على حدة (p.trackBatch)
+     • كل تشغيلة برقمها وتاريخ صلاحيتها وكميتها وفرعها
+     • البيع بيخصم FEFO: الأقرب انتهاءً يخرج الأول — أوتوماتيك
+     • أي كمية داخلة من غير تشغيلة بتروح لـ«غير محدّد» وتتقسّم بعدين
+     • تنبيهات: قرب ينتهي / منتهي + إهدار بضغطة
+   الثابت المحفوظ: مجموع التشغيلات = رصيد الفرع = جزء من p.qty
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R3 = function (n) { return Math.round((+n || 0) * 1000) / 1000; };
+
+  /* ═══════════ 1) أدوات أساسية ═══════════ */
+
+  window.fatBatchCfg = function () {
+    try {
+      db.settings = db.settings || {};
+      db.settings.batch = db.settings.batch || {};
+      var c = db.settings.batch;
+      if (c.soonDays === undefined) c.soonDays = 30;
+      return c;
+    } catch (e) { return { soonDays: 30 }; }
+  };
+
+  window.fatBatchOn = function (p) { return !!(p && p.trackBatch); };
+
+  function curBranch() {
+    try { if (typeof fatCurBranch === 'function') return fatCurBranch(); } catch (e) {}
+    try { return ((db.branches || [])[0] || {}).id || ''; } catch (e) { return ''; }
+  }
+  function branchQty(p, b) {
+    try { if (typeof fatBQOf === 'function') return fatBQOf(p, b); } catch (e) {}
+    return R3(p.qty);
+  }
+  function branchList() {
+    try { if (typeof fatBranchList === 'function') return fatBranchList(); } catch (e) {}
+    return (db.branches || []).filter(function (x) { return x && x.id && x.id !== '__ALL__'; });
+  }
+
+  // تهيئة كسولة: أول ما نلمس صنف متتبَّع، رصيد كل فرع بيتحط في تشغيلة «غير محدّد»
+  window.fatBatchEnsure = function (p) {
+    if (!p || !window.fatBatchOn(p)) return p;
+    if (Array.isArray(p.batches)) return p;
+    p.batches = [];
+    var brs = branchList();
+    var seeded = false;
+    brs.forEach(function (b) {
+      var q = branchQty(p, b.id);
+      if (Math.abs(q) > 1e-9) {
+        p.batches.push({
+          id: (typeof uid === 'function' ? uid() : 'b' + Math.random()),
+          code: '', expiry: String(p.expiry || ''), qty: R3(q), branch: b.id,
+          cost: +p.cost || 0, received: today()
+        });
+        seeded = true;
+      }
+    });
+    if (!seeded && Math.abs(+p.qty || 0) > 1e-9 && brs.length) {
+      p.batches.push({
+        id: (typeof uid === 'function' ? uid() : 'b' + Math.random()),
+        code: '', expiry: String(p.expiry || ''), qty: R3(p.qty), branch: brs[0].id,
+        cost: +p.cost || 0, received: today()
+      });
+    }
+    return p;
+  };
+
+  window.fatBatchesIn = function (p, branch) {
+    if (!p || !Array.isArray(p.batches)) return [];
+    return p.batches.filter(function (b) { return !branch || b.branch === branch; });
+  };
+
+  window.fatBatchQty = function (p, branch) {
+    var t = 0;
+    window.fatBatchesIn(p, branch).forEach(function (b) { t += (+b.qty || 0); });
+    return R3(t);
+  };
+
+  window.fatBatchDays = function (expiry) {
+    if (!expiry) return null;
+    try {
+      var d = Math.floor((new Date(expiry).getTime() - new Date(today()).getTime()) / 86400000);
+      return isNaN(d) ? null : d;
+    } catch (e) { return null; }
+  };
+
+  window.fatBatchColor = function (days) {
+    if (days === null) return 'var(--muted)';
+    if (days < 0) return 'var(--danger)';
+    if (days <= window.fatBatchCfg().soonDays) return '#d97706';
+    return 'var(--ok)';
+  };
+
+  /* ═══════════ 2) الخصم بنظام FEFO ═══════════ */
+
+  // بيرجّع التشغيلات المتأثرة — الأقرب انتهاءً الأول، واللي من غير تاريخ في الآخر
+  window.fatBatchConsume = function (p, qty, branch) {
+    window.fatBatchEnsure(p);
+    var need = R3(qty), used = [];
+    if (need <= 0) return used;
+
+    var pool = window.fatBatchesIn(p, branch).filter(function (b) { return (+b.qty || 0) > 1e-9; });
+    pool.sort(function (a, b) {
+      if (!a.expiry && !b.expiry) return 0;
+      if (!a.expiry) return 1;   // من غير تاريخ ← الأخير
+      if (!b.expiry) return -1;
+      return String(a.expiry).localeCompare(String(b.expiry));
+    });
+
+    for (var i = 0; i < pool.length && need > 1e-9; i++) {
+      var take = Math.min(pool[i].qty, need);
+      pool[i].qty = R3(pool[i].qty - take);
+      need = R3(need - take);
+      used.push({ id: pool[i].id, code: pool[i].code, expiry: pool[i].expiry, qty: R3(take) });
+    }
+
+    // لسه ناقص؟ يبقى الفرع باع أكتر من المسجّل — نخلي الباقي على «غير محدّد» بالسالب
+    if (need > 1e-9) {
+      var un = window.fatBatchesIn(p, branch).filter(function (b) { return !b.code && !b.expiry; })[0];
+      if (!un) {
+        un = { id: (typeof uid === 'function' ? uid() : 'b' + Math.random()),
+               code: '', expiry: '', qty: 0, branch: branch, cost: +p.cost || 0, received: today() };
+        p.batches.push(un);
+      }
+      un.qty = R3(un.qty - need);
+      used.push({ id: un.id, code: '', expiry: '', qty: R3(need), short: true });
+    }
+
+    p.batches = p.batches.filter(function (b) { return Math.abs(+b.qty || 0) > 1e-9; });
+    return used;
+  };
+
+  window.fatBatchAdd = function (p, qty, branch, info) {
+    window.fatBatchEnsure(p);
+    if (!Array.isArray(p.batches)) p.batches = [];
+    info = info || {};
+    var code = String(info.code || '').trim();
+    var expiry = String(info.expiry || '').trim();
+    var hit = p.batches.filter(function (b) {
+      return b.branch === branch && String(b.code || '') === code && String(b.expiry || '') === expiry;
+    })[0];
+    if (hit) { hit.qty = R3(hit.qty + qty); return hit; }
+    var nb = {
+      id: (typeof uid === 'function' ? uid() : 'b' + Math.random()),
+      code: code, expiry: expiry, qty: R3(qty), branch: branch,
+      cost: (info.cost != null ? +info.cost : (+p.cost || 0)), received: info.received || today()
+    };
+    p.batches.push(nb);
+    return nb;
+  };
+
+  /* ═══════════ 3) الربط بـ moveStock ═══════════ */
+
+  window._fatBatchHint = null;   // بيتحط قبل استلام تشغيلة معيّنة
+
+  (function () {
+    var _ms = window.moveStock;
+    if (typeof _ms !== 'function' || window._fatBatchWrapped) return;
+    window._fatBatchWrapped = true;
+    window.moveStock = function (pid, delta, kind, note, ref) {
+      var p = null, tracked = false;
+      try {
+        p = findProduct(pid);
+        tracked = window.fatBatchOn(p);
+        // حرِج: نهيّئ التشغيلات وإحنا لسه شايفين الأرصدة *قبل* ما تتغيّر
+        if (tracked) window.fatBatchEnsure(p);
+      } catch (e) {}
+
+      var r = _ms.apply(this, arguments);
+
+      try {
+        if (tracked && p && kind !== 'transfer') {
+          var b = curBranch();
+          var d = +delta || 0;
+          if (d < 0) {
+            var used = window.fatBatchConsume(p, -d, b);
+            var mv = (db.stockMoves || [])[db.stockMoves.length - 1];
+            if (mv && mv.pid === pid) mv.batches = used;
+          } else if (d > 0) {
+            var hint = window._fatBatchHint || {};
+            window.fatBatchAdd(p, d, b, hint);
+            var mv2 = (db.stockMoves || [])[db.stockMoves.length - 1];
+            if (mv2 && mv2.pid === pid) {
+              mv2.batches = [{ code: hint.code || '', expiry: hint.expiry || '', qty: R3(d) }];
+            }
+          }
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  // التحويل بين الفروع: انقل التشغيلات كمان (بنفس FEFO)
+  (function () {
+    var _tc = window.fatTfConfirm;
+    if (typeof _tc !== 'function') return;
+    window.fatTfConfirm = function () {
+      var from = (document.getElementById('tf_from') || {}).value || '';
+      var to = (document.getElementById('tf_to') || {}).value || '';
+      var rows = (window._tfRows || []).filter(function (x) { return x.pid && (+x.qty || 0) > 0; });
+      var beforeLen = (db.transfers || []).length;
+      var r = _tc.apply(this, arguments);
+      try {
+        if ((db.transfers || []).length > beforeLen && from && to && from !== to) {
+          var merged = {};
+          rows.forEach(function (x) { merged[x.pid] = R3((merged[x.pid] || 0) + (+x.qty || 0)); });
+          for (var pid in merged) {
+            if (!Object.prototype.hasOwnProperty.call(merged, pid)) continue;
+            var p = findProduct(pid);
+            if (!p || !window.fatBatchOn(p)) continue;
+            var used = window.fatBatchConsume(p, merged[pid], from);
+            used.forEach(function (u) {
+              window.fatBatchAdd(p, u.qty, to, { code: u.code, expiry: u.expiry });
+            });
+          }
+          save();
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  /* ═══════════ 4) استلام تشغيلة ═══════════ */
+
+  window.fatBatchReceive = function (pid) {
+    var tracked = (db.products || []).filter(window.fatBatchOn);
+    if (!tracked.length) {
+      return toast(L('مفيش أصناف متتبَّعة بالتشغيلة — فعّلها من كارت الصنف',
+        'No batch-tracked items — enable it on the item card'), 'err');
+    }
+    var brs = branchList();
+    openModal('<div class="modal-h"><h3>📥 ' + L('استلام تشغيلة', 'Receive a batch') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('الصنف', 'Item') + '</label><select id="bt_pid">' +
+      tracked.map(function (p) {
+        return '<option value="' + p.id + '"' + (pid === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+      }).join('') + '</select></div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('رقم التشغيلة / اللوط', 'Batch / lot number') + '</label>' +
+      '<input id="bt_code" placeholder="' + L('مثال: L2026-07', 'e.g. L2026-07') + '"></div>' +
+      '<div class="field"><label>' + L('تاريخ الانتهاء', 'Expiry date') + '</label>' +
+      '<input id="bt_exp" type="date"></div></div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('الكمية', 'Quantity') + '</label>' +
+      '<input id="bt_qty" type="number" step="any" min="0" value="1"></div>' +
+      '<div class="field"><label>' + L('تكلفة الوحدة', 'Unit cost') + '</label>' +
+      '<input id="bt_cost" type="number" step="any" min="0"></div></div>' +
+      (brs.length > 1
+        ? '<div class="field"><label>' + L('الفرع', 'Branch') + '</label><select id="bt_branch">' +
+          brs.map(function (b) {
+            return '<option value="' + b.id + '"' + (b.id === curBranch() ? ' selected' : '') + '>🏢 ' + esc(b.name) + '</option>';
+          }).join('') + '</select></div>'
+        : '') +
+      '<div class="hint">💡 ' + L('الكمية دي هتتضاف لمخزونك عادي، بس مربوطة بالتشغيلة دي — والبيع هيخصم الأقرب انتهاءً الأول.',
+        'This is added to stock as usual but tied to this batch — sales consume the earliest expiry first.') +
+      '</div></div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatBatchReceiveSave()">' + L('استلام', 'Receive') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatBatchReceiveSave = function () {
+    var g = function (i) { var e = document.getElementById(i); return e ? String(e.value || '').trim() : ''; };
+    var pid = g('bt_pid'), code = g('bt_code'), exp = g('bt_exp');
+    var qty = +g('bt_qty') || 0, cost = g('bt_cost');
+    var brEl = document.getElementById('bt_branch');
+    var branch = brEl ? brEl.value : curBranch();
+    var p = findProduct(pid);
+    if (!p) return;
+    if (qty <= 0) return toast(L('اكتب كمية صحيحة', 'Enter a valid quantity'), 'err');
+
+    var prevBranch = null;
+    try {
+      prevBranch = db.settings.activeBranch;
+      if (branch) db.settings.activeBranch = branch;
+    } catch (e) {}
+
+    window._fatBatchHint = { code: code, expiry: exp, cost: cost === '' ? null : +cost };
+    try {
+      moveStock(pid, qty, 'in', L('استلام تشغيلة', 'Batch received') + (code ? ' ' + code : ''), null);
+    } finally {
+      window._fatBatchHint = null;
+      try { if (prevBranch !== null) db.settings.activeBranch = prevBranch; } catch (e) {}
+    }
+
+    try { logAudit(L('استلام تشغيلة', 'Batch received'), p.name + ' ' + code + ' ×' + qty); } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('اتسجّلت التشغيلة', 'Batch recorded'));
+    try { if (current === 'batches') views.batches(); } catch (e) {}
+  };
+
+  /* ═══════════ 5) تقسيم «غير محدّد» ═══════════ */
+
+  window.fatBatchAssign = function (pid, bid) {
+    var p = findProduct(pid);
+    if (!p) return;
+    window.fatBatchEnsure(p);
+    var b = (p.batches || []).filter(function (x) { return x.id === bid; })[0];
+    if (!b) return;
+    openModal('<div class="modal-h"><h3>🏷️ ' + L('تحديد تشغيلة', 'Assign batch') + ' — ' + esc(p.name) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="hint" style="margin-bottom:12px">' +
+      L('الكمية دي دخلت من غير رقم تشغيلة. اكتب بياناتها دلوقتي، أو جزء منها والباقي يفضل غير محدّد.',
+        'This quantity arrived without a batch number. Enter its details, or part of it.') + '</div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('رقم التشغيلة', 'Batch number') + '</label><input id="ba_code"></div>' +
+      '<div class="field"><label>' + L('تاريخ الانتهاء', 'Expiry') + '</label><input id="ba_exp" type="date"></div></div>' +
+      '<div class="field"><label>' + L('الكمية', 'Quantity') + ' (' + L('المتاح', 'available') + ': ' + fmt(b.qty) + ')</label>' +
+      '<input id="ba_qty" type="number" step="any" min="0" max="' + b.qty + '" value="' + b.qty + '"></div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatBatchAssignSave(\'' + pid + '\',\'' + bid + '\')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatBatchAssignSave = function (pid, bid) {
+    var p = findProduct(pid);
+    if (!p) return;
+    var b = (p.batches || []).filter(function (x) { return x.id === bid; })[0];
+    if (!b) return;
+    var g = function (i) { var e = document.getElementById(i); return e ? String(e.value || '').trim() : ''; };
+    var code = g('ba_code'), exp = g('ba_exp'), qty = +g('ba_qty') || 0;
+    if (qty <= 0 || qty > b.qty + 1e-9) return toast(L('كمية غير صحيحة', 'Invalid quantity'), 'err');
+    if (!code && !exp) return toast(L('اكتب رقم تشغيلة أو تاريخ انتهاء', 'Enter a batch number or expiry'), 'err');
+    b.qty = R3(b.qty - qty);
+    window.fatBatchAdd(p, qty, b.branch, { code: code, expiry: exp, cost: b.cost });
+    p.batches = p.batches.filter(function (x) { return Math.abs(+x.qty || 0) > 1e-9; });
+    save(); closeModal();
+    toast('✅ ' + L('اتحدّدت', 'Assigned'));
+    try { if (current === 'batches') views.batches(); } catch (e) {}
+  };
+
+  window.fatBatchWriteOff = function (pid, bid) {
+    var p = findProduct(pid);
+    if (!p) return;
+    var b = (p.batches || []).filter(function (x) { return x.id === bid; })[0];
+    if (!b || b.qty <= 0) return;
+    Promise.resolve(confirmBox(
+      L('تهدر التشغيلة دي كلها؟', 'Write off this entire batch?') + '\n\n' +
+      p.name + (b.code ? ' — ' + b.code : '') + '\n' +
+      L('الكمية', 'Quantity') + ': ' + fmt(b.qty) +
+      (b.expiry ? '\n' + L('انتهت في', 'Expired') + ': ' + b.expiry : ''),
+      { danger: true }
+    )).then(function (okv) {
+      if (!okv) return;
+      var prev = null;
+      try { prev = db.settings.activeBranch; db.settings.activeBranch = b.branch; } catch (e) {}
+      var q = b.qty;
+      try {
+        moveStock(pid, -q, 'waste', L('إهدار تشغيلة منتهية', 'Expired batch write-off') + (b.code ? ' ' + b.code : ''), null);
+      } finally {
+        try { if (prev !== null) db.settings.activeBranch = prev; } catch (e) {}
+      }
+      try { logAudit(L('إهدار تشغيلة', 'Batch write-off'), p.name + ' ' + (b.code || '') + ' ×' + q); } catch (e) {}
+      save();
+      toast('✅ ' + L('اتسجّل الإهدار', 'Written off'));
+      try { if (current === 'batches') views.batches(); } catch (e) {}
+    });
+  };
+
+  /* ═══════════ 6) خانة التتبع في كارت الصنف ═══════════ */
+
+  (function () {
+    var _pf = window.productForm;
+    if (typeof _pf !== 'function') return;
+    window.productForm = function (id) {
+      var r = _pf.apply(this, arguments);
+      setTimeout(function () {
+        try {
+          if (document.getElementById('f_trackbatch')) return;
+          var body = document.querySelector('#modal .modal-b'); if (!body) return;
+          var p = id ? findProduct(id) : null;
+          var d = document.createElement('div');
+          d.innerHTML = '<label style="display:flex;align-items:center;justify-content:space-between;padding:11px;background:var(--card2);border-radius:10px;cursor:pointer;margin-top:8px">' +
+            '<span>📅 <b>' + L('تتبع بالتشغيلة وتاريخ الصلاحية', 'Track by batch & expiry') + '</b>' +
+            '<div style="font-size:11px;color:var(--muted);margin-top:2px">' +
+            L('للأدوية والأغذية — البيع بيخصم الأقرب انتهاءً الأول', 'For food & pharma — sells earliest-expiry first') +
+            '</div></span>' +
+            '<input type="checkbox" id="f_trackbatch"' + ((p && p.trackBatch) ? ' checked' : '') +
+            ' style="width:20px;height:20px"></label>';
+          body.appendChild(d);
+        } catch (e) {}
+      }, 0);
+      return r;
+    };
+  })();
+
+  (function () {
+    var _sp = window.saveProduct;
+    if (typeof _sp !== 'function') return;
+    window.saveProduct = function (id) {
+      var el = document.getElementById('f_trackbatch');
+      var on = el ? !!el.checked : null;
+      var before = (db.products || []).length;
+      var r = _sp.apply(this, arguments);
+      var apply = function () {
+        try {
+          if (on === null) return;
+          var p = id ? findProduct(id) : ((db.products || []).length > before ? db.products[db.products.length - 1] : null);
+          if (!p) return;
+          if (on) { p.trackBatch = true; window.fatBatchEnsure(p); }
+          else { delete p.trackBatch; }
+          save();
+        } catch (e) {}
+      };
+      if (r && typeof r.then === 'function') { r.then(apply)['catch'](function () {}); } else { apply(); }
+      return r;
+    };
+  })();
+
+  /* ═══════════ 7) الشاشة ═══════════ */
+
+  try {
+    PG.batches = [
+      ['التشغيلات والصلاحيات', 'كل تشغيلة فين وبتنتهي إمتى'],
+      ['Batches & Expiry', 'Where each lot is and when it expires']
+    ];
+    var _cvB = window.canView;
+    window.canView = function (v) {
+      if (v === 'batches') return _cvB('products') || _cvB('stocktake');
+      return _cvB(v);
+    };
+  } catch (e) {}
+
+  window.fatBatchRows = function () {
+    var out = [];
+    (db.products || []).forEach(function (p) {
+      if (!window.fatBatchOn(p)) return;
+      window.fatBatchEnsure(p);
+      (p.batches || []).forEach(function (b) {
+        if (Math.abs(+b.qty || 0) < 1e-9) return;
+        out.push({ p: p, b: b, days: window.fatBatchDays(b.expiry) });
+      });
+    });
+    out.sort(function (x, y) {
+      if (x.days === null && y.days === null) return 0;
+      if (x.days === null) return 1;
+      if (y.days === null) return -1;
+      return x.days - y.days;
+    });
+    return out;
+  };
+
+  window.fatBatchAlerts = function () {
+    var soon = 0, gone = 0, un = 0;
+    window.fatBatchRows().forEach(function (r) {
+      if (r.days !== null && r.days < 0) gone++;
+      else if (r.days !== null && r.days <= window.fatBatchCfg().soonDays) soon++;
+      if (!r.b.code && !r.b.expiry) un++;
+    });
+    return { soon: soon, expired: gone, unassigned: un };
+  };
+
+  window.fatBatchTab = function (t) { window._btTab = t; views.batches(); };
+
+  window.fatBatchCSV = function () {
+    var rows = [[L('الصنف', 'Item'), L('التشغيلة', 'Batch'), L('الانتهاء', 'Expiry'),
+      L('أيام متبقية', 'Days left'), L('الكمية', 'Qty'), L('الفرع', 'Branch'), L('التكلفة', 'Cost')]];
+    window.fatBatchRows().forEach(function (r) {
+      rows.push([r.p.name, r.b.code || '—', r.b.expiry || '—',
+        r.days === null ? '' : r.days, r.b.qty,
+        (typeof branchName === 'function' ? branchName(r.b.branch) : r.b.branch), r.b.cost || '']);
+    });
+    downloadCSV('batches-' + today() + '.csv', rows);
+  };
+
+  views.batches = function () {
+    var tab = window._btTab || 'all';
+    var cfg = window.fatBatchCfg();
+    var al = window.fatBatchAlerts();
+    var trackedCount = (db.products || []).filter(window.fatBatchOn).length;
+
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-primary btn-sm" onclick="fatBatchReceive()">📥 ' + L('استلام تشغيلة', 'Receive batch') + '</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="fatBatchCSV()">📊 CSV</button>';
+
+    if (!trackedCount) {
+      document.getElementById('content').innerHTML =
+        '<div class="panel" style="max-width:560px"><div class="panel-b pad" style="text-align:center;padding:36px">' +
+        '<div style="font-size:48px">📅</div><h3 style="margin:12px 0 6px">' +
+        L('مفيش أصناف متتبَّعة بالتشغيلة', 'No batch-tracked items yet') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.8">' +
+        L('افتح كارت أي صنف وفعّل «تتبع بالتشغيلة وتاريخ الصلاحية». مناسب للأدوية والأغذية واللبن والمخبوزات.',
+          'Open any item card and enable batch & expiry tracking.') + '</p>' +
+        '<button class="btn btn-primary" style="margin-top:14px" onclick="go(\'products\')">📦 ' +
+        L('روح للأصناف', 'Go to items') + '</button></div></div>';
+      return;
+    }
+
+    var rows = window.fatBatchRows();
+    var list = tab === 'expired' ? rows.filter(function (r) { return r.days !== null && r.days < 0; })
+      : tab === 'soon' ? rows.filter(function (r) { return r.days !== null && r.days >= 0 && r.days <= cfg.soonDays; })
+      : tab === 'un' ? rows.filter(function (r) { return !r.b.code && !r.b.expiry; })
+      : rows;
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">📦</div><div class="lbl">' + L('أصناف متتبَّعة', 'Tracked items') +
+      '</div><div class="val">' + trackedCount + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⏳</div><div class="lbl">' + L('قرب ينتهي', 'Expiring soon') +
+      '</div><div class="val" style="color:#d97706">' + al.soon + '</div>' +
+      '<div class="sub">' + L('خلال', 'within') + ' ' + cfg.soonDays + ' ' + L('يوم', 'days') + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⛔</div><div class="lbl">' + L('منتهي', 'Expired') +
+      '</div><div class="val" style="color:var(--danger)">' + al.expired + '</div></div>' +
+      '<div class="card"><div class="ic-bg">❓</div><div class="lbl">' + L('غير محدّد', 'Unassigned') +
+      '</div><div class="val">' + al.unassigned + '</div></div></div>';
+
+    var tabs = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 12px" class="no-print">' +
+      [['all', L('الكل', 'All'), rows.length],
+       ['soon', '⏳ ' + L('قرب ينتهي', 'Soon'), al.soon],
+       ['expired', '⛔ ' + L('منتهي', 'Expired'), al.expired],
+       ['un', '❓ ' + L('غير محدّد', 'Unassigned'), al.unassigned]]
+        .map(function (t) {
+          return '<button class="btn ' + (tab === t[0] ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatBatchTab(\'' + t[0] + '\')">' +
+            t[1] + ' (' + t[2] + ')</button>';
+        }).join('') + '</div>';
+
+    var multiBranch = branchList().length > 1;
+    var table = list.length
+      ? '<table><thead><tr><th>' + L('الصنف', 'Item') + '</th><th>' + L('التشغيلة', 'Batch') + '</th>' +
+        '<th>' + L('الانتهاء', 'Expiry') + '</th><th>' + L('الكمية', 'Qty') + '</th>' +
+        (multiBranch ? '<th>' + L('الفرع', 'Branch') + '</th>' : '') +
+        '<th class="no-print"></th></tr></thead><tbody>' +
+        list.slice(0, 400).map(function (r) {
+          var col = window.fatBatchColor(r.days);
+          var un = (!r.b.code && !r.b.expiry);
+          return '<tr><td><b>' + esc(r.p.name) + '</b></td>' +
+            '<td>' + (r.b.code ? esc(r.b.code) : '<span style="color:var(--muted)">— ' + L('غير محدّد', 'unassigned') + '</span>') + '</td>' +
+            '<td style="color:' + col + ';font-weight:700">' +
+            (r.b.expiry ? esc(r.b.expiry) +
+              '<div style="font-size:10.5px;font-weight:600">' +
+              (r.days < 0 ? L('انتهت من', 'expired') + ' ' + Math.abs(r.days) + ' ' + L('يوم', 'd')
+                          : L('باقي', 'in') + ' ' + r.days + ' ' + L('يوم', 'd')) + '</div>'
+              : '<span style="color:var(--muted)">—</span>') + '</td>' +
+            '<td class="t-num"><b>' + fmt(r.b.qty) + '</b></td>' +
+            (multiBranch ? '<td>' + esc(typeof branchName === 'function' ? branchName(r.b.branch) : r.b.branch) + '</td>' : '') +
+            '<td class="no-print">' +
+            (un ? '<button class="iconbtn" title="' + L('تحديد تشغيلة', 'Assign batch') +
+              '" onclick="fatBatchAssign(\'' + r.p.id + '\',\'' + r.b.id + '\')">🏷️</button>' : '') +
+            (r.days !== null && r.days < 0 && r.b.qty > 0
+              ? '<button class="iconbtn del" title="' + L('إهدار', 'Write off') +
+                '" onclick="fatBatchWriteOff(\'' + r.p.id + '\',\'' + r.b.id + '\')">🗑️</button>' : '') +
+            '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty"><span class="big">✅</span>' + L('مفيش حاجة هنا', 'Nothing here') + '</div>';
+
+    document.getElementById('content').innerHTML = cards + tabs +
+      '<div class="panel"><div class="panel-b">' + table + '</div></div>' +
+      (al.expired
+        ? '<div class="hint" style="margin-top:12px;color:var(--danger)">⛔ <b>' +
+          L('عندك بضاعة منتهية لسه في المخزون', 'You have expired stock on hand') + '</b><br>' +
+          L('اضغط 🗑️ جنب التشغيلة عشان تسجّلها هدر — بتتخصم من المخزون وبتظهر في تقرير الهدر بتكلفتها.',
+            'Press 🗑️ to write it off — it is deducted from stock and appears in your waste report at cost.') + '</div>'
+        : '<div class="hint" style="margin-top:12px">💡 ' +
+          L('البيع بيخصم أوتوماتيك من التشغيلة الأقرب انتهاءً (FEFO) — من غير ما الكاشير يعمل أي حاجة.',
+            'Sales automatically consume the earliest-expiring batch (FEFO) — the cashier does nothing.') + '</div>');
+  };
+
+  /* ═══════════ 8) القائمة ═══════════ */
+  function fatInjectBatchNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="batches"]')) return;
+      if (typeof canView === 'function' && !canView('batches')) return;
+      var hidden = (db.settings && db.settings.hiddenSections) || [];
+      if (hidden.indexOf('batches') > -1) return;
+      var anchor = nav.querySelector('a[data-view="branchStock"]') ||
+                   nav.querySelector('a[data-view="stocktake"]') ||
+                   nav.querySelector('a[data-view="products"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'batches');
+      a.innerHTML = '<span class="ic">📅</span> ' + L('التشغيلات والصلاحيات', 'Batches');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('batches'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        fatInjectBatchNav();
+        return r;
+      };
+    }
+    setTimeout(fatInjectBatchNav, 2200);
+    setTimeout(fatInjectBatchNav, 5000);
+  })();
+
+})();
 })();
 </script>
 </body>
