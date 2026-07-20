@@ -1,7 +1,12 @@
-/* فاتورتي — Service Worker v10.0 (Network-First + تحديث تلقائي فوري) */
-const CACHE = 'fatorty-v10.0';
-const ASSETS = ['/', '/index.html', '/manifest.json'];
-
+/* فاتورتي — Service Worker v11.0 (Network-First + تحديث تلقائي فوري) */
+const CACHE = 'fatorty-v11.0';
+const ASSETS = [
+  '/',
+  '/index.html',
+  '/manifest.json',
+  '/vendor/jsbarcode.min.js',
+  '/vendor/supabase.min.js'
+];
 /* صفحة أوفلاين نظيفة — تظهر فقط لو مفيش نت ومفيش نسخة محفوظة */
 const OFFLINE_HTML = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -14,20 +19,20 @@ button{background:#0f6b5c;color:#fff;border:none;border-radius:10px;padding:12px
 <h1>لا يوجد اتصال بالإنترنت</h1>
 <p>لم نتمكن من تحميل فاتورتي، ولا توجد نسخة محفوظة على هذا الجهاز بعد.<br>افتح التطبيق مرة واحدة مع الإنترنت وسيعمل بعدها بدون نت.</p>
 <button onclick="location.reload()">🔄 إعادة المحاولة</button></div></body></html>`;
-
 const offlineResponse = () =>
   new Response(OFFLINE_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-
 // التثبيت: خزّن الملفات الأساسية + فعّل نفسك فورًا (متستناش التاب يتقفل)
+// كل ملف بيتخزّن لوحده — لو ملف واحد فشل، الباقي بيتخزّن عادي (addAll كانت بتفشل كلها بملف واحد)
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE)
-      .then(c => c.addAll(ASSETS))
+      .then(c => Promise.all(
+        ASSETS.map(u => c.add(new Request(u, { cache: 'reload' })).catch(() => null))
+      ))
       .then(() => self.skipWaiting())
       .catch(() => self.skipWaiting())
   );
 });
-
 // التفعيل: امسح كل الكاش القديم + تحكم في كل التابات المفتوحة فورًا
 self.addEventListener('activate', e => {
   e.waitUntil(
@@ -36,14 +41,11 @@ self.addEventListener('activate', e => {
       .then(() => self.clients.claim())
   );
 });
-
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;
-
   const isAppShell = url.pathname === '/' || url.pathname === '/index.html';
-
   if (isAppShell) {
     // NETWORK-FIRST بدون أي كاش HTTP وسيط — دايمًا يجيب أحدث نسخة فعليًا من السيرفر
     e.respondWith(
@@ -64,7 +66,6 @@ self.addEventListener('fetch', e => {
     );
     return;
   }
-
   // باقي الملفات: cache-first مع fallback آمن (مفيش respondWith(undefined) أبدًا)
   e.respondWith(
     caches.match(e.request).then(cached =>
@@ -75,7 +76,7 @@ self.addEventListener('fetch', e => {
         }
         return res;
       }).catch(() =>
-        cached || new Response('', { status: 504, statusText: 'Offline' })
+        new Response('', { status: 504, statusText: 'Offline' })
       )
     )
   );
