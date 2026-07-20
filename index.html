@@ -19803,6 +19803,377 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     setTimeout(fatInjectEtaNav, 4600);
   })();
 
+
+  /* ============================================================
+   FATORTY v8.4 — شاشة المطبخ (KDS)
+   بتشتغل فوق نظام الطاولات وأنواع الأوردر الموجود.
+   الطلب بيتولد أوتوماتيك أول ما الفاتورة تتعمل، والشيف بيحرّكه
+   بين ٣ أعمدة، والكاشير بيشوف عدّاد الجاهز.
+   بتظهر للمطاعم/الكافيهات بس — باقي الأنشطة مش هتحس بيها خالص.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var MIN = 60000;
+
+  window.fatKdsCfg = function () {
+    try {
+      db.settings = db.settings || {};
+      db.settings.kds = db.settings.kds || {};
+      var c = db.settings.kds;
+      if (c.warnMin === undefined) c.warnMin = 8;
+      if (c.lateMin === undefined) c.lateMin = 15;
+      if (c.sound === undefined) c.sound = true;
+      if (c.autoServe === undefined) c.autoServe = false;
+      return c;
+    } catch (e) { return { warnMin: 8, lateMin: 15, sound: true }; }
+  };
+
+  window.fatKdsEnabled = function () {
+    try {
+      var p = db.settings.bizProfile;
+      if (p && p.flags && p.flags.kitchen !== undefined) return !!p.flags.kitchen;
+      if (typeof fatIsRestaurantBiz === 'function') return fatIsRestaurantBiz();
+      return ['restaurant', 'cafe', 'bakery'].indexOf(db.settings.businessType || '') >= 0;
+    } catch (e) { return false; }
+  };
+
+  /* ═══════════ 1) وسم الطلبات الجديدة ═══════════ */
+
+  window.fatKdsStamp = function (s) {
+    if (!s || s.kds) return s;
+    if (!(s.items || []).length) return s;
+    s.kds = { status: 'new', newAt: new Date().toISOString() };
+    return s;
+  };
+
+  (function () {
+    var _pc = window.posCheckout;
+    if (typeof _pc !== 'function') return;
+    window.posCheckout = function () {
+      var before = (db.sales || []).length;
+      var r = _pc.apply(this, arguments);
+      try {
+        if (window.fatKdsEnabled() && (db.sales || []).length > before) {
+          for (var i = before; i < db.sales.length; i++) window.fatKdsStamp(db.sales[i]);
+          save();
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  /* ═══════════ 2) الحالة والوقت ═══════════ */
+
+  window.fatKdsList = function () {
+    var out = [];
+    try {
+      var t = today();
+      var src = (db.sales || []).slice(-300);
+      try { if (typeof bf === 'function') src = bf(src); } catch (e) {}
+      src.forEach(function (s) {
+        if (s.date !== t) return;
+        if (!s.kds) return;
+        if (s.kds.status === 'served') return;
+        if (s.voided || s.canceled) return;
+        out.push(s);
+      });
+    } catch (e) {}
+    out.sort(function (a, b) {
+      return String(a.kds.newAt || '').localeCompare(String(b.kds.newAt || ''));
+    });
+    return out;
+  };
+
+  window.fatKdsMins = function (s) {
+    try {
+      var start = new Date(s.kds && s.kds.newAt);
+      var m = Math.floor((Date.now() - start.getTime()) / MIN);
+      return (isNaN(m) || m < 0) ? 0 : m;
+    } catch (e) { return 0; }
+  };
+
+  window.fatKdsColor = function (mins) {
+    var c = window.fatKdsCfg();
+    if (mins >= c.lateMin) return 'var(--danger)';
+    if (mins >= c.warnMin) return '#d97706';
+    return 'var(--ok)';
+  };
+
+  window.fatKdsSet = function (id, status) {
+    try {
+      var s = (db.sales || []).filter(function (x) { return x.id === id; })[0];
+      if (!s || !s.kds) return;
+      s.kds.status = status;
+      s.kds[status + 'At'] = new Date().toISOString();
+      if (status === 'ready') {
+        s.kds.prepMins = window.fatKdsMins(s);
+        try { window.fatKdsBeep('ready'); } catch (e) {}
+      }
+      save();
+      if (typeof current !== 'undefined' && current === 'kds') views.kds();
+    } catch (e) {}
+  };
+
+  window.fatKdsAdvance = function (id) {
+    var s = (db.sales || []).filter(function (x) { return x.id === id; })[0];
+    if (!s || !s.kds) return;
+    var next = s.kds.status === 'new' ? 'preparing' : (s.kds.status === 'preparing' ? 'ready' : 'served');
+    window.fatKdsSet(id, next);
+  };
+
+  window.fatKdsBack = function (id) {
+    var s = (db.sales || []).filter(function (x) { return x.id === id; })[0];
+    if (!s || !s.kds) return;
+    var prev = s.kds.status === 'ready' ? 'preparing' : 'new';
+    window.fatKdsSet(id, prev);
+  };
+
+  window.fatKdsReadyCount = function () {
+    try {
+      return window.fatKdsList().filter(function (s) { return s.kds.status === 'ready'; }).length;
+    } catch (e) { return 0; }
+  };
+
+  /* ═══════════ 3) الصوت ═══════════ */
+
+  window.fatKdsBeep = function (kind) {
+    try {
+      if (!window.fatKdsCfg().sound) return;
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      window._kdsAC = window._kdsAC || new AC();
+      var ac = window._kdsAC;
+      if (ac.state === 'suspended') { try { ac.resume(); } catch (e) {} }
+      var freqs = (kind === 'ready') ? [880, 1174] : [660, 880, 1174];
+      freqs.forEach(function (f, i) {
+        var o = ac.createOscillator(), g = ac.createGain();
+        o.type = 'sine'; o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, ac.currentTime + i * 0.13);
+        g.gain.exponentialRampToValueAtTime(0.16, ac.currentTime + i * 0.13 + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + i * 0.13 + 0.16);
+        o.connect(g); g.connect(ac.destination);
+        o.start(ac.currentTime + i * 0.13);
+        o.stop(ac.currentTime + i * 0.13 + 0.2);
+      });
+    } catch (e) {}
+  };
+
+  /* ═══════════ 4) الشاشة ═══════════ */
+
+  try {
+    PG.kds = [
+      ['شاشة المطبخ', 'الطلبات اللي محتاجة تحضير — الشيف بيحرّكها بلمسة'],
+      ['Kitchen Display', 'Live prep board for the kitchen']
+    ];
+    var _cvK = window.canView;
+    window.canView = function (v) {
+      if (v === 'kds') return window.fatKdsEnabled() && (_cvK('pos') || _cvK('products'));
+      return _cvK(v);
+    };
+  } catch (e) {}
+
+  function orderLabel(s) {
+    if (s.tableNo) return '🪑 ' + L('طاولة', 'Table') + ' ' + esc(s.tableNo);
+    if (s.orderType === 'delivery') return '🛵 ' + L('توصيل', 'Delivery');
+    if (s.orderType === 'takeaway') return '🥡 ' + L('تيك أواي', 'Takeaway');
+    return '🧾 ' + L('أوردر', 'Order');
+  }
+
+  function card(s) {
+    var mins = window.fatKdsMins(s);
+    var col = window.fatKdsColor(mins);
+    var st = s.kds.status;
+    var btn = st === 'new'
+      ? '<button class="btn btn-primary btn-sm" style="width:100%;justify-content:center" onclick="fatKdsAdvance(\'' + s.id + '\')">👨‍🍳 ' + L('ابدأ التحضير', 'Start') + '</button>'
+      : st === 'preparing'
+        ? '<button class="btn btn-primary btn-sm" style="width:100%;justify-content:center;background:var(--ok)" onclick="fatKdsAdvance(\'' + s.id + '\')">✅ ' + L('جاهز', 'Ready') + '</button>'
+        : '<button class="btn btn-primary btn-sm" style="width:100%;justify-content:center" onclick="fatKdsAdvance(\'' + s.id + '\')">🍽️ ' + L('اتسلّم', 'Served') + '</button>';
+
+    return '<div style="border:2px solid ' + col + ';border-radius:14px;background:var(--panel);overflow:hidden;display:flex;flex-direction:column">' +
+      '<div style="background:' + col + ';color:#fff;padding:8px 12px;display:flex;justify-content:space-between;align-items:center">' +
+      '<b style="font-size:14px">#' + esc(s.no) + ' · ' + orderLabel(s) + '</b>' +
+      '<b style="font-size:15px">' + mins + '<span style="font-size:11px">' + L('د', 'm') + '</span></b></div>' +
+      '<div style="padding:10px 12px;flex:1">' +
+      (s.items || []).map(function (it) {
+        return '<div style="display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid var(--line);font-size:14px">' +
+          '<span style="font-weight:600">' + esc(it.name) + (it.variant ? ' <span style="color:var(--muted);font-size:12px">' + esc(it.variant) + '</span>' : '') + '</span>' +
+          '<b style="color:var(--primary);white-space:nowrap">×' + fmt(it.qty) + '</b></div>';
+      }).join('') +
+      (s.note ? '<div style="margin-top:8px;padding:7px 9px;background:var(--card2);border-radius:8px;font-size:12.5px">📝 ' + esc(s.note) + '</div>' : '') +
+      '</div>' +
+      '<div style="padding:9px 12px;display:flex;gap:6px;align-items:center">' +
+      (st !== 'new' ? '<button class="iconbtn" title="' + L('رجوع', 'Back') + '" onclick="fatKdsBack(\'' + s.id + '\')">↩️</button>' : '') +
+      '<div style="flex:1">' + btn + '</div></div></div>';
+  }
+
+  views.kds = function () {
+    var c = window.fatKdsCfg();
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-ghost btn-sm" onclick="fatKdsSettings()">⚙️ ' + L('إعدادات', 'Settings') + '</button> ' +
+      '<button class="btn btn-ghost btn-sm" onclick="fatKdsCfg().sound=!fatKdsCfg().sound;save();views.kds()">' +
+      (c.sound ? '🔔' : '🔕') + '</button>';
+
+    if (!window.fatKdsEnabled()) {
+      document.getElementById('content').innerHTML =
+        '<div class="panel" style="max-width:520px"><div class="panel-b pad" style="text-align:center;padding:36px">' +
+        '<div style="font-size:48px">👨‍🍳</div><h3 style="margin:12px 0 6px">' +
+        L('شاشة المطبخ للمطاعم والكافيهات', 'Kitchen display is for restaurants & cafés') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.8">' +
+        L('غيّر نوع نشاطك من الإعدادات لو محلك بيحضّر طلبات.',
+          'Change your business type in Settings if you prepare orders.') + '</p></div></div>';
+      return;
+    }
+
+    var list = window.fatKdsList();
+    var cols = [
+      ['new', '🆕 ' + L('جديد', 'New')],
+      ['preparing', '👨‍🍳 ' + L('تحت التحضير', 'Preparing')],
+      ['ready', '✅ ' + L('جاهز للتسليم', 'Ready')]
+    ];
+
+    var html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;align-items:start">';
+    cols.forEach(function (col) {
+      var items = list.filter(function (s) { return s.kds.status === col[0]; });
+      html += '<div><div style="display:flex;justify-content:space-between;align-items:center;padding:9px 12px;background:var(--card2);border-radius:10px;margin-bottom:10px">' +
+        '<b style="font-size:14px">' + col[1] + '</b>' +
+        '<span class="badge' + (col[0] === 'ready' && items.length ? ' ok' : '') + '">' + items.length + '</span></div>' +
+        '<div style="display:flex;flex-direction:column;gap:10px">' +
+        (items.length ? items.map(card).join('')
+          : '<div style="text-align:center;padding:22px;color:var(--muted);font-size:13px;border:2px dashed var(--line);border-radius:12px">—</div>') +
+        '</div></div>';
+    });
+    html += '</div>';
+
+    var served = 0, avg = 0, n = 0;
+    try {
+      (db.sales || []).forEach(function (s) {
+        if (s.date === today() && s.kds && s.kds.status === 'served') {
+          served++;
+          if (s.kds.prepMins != null) { avg += s.kds.prepMins; n++; }
+        }
+      });
+    } catch (e) {}
+
+    document.getElementById('content').innerHTML =
+      '<div class="cards" style="margin-bottom:14px">' +
+      '<div class="card"><div class="ic-bg">🔥</div><div class="lbl">' + L('طلبات مفتوحة', 'Open orders') +
+      '</div><div class="val">' + list.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">🍽️</div><div class="lbl">' + L('اتسلّم النهاردة', 'Served today') +
+      '</div><div class="val">' + served + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⏱️</div><div class="lbl">' + L('متوسط وقت التحضير', 'Avg prep time') +
+      '</div><div class="val">' + (n ? Math.round(avg / n) + ' ' + L('د', 'm') : '—') + '</div></div>' +
+      '</div>' + html +
+      '<div class="hint" style="margin-top:14px">💡 ' +
+      L('الشاشة بتحدّث نفسها كل ٥ ثواني. لو المطبخ على جهاز تاني، الطلبات بتوصله مع أول مزامنة سحابية.',
+        'The board refreshes every 5 seconds. On a separate device, orders arrive with the next cloud sync.') +
+      '</div>';
+  };
+
+  window.fatKdsSettings = function () {
+    var c = window.fatKdsCfg();
+    openModal('<div class="modal-h"><h3>⚙️ ' + L('إعدادات شاشة المطبخ', 'Kitchen display settings') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="grid2">' +
+      '<div class="field"><label>🟡 ' + L('تحذير بعد (دقيقة)', 'Warn after (min)') + '</label>' +
+      '<input id="kds_warn" type="number" min="1" value="' + (+c.warnMin || 8) + '"></div>' +
+      '<div class="field"><label>🔴 ' + L('متأخر بعد (دقيقة)', 'Late after (min)') + '</label>' +
+      '<input id="kds_late" type="number" min="1" value="' + (+c.lateMin || 15) + '"></div></div>' +
+      '<label style="display:flex;align-items:center;justify-content:space-between;padding:11px;background:var(--card2);border-radius:10px;cursor:pointer">' +
+      '<span>🔔 ' + L('صوت تنبيه للطلبات الجديدة', 'Sound alert for new orders') + '</span>' +
+      '<input type="checkbox" id="kds_sound"' + (c.sound ? ' checked' : '') + ' style="width:20px;height:20px"></label>' +
+      '<div class="hint" style="margin-top:12px">' +
+      L('الكارت بيبقى أخضر، بعدين أصفر لما يعدّي وقت التحذير، وأحمر لما يتأخر — عشان الشيف يشوف المتأخر من بعيد.',
+        'Cards go green → amber → red so the chef can spot late orders from across the kitchen.') +
+      '</div></div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatKdsSaveSettings()">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatKdsSaveSettings = function () {
+    var c = window.fatKdsCfg();
+    var w = document.getElementById('kds_warn'), l = document.getElementById('kds_late'),
+        s = document.getElementById('kds_sound');
+    if (w) c.warnMin = Math.max(1, +w.value || 8);
+    if (l) c.lateMin = Math.max(1, +l.value || 15);
+    if (s) c.sound = !!s.checked;
+    if (c.lateMin <= c.warnMin) c.lateMin = c.warnMin + 1;
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظ', 'Saved'));
+    try { if (current === 'kds') views.kds(); } catch (e) {}
+  };
+
+  /* ═══════════ 5) التحديث التلقائي + تنبيه الطلب الجديد ═══════════ */
+
+  window._kdsSeen = 0;
+  setInterval(function () {
+    try {
+      if (!window.fatKdsEnabled()) return;
+      var n = window.fatKdsList().filter(function (s) { return s.kds.status === 'new'; }).length;
+      if (typeof current !== 'undefined' && current === 'kds') {
+        if (n > window._kdsSeen) window.fatKdsBeep('new');
+        views.kds();
+      }
+      window._kdsSeen = n;
+      window.fatKdsBadge();
+    } catch (e) {}
+  }, 5000);
+
+  /* ═══════════ 6) عدّاد «جاهز» للكاشير ═══════════ */
+
+  window.fatKdsBadge = function () {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav) return;
+      var a = nav.querySelector('a[data-view="kds"]');
+      if (!a) return;
+      var n = window.fatKdsReadyCount();
+      var b = a.querySelector('.kds-badge');
+      if (!n) { if (b) b.remove(); return; }
+      if (!b) {
+        b = document.createElement('span');
+        b.className = 'badge ok kds-badge';
+        b.style.cssText = 'margin-inline-start:auto;font-size:11px';
+        a.appendChild(b);
+      }
+      b.textContent = n;
+    } catch (e) {}
+  };
+
+  /* ═══════════ 7) القائمة ═══════════ */
+  function fatInjectKdsNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav) return;
+      var existing = nav.querySelector('a[data-view="kds"]');
+      if (!window.fatKdsEnabled()) { if (existing) existing.remove(); return; }
+      if (existing) return;
+      if (typeof canView === 'function' && !canView('kds')) return;
+      var anchor = nav.querySelector('a[data-view="floorPlan"]') || nav.querySelector('a[data-view="pos"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'kds');
+      a.innerHTML = '<span class="ic">👨‍🍳</span> ' + L('شاشة المطبخ', 'Kitchen');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('kds'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+      window.fatKdsBadge();
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        fatInjectKdsNav();
+        return r;
+      };
+    }
+    setTimeout(fatInjectKdsNav, 2000);
+    setTimeout(fatInjectKdsNav, 4800);
+  })();
+
+})();
 })();
 </script>
 </body>
