@@ -17554,6 +17554,544 @@ try{
 })();
 
 try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{version:'v1.0-GM'});},800);}catch(_e){}
+
+  /* ============================================================
+   FATORTY v8.0 — دفعة الأساسات
+   1) طباعة الباركود شغّالة من غير إنترنت (مكتبة محلية + fallback)
+   2) تصحيح نص «الأسئلة الشائعة» بخصوص الوضع الأوفلاين
+   3) الحد الائتماني للعميل + تحذير في الكاشير قبل البيع الآجل
+   4) تقرير أعمار الديون (عملاء وموردين) + تصدير CSV + تذكير واتساب
+   ملاحظة: الباتش ده بيمدّد النظام الحالي — مش بيستبدل أي معمارية.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  /* ═══════════════════════════════════════════════════
+     1) الباركود من غير إنترنت
+     المشكلة القديمة: نافذة الطباعة كانت بتحمّل JsBarcode من CDN،
+     فلو النت مقطوع أو الـCDN محجوب الملصق بيطلع فاضي.
+     الحل: نحمّل المكتبة مرة واحدة في النافذة الأصلية (من /vendor أولاً)،
+     ونرسم الـSVG هنا ونبعته جاهز لنافذة الطباعة — من غير أي سكربت خارجي.
+     ═══════════════════════════════════════════════════ */
+
+  window.fatEnsureBarcodeLib = function () {
+    if (window._fatBcLibP) return window._fatBcLibP;
+    window._fatBcLibP = new Promise(function (res, rej) {
+      if (window.JsBarcode) return res(window.JsBarcode);
+      var srcs = [
+        '/vendor/jsbarcode.min.js',
+        'https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js'
+      ];
+      var i = 0;
+      (function next() {
+        if (i >= srcs.length) { window._fatBcLibP = null; return rej(new Error('barcode lib unavailable')); }
+        var s = document.createElement('script');
+        s.src = srcs[i++];
+        s.onload = function () { window.JsBarcode ? res(window.JsBarcode) : next(); };
+        s.onerror = next;
+        document.head.appendChild(s);
+      })();
+    });
+    return window._fatBcLibP;
+  };
+
+  window.fatBarcodeSVG = function (code, opts) {
+    try {
+      var el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      var o = { format: 'CODE128', width: 1.6, height: 40, fontSize: 12, margin: 2, displayValue: true };
+      if (opts) for (var k in opts) if (Object.prototype.hasOwnProperty.call(opts, k)) o[k] = opts[k];
+      window.JsBarcode(el, String(code), o);
+      return el.outerHTML;
+    } catch (e) {
+      return '<div style="font-size:13px;font-weight:700;font-family:monospace">' + String(code) + '</div>';
+    }
+  };
+
+  function fatLabelDoc(inner, css) {
+    var dir = (typeof LANG !== 'undefined' && LANG === 'ar') ? 'rtl' : 'ltr';
+    return '<!DOCTYPE html><html dir="' + dir + '"><head><meta charset="utf-8">' +
+      '<title>Barcode</title><style>' + css + '</style></head><body>' + inner +
+      '<script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script>' +
+      '</body></html>';
+  }
+
+  function fatLabelCode(p) {
+    return String((p && (p.sku || p.barcode)) || '').trim();
+  }
+
+  var LBL_BASE =
+    '.lbl{box-sizing:border-box;text-align:center;overflow:hidden;display:flex;' +
+    'flex-direction:column;justify-content:center;align-items:center}' +
+    '.lbl .nm{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}' +
+    '.lbl .pr{font-weight:800}' +
+    '.lbl svg{max-width:100%;height:auto;display:block}';
+
+  function fatLabelHTML(p, code) {
+    return '<div class="lbl"><div class="nm">' + esc(p.name) + '</div>' +
+      window.fatBarcodeSVG(code) +
+      '<div class="pr">' + fmt(p.price) + ' ' + esc(cur()) + '</div></div>';
+  }
+
+  window.printBarcode = function (id) {
+    if (typeof capAllowed === 'function' && !capAllowed('barcode')) {
+      toast(L('طباعة الباركود متاحة في باقة أعلى', 'Barcode printing requires a higher plan'), 'err');
+      return;
+    }
+    var p = findProduct(id); if (!p) return;
+    var code = fatLabelCode(p);
+    if (!code) return toast(L('أضف كود/باركود للصنف أولًا', 'Add a SKU/barcode first'), 'err');
+
+    window.fatEnsureBarcodeLib().then(function () {
+      var w = window.open('', '_fatbc1', 'width=620,height=540');
+      if (!w) return toast(L('اسمح بالنوافذ المنبثقة', 'Allow pop-ups'), 'err');
+      var css = '@page{size:50mm 30mm;margin:0}body{margin:0;font-family:Arial,Tahoma,sans-serif}' +
+        LBL_BASE +
+        '.lbl{width:50mm;height:30mm;padding:1.5mm;gap:.5mm}' +
+        '.lbl .nm{font-size:10px}.lbl .pr{font-size:11px}';
+      w.document.write(fatLabelDoc(fatLabelHTML(p, code), css));
+      w.document.close();
+    })['catch'](function () {
+      toast(L('تعذّر تحميل مكتبة الباركود — جرّب تاني', 'Barcode library failed to load'), 'err');
+    });
+  };
+
+  window.doBulkBarcodePrint = function (id) {
+    var p = findProduct(id); if (!p) return;
+    var code = fatLabelCode(p);
+    if (!code) return toast(L('أضف كود/باركود للصنف أولًا', 'Add a SKU/barcode first'), 'err');
+    var el = document.getElementById('bcQty');
+    var qty = Math.max(1, Math.min(200, parseInt(el && el.value, 10) || 12));
+
+    window.fatEnsureBarcodeLib().then(function () {
+      var one = fatLabelHTML(p, code);
+      var all = '';
+      for (var i = 0; i < qty; i++) all += one;
+      var w = window.open('', '_fatbcbulk', 'width=820,height=680');
+      if (!w) return toast(L('اسمح بالنوافذ المنبثقة', 'Allow pop-ups'), 'err');
+      var css = '@page{size:A4;margin:6mm}' +
+        'body{margin:0;font-family:Arial,Tahoma,sans-serif;display:flex;flex-wrap:wrap;gap:2mm;align-content:flex-start}' +
+        LBL_BASE +
+        '.lbl{width:50mm;height:28mm;padding:1.5mm;border:1px dashed #d0d0d0}' +
+        '.lbl .nm{font-size:9.5px}.lbl .pr{font-size:10.5px}' +
+        '@media print{.lbl{border-color:#eee}}';
+      w.document.write(fatLabelDoc(all, css));
+      w.document.close();
+      try { closeModal(); } catch (e) {}
+    })['catch'](function () {
+      toast(L('تعذّر تحميل مكتبة الباركود — جرّب تاني', 'Barcode library failed to load'), 'err');
+    });
+  };
+
+  // تحميل مسبق هادي بعد الإقلاع — أول طباعة تبقى فورية
+  setTimeout(function () { try { window.fatEnsureBarcodeLib(); } catch (e) {} }, 4000);
+
+
+  /* ═══════════════════════════════════════════════════
+     2) تصحيح الأسئلة الشائعة — الوضع الأوفلاين
+     الكلام القديم كان بيقول «النظام سحابي فمحتاج إنترنت»، وده بيخوّف
+     عميل كان ممكن يشتري، والنظام أصلاً عنده وضع أوفلاين كامل.
+     ═══════════════════════════════════════════════════ */
+
+  window.renderLandingFaq = function () {
+    var box = document.getElementById('landingFaq');
+    if (!box) return;
+    var faq = [
+      ['النظام بيشتغل من غير إنترنت؟',
+        'آه. أول ما تفتح فاتورتي بيسألك تختار: <b>«سحابي»</b> — بياناتك على النت وتفتح من أي جهاز، ولو النت قطع لحظة بتفضل تبيع عادي والبيانات بتتزامن أول ما يرجع. أو <b>«على جهازك (أوفلاين)»</b> — كل حاجة متخزّنة على الجهاز نفسه وشغّال ١٠٠٪ من غير نت خالص. تقدر تغيّر اختيارك في أي وقت من الإعدادات.'],
+      ['أقدر أستخدمه على الموبايل؟',
+        'أكيد. فاتورتي شغّال على أي متصفح — كمبيوتر، موبايل، أو تابلت. وتقدر تثبّته زي التطبيق العادي على شاشة موبايلك. نفس بياناتك معاك في كل مكان.'],
+      ['بياناتي آمنة؟',
+        'بياناتك معزولة تمامًا عن أي نشاط تاني — كل واحد بيشوف بيانات نشاطه هو بس. وفيه نسخ احتياطي تلقائي، وتقدر تنزّل نسخة كاملة بنفسك في أي وقت.'],
+      ['إيه اللي بيحصل بعد التجربة المجانية؟',
+        'بعد 14 يوم، تختار الباقة اللي تناسبك وتكمّل. بياناتك بتفضل زي ما هي. لو مكمّلتش، النظام بيتوقف بس بياناتك مبتتمسحش.'],
+      ['أقدر أضيف موظفين؟',
+        'آه، تقدر تدعو موظفينك بإيميلهم وتحدد صلاحية كل واحد (كاشير/محاسب/مشرف مخزون)، حسب باقتك. كلهم بيشتغلوا على نفس بيانات النشاط.'],
+      ['النظام بيصلح لأي نوع نشاط؟',
+        'آه — فاتورتي معمول ليصلح لأي نشاط تجاري: مطاعم، كافيهات، سوبرماركت، صيدليات، محلات ملابس، ورش، صالونات، مكتبات وأكتر. وفيه معالج بيظبط النظام على نشاطك من أول يوم.'],
+      ['أقدر أنقل بياناتي القديمة؟',
+        'أكيد. تقدر تستورد منتجاتك وعملائك من ملف Excel جاهز بضغطة واحدة، وتبدأ شغل من أول يوم من غير ما تدخل كل حاجة يدوي.']
+    ];
+    box.innerHTML = faq.map(function (q, i) {
+      return '<details class="land-faq" style="display:flex;flex-direction:column">' +
+        '<summary style="display:flex;align-items:center;gap:14px">' +
+        '<span class="land-faqnum">' + String(i + 1).padStart(2, '0') + '</span>' +
+        '<span style="flex:1">' + q[0] + '</span></summary>' +
+        '<div class="faq-body" style="padding-right:68px">' + q[1] + '</div></details>';
+    }).join('');
+  };
+
+  // لو صفحة الهبوط ظاهرة دلوقتي، أعد رسمها فورًا بالنص الجديد
+  try {
+    var _lp = document.getElementById('landing');
+    if (_lp && _lp.style.display !== 'none') window.renderLandingFaq();
+  } catch (e) {}
+
+
+  /* ═══════════════════════════════════════════════════
+     3) الحد الائتماني للعميل
+     ═══════════════════════════════════════════════════ */
+
+  // إجمالي الآجل المستحق على عميل (نفس مصدر الحقيقة اللي بيستخدمه الملخص المالي)
+  window.fatCustDue = function (c) {
+    if (!c) return 0;
+    var t = 0;
+    try {
+      (db.sales || []).forEach(function (s) {
+        var d = +s.dueAmount || 0;
+        if (d <= 0) return;
+        if (s.customerId === c.id || s.cust === c.id ||
+          (s.customerName && c.name && s.customerName === c.name)) t += d;
+      });
+    } catch (e) {}
+    return Math.round(t * 100) / 100;
+  };
+
+  // خانة الحد الائتماني في فورم العميل
+  (function () {
+    var _f = window.customerForm;
+    if (typeof _f !== 'function') return;
+    window.customerForm = function (id) {
+      var r = _f.apply(this, arguments);
+      setTimeout(function () {
+        try {
+          if (document.getElementById('f_credlimit')) return;
+          var body = document.querySelector('#modal .modal-b');
+          if (!body) return;
+          var c = id ? findCustomer(id) : null;
+          var due = c ? window.fatCustDue(c) : 0;
+          var d = document.createElement('div');
+          d.className = 'field';
+          d.innerHTML =
+            '<label>💳 ' + L('الحد الائتماني (أقصى آجل مسموح)', 'Credit limit') + '</label>' +
+            '<input id="f_credlimit" type="number" min="0" step="any" placeholder="0 = ' +
+            L('بدون حد', 'no limit') + '" value="' +
+            ((c && +c.creditLimit > 0) ? (+c.creditLimit) : '') + '">' +
+            '<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.6">' +
+            L('لو الآجل المستحق على العميل وصل الحد ده، الكاشير هيتحذّر قبل ما يبيعله آجل تاني.',
+              'The cashier is warned before selling on credit once this limit is reached.') +
+            (c ? ' · ' + L('المستحق عليه دلوقتي', 'Currently due') + ': <b>' + money(due) + '</b>' : '') +
+            '</div>';
+          body.appendChild(d);
+        } catch (e) {}
+      }, 0);
+      return r;
+    };
+  })();
+
+  // حفظ الحد مع بيانات العميل
+  (function () {
+    var _s = window.saveCustomer;
+    if (typeof _s !== 'function') return;
+    window.saveCustomer = function (id) {
+      var el = document.getElementById('f_credlimit');
+      var lim = el ? Math.max(0, parseFloat(el.value) || 0) : null;
+      var before = (db.customers || []).length;
+      var r = _s.apply(this, arguments);
+      var apply = function () {
+        try {
+          if (lim === null) return;
+          var c = null;
+          if (id) c = findCustomer(id);
+          else if ((db.customers || []).length > before) c = db.customers[db.customers.length - 1];
+          if (!c) return;
+          if (lim > 0) c.creditLimit = lim; else delete c.creditLimit;
+          save();
+        } catch (e) {}
+      };
+      if (r && typeof r.then === 'function') { r.then(apply)['catch'](function () {}); }
+      else { apply(); }
+      return r;
+    };
+  })();
+
+  // فحص الحد قبل إتمام بيعة آجلة
+  window.fatCreditCheck = function () {
+    try {
+      var sel = document.getElementById('posCustomer');
+      var cid = sel ? sel.value : '';
+      if (!cid) return null;
+      var c = findCustomer(cid);
+      if (!c) return null;
+      var lim = +c.creditLimit || 0;
+      if (lim <= 0) return null;
+
+      var payEl = document.getElementById('posPay');
+      var pay = payEl ? String(payEl.value || '') : '';
+      if (!/credit|due|ajel|later|آجل/i.test(pay)) return null;
+
+      var due = window.fatCustDue(c);
+      var cartTotal = 0;
+      try {
+        var tEl = document.getElementById('posFinalTotal');
+        if (tEl) cartTotal = parseFloat(String(tEl.textContent || '').replace(/[^0-9.]/g, '')) || 0;
+      } catch (e) {}
+      var after = Math.round((due + cartTotal) * 100) / 100;
+      if (after <= lim) return null;
+      return { name: c.name || '', due: due, lim: lim, after: after };
+    } catch (e) { return null; }
+  };
+
+  (function () {
+    var _c = window.posCheckout;
+    if (typeof _c !== 'function') return;
+    window.posCheckout = function () {
+      var g = null;
+      try { g = window.fatCreditCheck(); } catch (e) {}
+      if (!g) return _c.apply(this, arguments);
+
+      var self = this, args = arguments;
+      var msg = '⚠️ ' + L('تجاوز الحد الائتماني', 'Credit limit exceeded') + '\n\n' +
+        g.name + '\n' +
+        L('المستحق عليه دلوقتي', 'Currently due') + ': ' + money(g.due) + '\n' +
+        L('بعد الفاتورة دي', 'After this invoice') + ': ' + money(g.after) + '\n' +
+        L('الحد المسموح', 'Allowed limit') + ': ' + money(g.lim) + '\n\n' +
+        L('تكمّل البيع الآجل برضه؟', 'Continue with this credit sale anyway?');
+
+      Promise.resolve(confirmBox(msg)).then(function (ok) {
+        if (!ok) return;
+        try {
+          logAudit(L('تجاوز حد ائتماني', 'Credit limit override'),
+            g.name + ' — ' + money(g.after) + ' / ' + money(g.lim));
+        } catch (e) {}
+        _c.apply(self, args);
+      });
+    };
+  })();
+
+
+  /* ═══════════════════════════════════════════════════
+     4) تقرير أعمار الديون
+     ═══════════════════════════════════════════════════ */
+
+  try {
+    PG.aging = [
+      ['أعمار الديون', 'مين مدين لك من كام يوم — ومين انت مدين له'],
+      ['Aging Report', 'Receivables & payables by age']
+    ];
+    var _cvA = window.canView;
+    window.canView = function (v) {
+      if (v === 'aging') return _cvA('reports') || _cvA('treasury');
+      return _cvA(v);
+    };
+  } catch (e) {}
+
+  function fatAgeDays(d) {
+    try {
+      var x = Math.floor((new Date(today()).getTime() - new Date(d).getTime()) / 86400000);
+      return isNaN(x) ? 0 : Math.max(0, x);
+    } catch (e) { return 0; }
+  }
+
+  window.fatAgingRows = function (kind) {
+    var isSup = (kind === 'sup');
+    var src = isSup ? (db.purchases || []) : (db.sales || []);
+    try { if (typeof bf === 'function') src = bf(src); } catch (e) {}
+
+    var map = {};
+    src.forEach(function (r) {
+      var due = +r.dueAmount || 0;
+      if (due <= 0.009) return;
+      var name = isSup
+        ? (r.supplierName || L('بدون مورد', 'No supplier'))
+        : (r.customerName || L('عميل نقدي', 'Walk-in'));
+      if (!map[name]) {
+        map[name] = { name: name, id: '', phone: '', limit: 0, b: [0, 0, 0, 0], total: 0, cnt: 0, oldest: r.date };
+      }
+      var m = map[name];
+      var age = fatAgeDays(r.date);
+      var bi = age <= 30 ? 0 : (age <= 60 ? 1 : (age <= 90 ? 2 : 3));
+      m.b[bi] += due; m.total += due; m.cnt++;
+      if (r.date && r.date < m.oldest) m.oldest = r.date;
+      if (!m.id) m.id = (isSup ? r.supplierId : r.customerId) || '';
+    });
+
+    var out = Object.keys(map).map(function (k) {
+      var m = map[k];
+      try {
+        var list = isSup ? (db.suppliers || []) : (db.customers || []);
+        var party = null;
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].id === m.id || list[i].name === m.name) { party = list[i]; break; }
+        }
+        if (party) {
+          m.phone = party.phone || '';
+          if (!m.id) m.id = party.id || '';
+          if (!isSup) m.limit = +party.creditLimit || 0;
+        }
+      } catch (e) {}
+      m.b = m.b.map(function (x) { return Math.round(x * 100) / 100; });
+      m.total = Math.round(m.total * 100) / 100;
+      m.oldestDays = fatAgeDays(m.oldest);
+      return m;
+    });
+    out.sort(function (a, b) { return b.total - a.total; });
+    return out;
+  };
+
+  window.fatAgingTab = function (t) { window._agTab = t; views.aging(); };
+
+  window.fatAgingRemind = function (name) {
+    try {
+      var rows = window.fatAgingRows(window._agTab === 'sup' ? 'sup' : 'cust');
+      var m = null;
+      for (var i = 0; i < rows.length; i++) if (rows[i].name === name) { m = rows[i]; break; }
+      if (!m) return;
+      if (!m.phone) return toast(L('العميل ده مفيش له رقم موبايل مسجّل', 'No phone number on file'), 'err');
+      var co = (db.settings && db.settings.company) || '';
+      var msg = L('تحية طيبة 👋', 'Hello 👋') + '\n' +
+        L('نذكّرك بمبلغ مستحق قدره', 'A friendly reminder of an outstanding balance of') + ' ' + money(m.total) +
+        (m.oldestDays ? ('\n' + L('أقدم فاتورة من', 'Oldest invoice is') + ' ' + m.oldestDays + ' ' + L('يوم', 'days old')) : '') +
+        '\n' + L('برجاء التواصل للسداد. شكرًا لتعاملك معانا 🌿', 'Please get in touch to settle. Thank you 🌿') +
+        (co ? ('\n\n' + co) : '');
+      if (typeof waSendMsg === 'function') waSendMsg(m.phone, msg, { title: L('تذكير سداد', 'Payment reminder') });
+      else window.open('https://wa.me/' + String(m.phone).replace(/\D/g, '') + '?text=' + encodeURIComponent(msg), '_blank');
+    } catch (e) {}
+  };
+
+  window.fatAgingCSV = function () {
+    var isSup = (window._agTab === 'sup');
+    var rows = window.fatAgingRows(isSup ? 'sup' : 'cust');
+    if (!rows.length) return toast(L('لا توجد مديونيات', 'Nothing outstanding'), 'err');
+    var head = [
+      isSup ? L('المورد', 'Supplier') : L('العميل', 'Customer'),
+      L('عدد الفواتير', 'Invoices'),
+      L('0-30 يوم', '0-30 days'), L('31-60 يوم', '31-60 days'),
+      L('61-90 يوم', '61-90 days'), L('أكثر من 90 يوم', 'Over 90 days'),
+      L('الإجمالي', 'Total'), L('أقدم فاتورة (يوم)', 'Oldest (days)'), L('الموبايل', 'Phone')
+    ];
+    if (!isSup) head.push(L('الحد الائتماني', 'Credit limit'));
+    var out = [head];
+    var tot = [0, 0, 0, 0, 0];
+    rows.forEach(function (m) {
+      var r = [m.name, m.cnt, m.b[0], m.b[1], m.b[2], m.b[3], m.total, m.oldestDays, m.phone || ''];
+      if (!isSup) r.push(m.limit || '');
+      out.push(r);
+      tot[0] += m.b[0]; tot[1] += m.b[1]; tot[2] += m.b[2]; tot[3] += m.b[3]; tot[4] += m.total;
+    });
+    out.push([]);
+    out.push([L('الإجمالي', 'TOTAL'), '',
+      Math.round(tot[0] * 100) / 100, Math.round(tot[1] * 100) / 100,
+      Math.round(tot[2] * 100) / 100, Math.round(tot[3] * 100) / 100,
+      Math.round(tot[4] * 100) / 100, '', '']);
+    downloadCSV('aging-' + (isSup ? 'payables' : 'receivables') + '-' + today() + '.csv', out);
+  };
+
+  views.aging = function () {
+    var isSup = (window._agTab === 'sup');
+    var rows = window.fatAgingRows(isSup ? 'sup' : 'cust');
+
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-ghost btn-sm no-print" onclick="fatAgingCSV()">📊 CSV</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="window.print()">🖨️ ' + L('طباعة', 'Print') + '</button>';
+
+    var tot = [0, 0, 0, 0], grand = 0;
+    rows.forEach(function (m) {
+      tot[0] += m.b[0]; tot[1] += m.b[1]; tot[2] += m.b[2]; tot[3] += m.b[3]; grand += m.total;
+    });
+
+    var labels = [
+      L('0 - 30 يوم', '0-30 days'), L('31 - 60 يوم', '31-60 days'),
+      L('61 - 90 يوم', '61-90 days'), L('أكثر من 90 يوم', 'Over 90 days')
+    ];
+    var cols = ['var(--ok)', 'var(--gold)', '#d97706', 'var(--danger)'];
+
+    var tabs = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px" class="no-print">' +
+      '<button class="btn ' + (!isSup ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatAgingTab(\'cust\')">👤 ' +
+      L('آجل لك (عملاء)', 'Receivables') + '</button>' +
+      '<button class="btn ' + (isSup ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatAgingTab(\'sup\')">🚚 ' +
+      L('آجل عليك (موردين)', 'Payables') + '</button></div>';
+
+    var cards = '<div class="cards">' + labels.map(function (lb, i) {
+      return '<div class="card"><div class="ic-bg">⏳</div>' +
+        '<div class="lbl">' + lb + '</div>' +
+        '<div class="val" style="color:' + cols[i] + '">' + money(Math.round(tot[i] * 100) / 100) + '</div>' +
+        '<div class="sub">' + (grand > 0 ? Math.round(tot[i] / grand * 100) : 0) + '% ' + L('من الإجمالي', 'of total') + '</div></div>';
+    }).join('') +
+      '<div class="card"><div class="ic-bg">💰</div><div class="lbl">' +
+      (isSup ? L('إجمالي المستحق عليك', 'Total payable') : L('إجمالي المستحق لك', 'Total receivable')) +
+      '</div><div class="val">' + money(Math.round(grand * 100) / 100) + '</div>' +
+      '<div class="sub">' + rows.length + ' ' + (isSup ? L('مورد', 'suppliers') : L('عميل', 'customers')) + '</div></div></div>';
+
+    var table = rows.length
+      ? '<table><thead><tr>' +
+      '<th>' + (isSup ? L('المورد', 'Supplier') : L('العميل', 'Customer')) + '</th>' +
+      '<th>' + labels[0] + '</th><th>' + labels[1] + '</th><th>' + labels[2] + '</th><th>' + labels[3] + '</th>' +
+      '<th>' + L('الإجمالي', 'Total') + '</th><th>' + L('أقدم فاتورة', 'Oldest') + '</th>' +
+      '<th class="no-print"></th></tr></thead><tbody>' +
+      rows.map(function (m) {
+        var over = (!isSup && m.limit > 0 && m.total > m.limit);
+        var cells = m.b.map(function (v, i) {
+          return '<td class="t-num" style="' + (v > 0 ? 'color:' + cols[i] : 'color:var(--muted);opacity:.5') + '">' +
+            (v > 0 ? money(v) : '—') + '</td>';
+        }).join('');
+        return '<tr><td><b>' + esc(m.name) + '</b>' +
+          '<div style="font-size:10.5px;color:var(--muted)">' + m.cnt + ' ' + L('فاتورة', 'invoices') +
+          (m.phone ? ' · ' + esc(m.phone) : '') +
+          (over ? ' · <span class="badge danger">' + L('تخطّى حده الائتماني', 'Over credit limit') + '</span>' : '') +
+          '</div></td>' + cells +
+          '<td class="t-num"><b>' + money(m.total) + '</b></td>' +
+          '<td class="t-num" style="color:' + (m.oldestDays > 90 ? 'var(--danger)' : m.oldestDays > 60 ? '#d97706' : 'var(--muted)') + '">' +
+          m.oldestDays + ' ' + L('يوم', 'd') + '</td>' +
+          '<td class="no-print">' + (m.phone
+            ? '<button class="iconbtn" title="' + L('تذكير واتساب', 'WhatsApp reminder') +
+              '" onclick="fatAgingRemind(\'' + String(m.name).replace(/'/g, "\\'") + '\')">💬</button>'
+            : '') + '</td></tr>';
+      }).join('') +
+      '<tr style="background:var(--primary-soft);font-weight:800"><td>' + L('الإجمالي', 'TOTAL') + '</td>' +
+      tot.map(function (v) { return '<td class="t-num">' + money(Math.round(v * 100) / 100) + '</td>'; }).join('') +
+      '<td class="t-num">' + money(Math.round(grand * 100) / 100) + '</td><td></td><td class="no-print"></td></tr>' +
+      '</tbody></table>'
+      : '<div class="empty"><span class="big">✅</span>' +
+      (isSup ? L('مفيش مستحقات على حضرتك — تمام!', 'Nothing payable — all clear!')
+             : L('مفيش آجل على حد — تمام!', 'Nothing receivable — all clear!')) + '</div>';
+
+    document.getElementById('content').innerHTML =
+      tabs + cards +
+      '<div class="panel"><div class="panel-h"><h3>⏳ ' +
+      (isSup ? L('أعمار الدائنين (المستحق عليك)', 'Payables aging') : L('أعمار المدينين (المستحق لك)', 'Receivables aging')) +
+      '</h3></div><div class="panel-b">' + table + '</div></div>' +
+      '<div class="hint" style="margin-top:12px">💡 ' +
+      L('العمر بيتحسب من تاريخ الفاتورة لحد النهارده. أي مبلغ في خانة «أكثر من 90 يوم» يستاهل مكالمة النهارده قبل بكرة.',
+        'Age is counted from the invoice date. Anything in the 90+ bucket deserves a call today.') +
+      '</div>';
+  };
+
+  // إضافة الشاشة للقائمة الجانبية تحت قسم التقارير
+  function fatInjectAgingNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="aging"]')) return;
+      if (typeof canView === 'function' && !canView('aging')) return;
+      var hidden = (db.settings && db.settings.hiddenSections) || [];
+      if (hidden.indexOf('aging') > -1) return;
+      var anchor = nav.querySelector('a[data-view="taxReport"]') ||
+                   nav.querySelector('a[data-view="reports"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'aging');
+      a.innerHTML = '<span class="ic">⏳</span> ' + L('أعمار الديون', 'Aging');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('aging'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+      if (typeof current !== 'undefined' && current === 'aging') a.classList.add('active');
+    } catch (e) {}
+  }
+
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        fatInjectAgingNav();
+        return r;
+      };
+    }
+    setTimeout(fatInjectAgingNav, 1200);
+    setTimeout(fatInjectAgingNav, 4000);
+  })();
+
+})();
+
 </script>
 </body>
 </html>
