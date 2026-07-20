@@ -19130,6 +19130,680 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
 })();
 
+
+  /* ============================================================
+   FATORTY v8.3 — تجهيز الفاتورة الإلكترونية (اختياري · مقفول افتراضيًا)
+   ⚠️ صادق بالاسم: النظام ده *بيجهّز ويتحقق ويصدّر* مستند ETA.
+      هو *مش بيبعت* للمصلحة — البعت محتاج ختم إلكتروني (توكن/HSM
+      أو مزوّد توقيع مرخّص)، وده مستحيل يتعمل من متصفح.
+   بيوفّر:
+     • تكويد جماعي: EG-{الرقم الضريبي}-{كود الصنف} لكل الأصناف بضغطة
+     • ملف رفع جاهز لبورتال المصلحة
+     • محرك تحقق بيقولك بالظبط إيه الناقص في كل فاتورة
+     • مستند JSON بصيغة ETA v1.0 جاهز للتوقيع والرفع
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R5 = function (n) { return Math.round((+n || 0) * 100000) / 100000; };
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  /* وحدات القياس المعتمدة (UN/ECE Rec 20) — الأشهر في السوق المصري */
+  window.FAT_ETA_UNITS = [
+    ['EA', 'قطعة / وحدة', 'Each'],
+    ['KGM', 'كيلوجرام', 'Kilogram'],
+    ['GRM', 'جرام', 'Gram'],
+    ['TNE', 'طن', 'Tonne'],
+    ['LTR', 'لتر', 'Litre'],
+    ['MTR', 'متر', 'Metre'],
+    ['MTK', 'متر مربع', 'Square metre'],
+    ['MTQ', 'متر مكعب', 'Cubic metre'],
+    ['BX', 'كرتونة', 'Box'],
+    ['PK', 'باكو', 'Pack'],
+    ['BG', 'شيكارة / كيس', 'Bag'],
+    ['SET', 'طقم', 'Set'],
+    ['HUR', 'ساعة', 'Hour'],
+    ['DAY', 'يوم', 'Day']
+  ];
+
+  window.fatEta = function () {
+    try {
+      db.settings = db.settings || {};
+      db.settings.eta = db.settings.eta || {};
+      var e = db.settings.eta;
+      if (e.enabled === undefined) e.enabled = false;
+      if (!e.taxSubType) e.taxSubType = 'V009';
+      if (!e.defaultUnit) e.defaultUnit = 'EA';
+      if (!e.issuerType) e.issuerType = 'B';
+      if (!e.branchId) e.branchId = '0';
+      return e;
+    } catch (err) { return { enabled: false }; }
+  };
+  window.fatEtaOn = function () { try { return !!window.fatEta().enabled; } catch (e) { return false; } };
+
+  /* ═══════════ 1) التكويد ═══════════ */
+
+  // EG - الرقم الضريبي - كود الصنف الداخلي
+  window.fatEgsCode = function (p) {
+    var e = window.fatEta();
+    var rin = String(e.rin || '').replace(/\D/g, '');
+    if (!rin) return '';
+    var internal = String(p.sku || p.barcode || p.id || '').replace(/[^A-Za-z0-9]/g, '');
+    if (!internal) return '';
+    return 'EG-' + rin + '-' + internal.toUpperCase();
+  };
+
+  window.fatEtaBulkCode = function () {
+    var e = window.fatEta();
+    if (!String(e.rin || '').replace(/\D/g, '')) {
+      return toast(L('اكتب الرقم الضريبي الأول من إعدادات الفاتورة الإلكترونية',
+        'Enter your tax registration number first'), 'err');
+    }
+    var list = (db.products || []).filter(function (p) {
+      try { if (typeof fatShowsInStock === 'function' && !fatShowsInStock(p)) return false; } catch (er) {}
+      return true;
+    });
+    var made = 0, skipped = 0, noSku = 0;
+    list.forEach(function (p) {
+      if (p.etaCode) { skipped++; return; }
+      var c = window.fatEgsCode(p);
+      if (!c) { noSku++; return; }
+      p.etaCode = c;
+      p.etaType = 'EGS';
+      if (!p.etaUnit) p.etaUnit = e.defaultUnit || 'EA';
+      made++;
+    });
+    save();
+    try { logAudit(L('تكويد جماعي للفاتورة الإلكترونية', 'Bulk ETA coding'), made + ' ' + L('صنف', 'items')); } catch (er) {}
+    toast('✅ ' + L('اتكوّد', 'Coded') + ' ' + made + ' ' + L('صنف', 'items') +
+      (skipped ? ' · ' + skipped + ' ' + L('مكوّد قبل كده', 'already coded') : '') +
+      (noSku ? ' · ' + noSku + ' ' + L('من غير كود داخلي', 'without an internal code') : ''));
+    try { if (current === 'etaPrep') views.etaPrep(); } catch (er) {}
+  };
+
+  window.fatEtaCodesCSV = function () {
+    var list = (db.products || []).filter(function (p) { return p.etaCode; });
+    if (!list.length) return toast(L('مفيش أصناف مكوّدة لسه', 'No coded items yet'), 'err');
+    var rows = [[
+      L('كود الصنف (EGS)', 'Item code (EGS)'),
+      L('الكود الداخلي', 'Internal code'),
+      L('اسم الصنف', 'Item name'),
+      L('الوصف', 'Description'),
+      L('كود GPC (تملاه انت)', 'GPC brick (you fill)'),
+      L('وحدة القياس', 'Unit')
+    ]];
+    list.forEach(function (p) {
+      rows.push([p.etaCode, p.sku || p.barcode || p.id, p.name, p.desc || p.name, p.gpc || '', p.etaUnit || 'EA']);
+    });
+    downloadCSV('eta-items-' + today() + '.csv', rows);
+    toast(L('ارفع الملف ده على بورتال المصلحة (تسجيل الأصناف بالجملة)',
+      'Upload this on the ETA portal (bulk item registration)'));
+  };
+
+  /* ═══════════ 2) محرك التحقق ═══════════ */
+
+  window.fatEtaCheck = function (s) {
+    var e = window.fatEta(), miss = [];
+    if (!String(e.rin || '').trim()) miss.push(L('الرقم الضريبي للمنشأة', 'Issuer tax number'));
+    if (!String(e.activityCode || '').trim()) miss.push(L('كود النشاط', 'Activity code'));
+    if (!String(e.governate || '').trim()) miss.push(L('محافظة المنشأة', 'Issuer governorate'));
+    if (!String(e.street || '').trim()) miss.push(L('شارع المنشأة', 'Issuer street'));
+    if (!String(e.buildingNumber || '').trim()) miss.push(L('رقم مبنى المنشأة', 'Issuer building no.'));
+
+    var c = null;
+    try { c = s.customerId ? findCustomer(s.customerId) : null; } catch (er) {}
+    var rtype = (c && c.etaType) || 'P';
+    if (!c || !String(c.name || '').trim()) {
+      miss.push(L('العميل (فاتورة نقدية بدون عميل مسجّل)', 'Registered customer'));
+    } else {
+      if (rtype === 'B' && !String(c.etaId || '').replace(/\D/g, '')) {
+        miss.push(L('الرقم الضريبي للعميل', 'Customer tax number'));
+      }
+      if (rtype === 'B' && !String(c.governate || '').trim()) {
+        miss.push(L('محافظة العميل', 'Customer governorate'));
+      }
+    }
+
+    var badItems = [];
+    (s.items || []).forEach(function (it) {
+      var p = null;
+      try { p = it.pid ? findProduct(it.pid) : null; } catch (er) {}
+      var code = (p && p.etaCode) || it.etaCode || '';
+      if (!code) badItems.push(it.name || '—');
+    });
+    if (badItems.length) {
+      miss.push(L('كود ETA للأصناف', 'ETA item codes') + ': ' +
+        badItems.slice(0, 3).join('، ') + (badItems.length > 3 ? ' +' + (badItems.length - 3) : ''));
+    }
+
+    return { ok: miss.length === 0, missing: miss };
+  };
+
+  /* ═══════════ 3) مولّد مستند ETA ═══════════ */
+
+  window.fatEtaDoc = function (s) {
+    var e = window.fatEta();
+    var c = null;
+    try { c = s.customerId ? findCustomer(s.customerId) : null; } catch (er) {}
+    var vatRate = (+s.vatP || 0) || (+(db.settings && db.settings.vatRate) || 0);
+    var subType = e.taxSubType || 'V009';
+
+    var lines = [], totalSales = 0, totalItemsDisc = 0, totalTax = 0;
+
+    (s.items || []).forEach(function (it) {
+      var p = null;
+      try { p = it.pid ? findProduct(it.pid) : null; } catch (er) {}
+      var qty = +it.qty || 0;
+      var unit = +it.price || 0;
+      var salesTotal = R5(qty * unit);
+      var lineDisc = R5(+it.disc || 0);
+      var netTotal = R5(salesTotal - lineDisc);
+      var tax = R5(netTotal * vatRate / 100);
+
+      totalSales = R5(totalSales + salesTotal);
+      totalItemsDisc = R5(totalItemsDisc + lineDisc);
+      totalTax = R5(totalTax + tax);
+
+      lines.push({
+        description: String(it.name || ''),
+        itemType: (p && p.etaType) || 'EGS',
+        itemCode: (p && p.etaCode) || it.etaCode || '',
+        unitType: (p && p.etaUnit) || e.defaultUnit || 'EA',
+        quantity: qty,
+        internalCode: (p && (p.sku || p.barcode)) || '',
+        salesTotal: salesTotal,
+        total: R5(netTotal + tax),
+        valueDifference: 0,
+        totalTaxableFees: 0,
+        netTotal: netTotal,
+        itemsDiscount: 0,
+        unitValue: { currencySold: 'EGP', amountEGP: unit },
+        discount: { rate: 0, amount: lineDisc },
+        taxableItems: [{ taxType: 'T1', amount: tax, subType: subType, rate: vatRate }]
+      });
+    });
+
+    var extraDisc = R5(+s.disc || 0);
+    var netAmount = R5(totalSales - totalItemsDisc);
+    var totalAmount = R5(netAmount - extraDisc + totalTax);
+
+    var issuerAddr = {
+      branchID: String(e.branchId || '0'),
+      country: 'EG',
+      governate: String(e.governate || ''),
+      regionCity: String(e.regionCity || ''),
+      street: String(e.street || ''),
+      buildingNumber: String(e.buildingNumber || ''),
+      postalCode: String(e.postalCode || ''),
+      floor: String(e.floor || ''),
+      room: '',
+      landmark: String(e.landmark || ''),
+      additionalInformation: ''
+    };
+    var rtype = (c && c.etaType) || 'P';
+    var recvAddr = {
+      country: 'EG',
+      governate: String((c && c.governate) || e.governate || ''),
+      regionCity: String((c && c.regionCity) || ''),
+      street: String((c && c.street) || (c && c.address) || ''),
+      buildingNumber: String((c && c.buildingNumber) || ''),
+      postalCode: '', floor: '', room: '', landmark: '', additionalInformation: ''
+    };
+
+    var iso;
+    try {
+      iso = new Date(s.ts || (s.date + 'T00:00:00Z')).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    } catch (er) { iso = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'); }
+
+    return {
+      issuer: {
+        address: issuerAddr,
+        type: String(e.issuerType || 'B'),
+        id: String(e.rin || '').replace(/\D/g, ''),
+        name: String((db.settings && db.settings.company) || '')
+      },
+      receiver: {
+        address: recvAddr,
+        type: rtype,
+        id: String((c && c.etaId) || '').replace(/\D/g, ''),
+        name: String((c && c.name) || s.customerName || '')
+      },
+      documentType: (s.__docType || 'I'),
+      documentTypeVersion: '1.0',
+      dateTimeIssued: iso,
+      taxpayerActivityCode: String(e.activityCode || ''),
+      internalID: String(s.no || s.id || ''),
+      purchaseOrderReference: '',
+      purchaseOrderDescription: '',
+      salesOrderReference: '',
+      salesOrderDescription: '',
+      proformaInvoiceNumber: '',
+      payment: { bankName: '', bankAddress: '', bankAccountNo: '', bankAccountIBAN: '', swiftCode: '', terms: '' },
+      delivery: { approach: '', packaging: '', dateValidity: '', exportPort: '', countryOfOrigin: 'EG', grossWeight: 0, netWeight: 0, terms: '' },
+      invoiceLines: lines,
+      totalDiscountAmount: extraDisc,
+      totalSalesAmount: totalSales,
+      netAmount: netAmount,
+      taxTotals: [{ taxType: 'T1', amount: totalTax }],
+      totalAmount: totalAmount,
+      extraDiscountAmount: extraDisc,
+      totalItemsDiscountAmount: totalItemsDisc,
+      signatures: []
+    };
+  };
+
+  window.fatEtaExport = function (ids) {
+    var list = (db.sales || []).filter(function (s) { return ids.indexOf(s.id) > -1; });
+    if (!list.length) return toast(L('مفيش فواتير مختارة', 'No invoices selected'), 'err');
+    var docs = list.map(window.fatEtaDoc);
+    var payload = { documents: docs };
+    try {
+      var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'eta-documents-' + today() + '.json';
+      document.body.appendChild(a); a.click();
+      setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(a.href); }, 800);
+    } catch (er) { return toast(L('تعذّر التصدير', 'Export failed'), 'err'); }
+    list.forEach(function (s) { s.etaStatus = s.etaStatus || 'exported'; s.etaExportedAt = today(); });
+    save();
+    try { logAudit(L('تصدير مستندات ETA', 'ETA export'), docs.length + ' ' + L('فاتورة', 'documents')); } catch (er) {}
+    toast('✅ ' + L('اتصدّر', 'Exported') + ' ' + docs.length + ' ' + L('مستند', 'documents'));
+    try { if (current === 'etaPrep') views.etaPrep(); } catch (er) {}
+  };
+
+  window.fatEtaViewDoc = function (id) {
+    var s = (db.sales || []).filter(function (x) { return x.id === id; })[0];
+    if (!s) return;
+    var chk = window.fatEtaCheck(s);
+    var json = JSON.stringify(window.fatEtaDoc(s), null, 2);
+    openModal('<div class="modal-h"><h3>📄 ' + L('مستند ETA', 'ETA document') + ' — #' + esc(s.no) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      (chk.ok
+        ? '<div class="hint" style="color:var(--ok)">✅ ' + L('كل البيانات المطلوبة موجودة', 'All required data present') + '</div>'
+        : '<div class="hint" style="color:var(--danger)">⚠️ <b>' + L('ناقص', 'Missing') + ':</b><br>• ' +
+          chk.missing.map(esc).join('<br>• ') + '</div>') +
+      '<div class="field" style="margin-top:12px"><label>' + L('المستند (JSON)', 'Document (JSON)') + '</label>' +
+      '<textarea readonly style="height:300px;font-family:monospace;font-size:11px;direction:ltr;text-align:left">' +
+      esc(json) + '</textarea></div>' +
+      '<div class="hint">⚠️ ' + L('المستند ده لسه محتاج ختم إلكتروني قبل رفعه للمصلحة.',
+        'This document still needs an eSeal before submission.') + '</div></div>' +
+      '<div class="modal-f"><button class="btn btn-primary" onclick="fatEtaExport([\'' + s.id + '\'])">💾 ' +
+      L('تنزيل', 'Download') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إغلاق', 'Close') + '</button></div>');
+  };
+
+  window.fatEtaMark = function (id) {
+    var s = (db.sales || []).filter(function (x) { return x.id === id; })[0];
+    if (!s) return;
+    Promise.resolve(promptBox(
+      L('اكتب رقم المستند (UUID) اللي رجع من المصلحة — سيبه فاضي لو اترفض:',
+        'Enter the UUID returned by ETA — leave empty if rejected:'),
+      { value: s.etaUuid || '' }
+    )).then(function (v) {
+      if (v === null) return;
+      v = String(v || '').trim();
+      s.etaUuid = v;
+      s.etaStatus = v ? 'accepted' : 'rejected';
+      s.etaMarkedAt = today();
+      save();
+      toast(v ? '✅ ' + L('اتسجّلت كمقبولة', 'Marked accepted') : '⚠️ ' + L('اتسجّلت كمرفوضة', 'Marked rejected'));
+      try { if (current === 'etaPrep') views.etaPrep(); } catch (er) {}
+    });
+  };
+
+  /* ═══════════ 4) الإعدادات ═══════════ */
+
+  window.fatEtaSettings = function () {
+    var e = window.fatEta();
+    var f = function (k, lbl, ph, w) {
+      return '<div class="field"><label>' + lbl + '</label><input id="eta_' + k + '" value="' +
+        esc(e[k] || '') + '" placeholder="' + esc(ph || '') + '"' + (w ? ' style="direction:ltr;text-align:left"' : '') + '></div>';
+    };
+    openModal('<div class="modal-h"><h3>⚙️ ' + L('إعدادات الفاتورة الإلكترونية', 'E-invoice settings') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<label style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--card2);border-radius:10px;cursor:pointer;margin-bottom:16px">' +
+      '<span><b>' + L('تفعيل تجهيز الفاتورة الإلكترونية', 'Enable e-invoice preparation') + '</b>' +
+      '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' +
+      L('شغّلها بس لو بتتعامل بفواتير ضريبية رسمية', 'Only if you issue formal tax invoices') + '</div></span>' +
+      '<input type="checkbox" id="eta_enabled"' + (e.enabled ? ' checked' : '') + ' style="width:20px;height:20px">' +
+      '</label>' +
+      '<div class="grid2">' +
+      f('rin', L('الرقم الضريبي للمنشأة *', 'Tax registration number *'), '313108469', true) +
+      f('activityCode', L('كود النشاط *', 'Activity code *'), '4620', true) +
+      '</div><div class="grid2">' +
+      f('governate', L('المحافظة *', 'Governorate *'), L('القاهرة', 'Cairo')) +
+      f('regionCity', L('المدينة / المنطقة', 'City / Region'), L('مدينة نصر', 'Nasr City')) +
+      '</div><div class="grid2">' +
+      f('street', L('الشارع *', 'Street *'), '') +
+      f('buildingNumber', L('رقم المبنى *', 'Building number *'), '') +
+      '</div><div class="grid2">' +
+      f('floor', L('الدور', 'Floor'), '') +
+      f('landmark', L('علامة مميزة', 'Landmark'), '') +
+      '</div><div class="grid2">' +
+      '<div class="field"><label>' + L('كود الضريبة الفرعي', 'Tax sub-type') + '</label>' +
+      '<input id="eta_taxSubType" value="' + esc(e.taxSubType || 'V009') + '" style="direction:ltr;text-align:left">' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:3px">' +
+      L('اسأل محاسبك يأكّدلك الكود المناسب لنشاطك', 'Ask your accountant to confirm the right code') + '</div></div>' +
+      '<div class="field"><label>' + L('وحدة القياس الافتراضية', 'Default unit') + '</label>' +
+      '<select id="eta_defaultUnit">' + window.FAT_ETA_UNITS.map(function (u) {
+        return '<option value="' + u[0] + '"' + ((e.defaultUnit || 'EA') === u[0] ? ' selected' : '') + '>' +
+          L(u[1], u[2]) + ' (' + u[0] + ')</option>';
+      }).join('') + '</select></div></div>' +
+      '<div class="hint">⚠️ <b>' + L('مهم تعرف', 'Important') + ':</b> ' +
+      L('النظام بيجهّز المستند ويتحقق منه ويصدّره. الإرسال للمصلحة محتاج ختم إلكتروني (توكن أو HSM أو مزوّد توقيع مرخّص) — ده مش بيتعمل من المتصفح.',
+        'The system prepares, validates and exports the document. Submission requires an eSeal (token, HSM or licensed provider) — not possible from a browser.') +
+      '</div></div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatEtaSaveSettings()">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatEtaSaveSettings = function () {
+    var e = window.fatEta();
+    ['rin', 'activityCode', 'governate', 'regionCity', 'street', 'buildingNumber',
+      'floor', 'landmark', 'taxSubType', 'defaultUnit'].forEach(function (k) {
+      var el = document.getElementById('eta_' + k);
+      if (el) e[k] = String(el.value || '').trim();
+    });
+    var ch = document.getElementById('eta_enabled');
+    e.enabled = !!(ch && ch.checked);
+    save(); closeModal();
+    try { renderNav(); } catch (er) {}
+    toast('✅ ' + L('اتحفظ', 'Saved'));
+    try { if (current === 'etaPrep') views.etaPrep(); } catch (er) {}
+  };
+
+  /* ═══════════ 5) حقول على الصنف والعميل ═══════════ */
+
+  (function () {
+    var _pf = window.productForm;
+    if (typeof _pf !== 'function') return;
+    window.productForm = function (id) {
+      var r = _pf.apply(this, arguments);
+      setTimeout(function () {
+        try {
+          if (!window.fatEtaOn() || document.getElementById('f_etacode')) return;
+          var body = document.querySelector('#modal .modal-b'); if (!body) return;
+          var p = id ? findProduct(id) : null;
+          var d = document.createElement('div');
+          d.innerHTML = '<div class="field"><label>🧾 ' + L('كود الفاتورة الإلكترونية (EGS/GS1)', 'E-invoice item code') + '</label>' +
+            '<input id="f_etacode" value="' + esc((p && p.etaCode) || '') + '" placeholder="' +
+            esc(p ? (window.fatEgsCode(p) || 'EG-...') : 'EG-...') + '" style="direction:ltr;text-align:left"></div>' +
+            '<div class="field"><label>' + L('وحدة القياس', 'Unit of measure') + '</label>' +
+            '<select id="f_etaunit">' + window.FAT_ETA_UNITS.map(function (u) {
+              return '<option value="' + u[0] + '"' +
+                (((p && p.etaUnit) || window.fatEta().defaultUnit || 'EA') === u[0] ? ' selected' : '') + '>' +
+                L(u[1], u[2]) + ' (' + u[0] + ')</option>';
+            }).join('') + '</select></div>';
+          body.appendChild(d);
+        } catch (er) {}
+      }, 0);
+      return r;
+    };
+  })();
+
+  (function () {
+    var _sp = window.saveProduct;
+    if (typeof _sp !== 'function') return;
+    window.saveProduct = function (id) {
+      var codeEl = document.getElementById('f_etacode');
+      var unitEl = document.getElementById('f_etaunit');
+      var code = codeEl ? String(codeEl.value || '').trim() : null;
+      var unit = unitEl ? String(unitEl.value || '').trim() : null;
+      var before = (db.products || []).length;
+      var r = _sp.apply(this, arguments);
+      var apply = function () {
+        try {
+          if (code === null) return;
+          var p = id ? findProduct(id) : ((db.products || []).length > before ? db.products[db.products.length - 1] : null);
+          if (!p) return;
+          if (code) { p.etaCode = code; p.etaType = /^EG-/i.test(code) ? 'EGS' : 'GS1'; }
+          else { delete p.etaCode; delete p.etaType; }
+          if (unit) p.etaUnit = unit;
+          save();
+        } catch (er) {}
+      };
+      if (r && typeof r.then === 'function') { r.then(apply)['catch'](function () {}); } else { apply(); }
+      return r;
+    };
+  })();
+
+  (function () {
+    var _cf = window.customerForm;
+    if (typeof _cf !== 'function') return;
+    window.customerForm = function (id) {
+      var r = _cf.apply(this, arguments);
+      setTimeout(function () {
+        try {
+          if (!window.fatEtaOn() || document.getElementById('f_etatype')) return;
+          var body = document.querySelector('#modal .modal-b'); if (!body) return;
+          var c = id ? findCustomer(id) : null;
+          var t = (c && c.etaType) || 'P';
+          var d = document.createElement('div');
+          d.innerHTML = '<div class="field"><label>🧾 ' + L('نوع العميل (للفاتورة الإلكترونية)', 'Customer type (e-invoice)') + '</label>' +
+            '<select id="f_etatype">' +
+            '<option value="P"' + (t === 'P' ? ' selected' : '') + '>' + L('فرد (رقم قومي)', 'Person') + '</option>' +
+            '<option value="B"' + (t === 'B' ? ' selected' : '') + '>' + L('شركة / منشأة (رقم ضريبي)', 'Business') + '</option>' +
+            '<option value="F"' + (t === 'F' ? ' selected' : '') + '>' + L('أجنبي', 'Foreigner') + '</option>' +
+            '</select></div>' +
+            '<div class="field"><label>' + L('الرقم الضريبي / القومي', 'Tax / national ID') + '</label>' +
+            '<input id="f_etaid" value="' + esc((c && c.etaId) || '') + '" style="direction:ltr;text-align:left"></div>' +
+            '<div class="grid2"><div class="field"><label>' + L('المحافظة', 'Governorate') + '</label>' +
+            '<input id="f_etagov" value="' + esc((c && c.governate) || '') + '"></div>' +
+            '<div class="field"><label>' + L('الشارع', 'Street') + '</label>' +
+            '<input id="f_etastreet" value="' + esc((c && c.street) || '') + '"></div></div>';
+          body.appendChild(d);
+        } catch (er) {}
+      }, 0);
+      return r;
+    };
+  })();
+
+  (function () {
+    var _sc = window.saveCustomer;
+    if (typeof _sc !== 'function') return;
+    window.saveCustomer = function (id) {
+      var g = function (i) { var el = document.getElementById(i); return el ? String(el.value || '').trim() : null; };
+      var t = g('f_etatype'), eid = g('f_etaid'), gov = g('f_etagov'), str = g('f_etastreet');
+      var before = (db.customers || []).length;
+      var r = _sc.apply(this, arguments);
+      var apply = function () {
+        try {
+          if (t === null) return;
+          var c = id ? findCustomer(id) : ((db.customers || []).length > before ? db.customers[db.customers.length - 1] : null);
+          if (!c) return;
+          c.etaType = t;
+          if (eid) c.etaId = eid; else delete c.etaId;
+          if (gov) c.governate = gov;
+          if (str) c.street = str;
+          save();
+        } catch (er) {}
+      };
+      if (r && typeof r.then === 'function') { r.then(apply)['catch'](function () {}); } else { apply(); }
+      return r;
+    };
+  })();
+
+  /* ═══════════ 6) الشاشة ═══════════ */
+
+  try {
+    PG.etaPrep = [
+      ['تجهيز الفاتورة الإلكترونية', 'جهّز فواتيرك بصيغة مصلحة الضرائب وصدّرها'],
+      ['E-Invoice Prep', 'Prepare and export ETA-format documents']
+    ];
+    var _cvE = window.canView;
+    window.canView = function (v) {
+      if (v === 'etaPrep') return window.fatEtaOn() && (_cvE('reports') || _cvE('settings'));
+      return _cvE(v);
+    };
+  } catch (er) {}
+
+  window._etaSel = {};
+  window.fatEtaToggleSel = function (id, on) { if (on) window._etaSel[id] = 1; else delete window._etaSel[id]; };
+  window.fatEtaSelAll = function (on) {
+    window._etaSel = {};
+    if (on) (window._etaReady || []).forEach(function (s) { window._etaSel[s.id] = 1; });
+    views.etaPrep();
+  };
+  window.fatEtaExportSel = function () {
+    var ids = Object.keys(window._etaSel || {});
+    if (!ids.length) return toast(L('اختار فواتير الأول', 'Select invoices first'), 'err');
+    window.fatEtaExport(ids);
+  };
+  window.fatEtaFilter = function (f) { window._etaF = f; views.etaPrep(); };
+
+  views.etaPrep = function () {
+    var e = window.fatEta();
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-ghost btn-sm" onclick="fatEtaSettings()">⚙️ ' + L('إعدادات', 'Settings') + '</button>';
+
+    if (!e.enabled) {
+      document.getElementById('content').innerHTML =
+        '<div class="panel" style="max-width:560px"><div class="panel-b pad" style="text-align:center;padding:36px">' +
+        '<div style="font-size:48px">🧾</div><h3 style="margin:12px 0 6px">' +
+        L('تجهيز الفاتورة الإلكترونية مقفول', 'E-invoice prep is off') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.8">' +
+        L('شغّله بس لو بتتعامل بفواتير ضريبية رسمية.', 'Turn it on only if you issue formal tax invoices.') + '</p>' +
+        '<button class="btn btn-primary" style="margin-top:14px" onclick="fatEtaSettings()">⚙️ ' +
+        L('تشغيل وإعداد', 'Enable & configure') + '</button></div></div>';
+      return;
+    }
+
+    var coded = (db.products || []).filter(function (p) { return p.etaCode; }).length;
+    var totalP = (db.products || []).length;
+
+    var sales = (db.sales || []).slice();
+    try { if (typeof bf === 'function') sales = bf(sales); } catch (er) {}
+    sales = sales.filter(function (s) { return (+s.total || 0) > 0; }).slice(-400).reverse();
+
+    var ready = [], notReady = [];
+    sales.forEach(function (s) {
+      var c = window.fatEtaCheck(s);
+      s.__chk = c;
+      (c.ok ? ready : notReady).push(s);
+    });
+    window._etaReady = ready;
+
+    var f = window._etaF || 'ready';
+    var list = f === 'ready' ? ready : (f === 'notready' ? notReady : sales.filter(function (s) { return s.etaStatus; }));
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">🏷️</div><div class="lbl">' + L('أصناف مكوّدة', 'Coded items') +
+      '</div><div class="val">' + coded + ' / ' + totalP + '</div>' +
+      '<div class="sub">' + (coded < totalP ? L('محتاجة تكويد', 'need coding') : L('تمام', 'all done')) + '</div></div>' +
+      '<div class="card"><div class="ic-bg">✅</div><div class="lbl">' + L('فواتير جاهزة', 'Ready') +
+      '</div><div class="val" style="color:var(--ok)">' + ready.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⚠️</div><div class="lbl">' + L('ناقصة بيانات', 'Incomplete') +
+      '</div><div class="val" style="color:var(--danger)">' + notReady.length + '</div></div>' +
+      '</div>';
+
+    var codeBox = (coded < totalP)
+      ? '<div class="panel" style="margin-bottom:14px"><div class="panel-b pad">' +
+        '<b style="font-size:14px">🏷️ ' + L('تكويد الأصناف', 'Item coding') + '</b>' +
+        '<p style="font-size:12.5px;color:var(--muted);line-height:1.8;margin:8px 0 12px">' +
+        L('كل صنف لازم يكون له كود معتمد. النظام هيولّد الأكواد بصيغة EG-{الرقم الضريبي}-{كود الصنف} لكل أصنافك بضغطة واحدة، وبعدين تنزّل ملف وترفعه على بورتال المصلحة مرة واحدة.',
+          'Every item needs an approved code. Generate them all at once, then upload the sheet to the ETA portal.') +
+        '</p><div style="display:flex;gap:8px;flex-wrap:wrap">' +
+        '<button class="btn btn-primary btn-sm" onclick="fatEtaBulkCode()">⚡ ' +
+        L('كوّد كل الأصناف', 'Code all items') + '</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="fatEtaCodesCSV()">📊 ' +
+        L('نزّل ملف الرفع للبورتال', 'Download portal upload sheet') + '</button></div></div></div>'
+      : '<div class="panel" style="margin-bottom:14px"><div class="panel-b pad">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">' +
+        '<b style="font-size:14px;color:var(--ok)">✅ ' + L('كل الأصناف مكوّدة', 'All items coded') + '</b>' +
+        '<button class="btn btn-ghost btn-sm" onclick="fatEtaCodesCSV()">📊 ' +
+        L('نزّل ملف الرفع للبورتال', 'Portal upload sheet') + '</button></div></div></div>';
+
+    var tabs = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px" class="no-print">' +
+      [['ready', '✅ ' + L('جاهزة', 'Ready'), ready.length],
+       ['notready', '⚠️ ' + L('ناقصة', 'Incomplete'), notReady.length],
+       ['done', '📤 ' + L('اتصدّرت', 'Exported'), sales.filter(function (s) { return s.etaStatus; }).length]]
+        .map(function (t) {
+          return '<button class="btn ' + (f === t[0] ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatEtaFilter(\'' + t[0] + '\')">' +
+            t[1] + ' (' + t[2] + ')</button>';
+        }).join('') +
+      (f === 'ready' && ready.length
+        ? '<div style="flex:1"></div><button class="btn btn-ghost btn-sm" onclick="fatEtaSelAll(true)">' +
+          L('اختار الكل', 'Select all') + '</button>' +
+          '<button class="btn btn-primary btn-sm" onclick="fatEtaExportSel()">💾 ' +
+          L('صدّر المختار', 'Export selected') + '</button>'
+        : '') + '</div>';
+
+    var table = list.length
+      ? '<table><thead><tr>' + (f === 'ready' ? '<th style="width:34px"></th>' : '') +
+        '<th>#</th><th>' + L('التاريخ', 'Date') + '</th><th>' + L('العميل', 'Customer') + '</th><th>' +
+        L('الإجمالي', 'Total') + '</th><th>' + L('الحالة', 'Status') + '</th><th></th></tr></thead><tbody>' +
+        list.map(function (s) {
+          var chk = s.__chk || window.fatEtaCheck(s);
+          var stat = s.etaStatus === 'accepted'
+            ? '<span class="badge ok">✅ ' + L('مقبولة', 'Accepted') + '</span>'
+            : s.etaStatus === 'rejected'
+              ? '<span class="badge danger">❌ ' + L('مرفوضة', 'Rejected') + '</span>'
+              : s.etaStatus === 'exported'
+                ? '<span class="badge">📤 ' + L('اتصدّرت', 'Exported') + '</span>'
+                : (chk.ok ? '<span class="badge ok">' + L('جاهزة', 'Ready') + '</span>'
+                          : '<span class="badge danger">' + L('ناقصة', 'Incomplete') + '</span>');
+          return '<tr>' +
+            (f === 'ready' ? '<td><input type="checkbox"' + (window._etaSel[s.id] ? ' checked' : '') +
+              ' onchange="fatEtaToggleSel(\'' + s.id + '\',this.checked)"></td>' : '') +
+            '<td><b>' + esc(s.no) + '</b></td><td>' + esc(s.date) + '</td>' +
+            '<td>' + esc(s.customerName || L('نقدي', 'Walk-in')) +
+            (!chk.ok ? '<div style="font-size:10.5px;color:var(--danger)">' +
+              esc(chk.missing.slice(0, 2).join(' · ')) +
+              (chk.missing.length > 2 ? ' +' + (chk.missing.length - 2) : '') + '</div>' : '') + '</td>' +
+            '<td class="t-num">' + money(s.total) + '</td><td>' + stat +
+            (s.etaUuid ? '<div style="font-size:10px;color:var(--muted);direction:ltr">' + esc(s.etaUuid.slice(0, 14)) + '…</div>' : '') +
+            '</td>' +
+            '<td><button class="iconbtn" title="' + L('عرض المستند', 'View document') +
+            '" onclick="fatEtaViewDoc(\'' + s.id + '\')">📄</button>' +
+            (s.etaStatus ? '<button class="iconbtn" title="' + L('سجّل رد المصلحة', 'Record ETA response') +
+              '" onclick="fatEtaMark(\'' + s.id + '\')">🏷️</button>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty"><span class="big">🧾</span>' + L('مفيش فواتير هنا', 'Nothing here') + '</div>';
+
+    document.getElementById('content').innerHTML = cards + codeBox + tabs +
+      '<div class="panel"><div class="panel-b">' + table + '</div></div>' +
+      '<div class="hint" style="margin-top:12px">⚠️ <b>' + L('خطوة أخيرة برّه النظام', 'Final step outside the system') + ':</b> ' +
+      L('الملف اللي بينزل جاهز بصيغة المصلحة، بس لسه محتاج ختم إلكتروني (توكن أو HSM أو مزوّد توقيع مرخّص) قبل رفعه. اتكلم مع محاسبك أو مزوّد التوقيع بتاعك.',
+        'The exported file matches the ETA format but still needs an eSeal (token, HSM or licensed provider) before submission.') +
+      '</div>';
+  };
+
+  /* ═══════════ 7) القائمة ═══════════ */
+  function fatInjectEtaNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav) return;
+      var existing = nav.querySelector('a[data-view="etaPrep"]');
+      if (!window.fatEtaOn()) { if (existing) existing.remove(); return; }
+      if (existing) return;
+      if (typeof canView === 'function' && !canView('etaPrep')) return;
+      var anchor = nav.querySelector('a[data-view="taxReport"]') ||
+                   nav.querySelector('a[data-view="aging"]') ||
+                   nav.querySelector('a[data-view="reports"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'etaPrep');
+      a.innerHTML = '<span class="ic">🧾</span> ' + L('الفاتورة الإلكترونية', 'E-Invoice');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('etaPrep'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (er) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        fatInjectEtaNav();
+        return r;
+      };
+    }
+    setTimeout(fatInjectEtaNav, 1800);
+    setTimeout(fatInjectEtaNav, 4600);
+  })();
+
+})();
 </script>
 </body>
 </html>
