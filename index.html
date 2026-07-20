@@ -18634,6 +18634,502 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
 })();
 
+
+  /* ============================================================
+   FATORTY v8.2 — صفحة سداد وتجديد الاشتراك
+   بدل ما العميل يبعت واتساب فاضي، بقى عنده صفحة بتقوله:
+   يدفع كام بالظبط، يحوّل فين، وبعدها يبلّغك بإثبات التحويل
+   في رسالة منظّمة فيها كل اللي محتاجه عشان تفعّل في ثانية.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  /* ╔══════════════════════════════════════════════════════╗
+     ║  ⚠️  عدّل البيانات دي ببياناتك انت — دي اللي العميل  ║
+     ║      هيحوّل عليها. سيب اللي مش عندك فاضي وهيختفي.    ║
+     ╚══════════════════════════════════════════════════════╝ */
+  var FAT_PAY_METHODS = [
+    { key: 'instapay', icon: '⚡', label: 'إنستاباي', labelEn: 'InstaPay',
+      value: '', hint: 'حوّل على العنوان ده من أي تطبيق بنكي' },
+    { key: 'vodafone', icon: '📱', label: 'فودافون كاش', labelEn: 'Vodafone Cash',
+      value: '01012364189', hint: 'حوّل على الرقم ده' },
+    { key: 'bank', icon: '🏦', label: 'تحويل بنكي', labelEn: 'Bank transfer',
+      value: '', hint: 'رقم الحساب / الآيبان' }
+  ];
+  var FAT_PAY_NOTE = 'بعد التحويل املا البيانات تحت وابعتلنا — هنفعّل اشتراكك خلال ساعات العمل.';
+  /* ══════════════════════════════════════════════════════ */
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  // خصومات المدة (نفس المعلن في صفحة الباقات)
+  var FAT_TERMS = [
+    { m: 1, off: 0, ar: 'شهر', en: '1 month' },
+    { m: 6, off: 0.10, ar: '٦ شهور', en: '6 months' },
+    { m: 12, off: 0.20, ar: 'سنة', en: '1 year' },
+    { m: 24, off: 0.30, ar: 'سنتين', en: '2 years' }
+  ];
+
+  window.fatPlans = function () {
+    try {
+      if (typeof PRICING_PLANS !== 'undefined' && PRICING_PLANS && PRICING_PLANS.length) {
+        return PRICING_PLANS.filter(function (p) { return (+p.price || 0) > 0; });
+      }
+    } catch (e) {}
+    return [
+      { key: 'starter', ar: 'Starter', name: 'Starter', price: 299 },
+      { key: 'growth', ar: 'Growth', name: 'Growth', price: 699 },
+      { key: 'pro', ar: 'Pro', name: 'Pro', price: 1499 }
+    ];
+  };
+
+  window.fatPayMethods = function () {
+    return FAT_PAY_METHODS.filter(function (m) { return String(m.value || '').trim(); });
+  };
+
+  window.fatSalesWA = function () {
+    try { if (typeof SALES_WHATSAPP !== 'undefined' && SALES_WHATSAPP) return String(SALES_WHATSAPP); } catch (e) {}
+    return '201012364189';
+  };
+
+  // حالة الاشتراك الحالية — بتشتغل في الوضع السحابي والأوفلاين
+  window.fatSubState = function () {
+    var st = { mode: 'none', plan: '', label: '', days: null, expiry: '', status: '', device: '' };
+    try {
+      if (typeof SUB !== 'undefined' && SUB) {
+        st.mode = 'cloud';
+        st.status = SUB.status || '';
+        st.plan = SUB.plan || '';
+        try { if (typeof PLAN_LABEL !== 'undefined') st.label = PLAN_LABEL[st.plan] || st.plan; } catch (e) { st.label = st.plan; }
+        try { if (typeof subDaysLeft === 'function') st.days = subDaysLeft(); } catch (e) {}
+        st.expiry = SUB.current_period_end || SUB.expires_at || SUB.expiry || '';
+        return st;
+      }
+    } catch (e) {}
+    try {
+      var raw = localStorage.getItem('fat_license');
+      if (raw) {
+        var lic = JSON.parse(raw);
+        st.mode = 'license';
+        st.plan = lic.plan || '';
+        try { st.label = (typeof fatPlanName === 'function') ? fatPlanName(lic.plan) : lic.plan; } catch (e) {}
+        try { st.days = (typeof fatLicenseDaysLeft === 'function') ? fatLicenseDaysLeft(lic) : null; } catch (e) {}
+        try {
+          var d = (typeof fatLicenseExpiryDate === 'function') ? fatLicenseExpiryDate(lic) : null;
+          if (d) st.expiry = d.toISOString().slice(0, 10);
+        } catch (e) {}
+      }
+      try { if (typeof fatDeviceId === 'function') st.device = fatDeviceId(); } catch (e) {}
+    } catch (e) {}
+    return st;
+  };
+
+  window.fatCopy = function (txt, btn) {
+    var done = function () {
+      if (!btn) return;
+      var o = btn.innerHTML;
+      btn.innerHTML = '✅ ' + L('اتنسخ', 'Copied');
+      setTimeout(function () { btn.innerHTML = o; }, 1600);
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(String(txt)).then(done)['catch'](function () { fallback(); });
+        return;
+      }
+    } catch (e) {}
+    fallback();
+    function fallback() {
+      try {
+        var t = document.createElement('textarea');
+        t.value = String(txt);
+        t.style.cssText = 'position:fixed;opacity:0';
+        document.body.appendChild(t); t.select();
+        document.execCommand('copy');
+        document.body.removeChild(t);
+        done();
+      } catch (e2) { toast(L('انسخ الرقم يدويًا', 'Please copy manually'), 'err'); }
+    }
+  };
+
+  /* ═══════════ حاسبة السعر ═══════════ */
+  window._rnPlan = null;
+  window._rnTerm = 12;
+
+  window.fatRenewCalc = function () {
+    var plans = window.fatPlans();
+    var pk = window._rnPlan || (plans[0] && plans[0].key);
+    var p = null;
+    for (var i = 0; i < plans.length; i++) if (plans[i].key === pk) p = plans[i];
+    if (!p) p = plans[0] || { price: 0, ar: '', key: '' };
+    var t = null;
+    for (var j = 0; j < FAT_TERMS.length; j++) if (FAT_TERMS[j].m === window._rnTerm) t = FAT_TERMS[j];
+    if (!t) t = FAT_TERMS[0];
+    var gross = R2((+p.price || 0) * t.m);
+    var disc = R2(gross * t.off);
+    return {
+      plan: p, term: t, gross: gross, disc: disc, net: R2(gross - disc),
+      planName: L(p.ar || p.key, p.name || p.key),
+      termName: L(t.ar, t.en)
+    };
+  };
+
+  window.fatRenewSet = function (k, v) {
+    if (k === 'plan') window._rnPlan = v; else window._rnTerm = +v || 1;
+    window.fatRenewRender();
+  };
+
+  window.fatRenewRender = function () {
+    var box = document.getElementById('rnCalc');
+    if (!box) return;
+    var c = window.fatRenewCalc();
+    var plans = window.fatPlans();
+
+    box.innerHTML =
+      '<div class="field"><label>' + L('الباقة', 'Plan') + '</label>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+      plans.map(function (p) {
+        var on = (c.plan.key === p.key);
+        return '<button type="button" class="btn ' + (on ? 'btn-primary' : 'btn-ghost') + ' btn-sm" ' +
+          'onclick="fatRenewSet(\'plan\',\'' + p.key + '\')">' +
+          L(p.ar || p.key, p.name || p.key) + ' · ' + money(+p.price || 0) + '/' + L('شهر', 'mo') + '</button>';
+      }).join('') + '</div></div>' +
+
+      '<div class="field"><label>' + L('المدة', 'Duration') + '</label>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+      FAT_TERMS.map(function (t) {
+        var on = (c.term.m === t.m);
+        return '<button type="button" class="btn ' + (on ? 'btn-primary' : 'btn-ghost') + ' btn-sm" ' +
+          'onclick="fatRenewSet(\'term\',' + t.m + ')">' + L(t.ar, t.en) +
+          (t.off ? ' <b style="color:' + (on ? '#fff' : 'var(--ok)') + '">−' + Math.round(t.off * 100) + '%</b>' : '') +
+          '</button>';
+      }).join('') + '</div></div>' +
+
+      '<div style="background:var(--primary-soft);border-radius:12px;padding:16px;margin-top:4px">' +
+      (c.disc > 0
+        ? '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted)">' +
+          '<span>' + money(c.plan.price) + ' × ' + c.term.m + ' ' + L('شهر', 'mo') + '</span><span>' + money(c.gross) + '</span></div>' +
+          '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--ok);margin-top:4px">' +
+          '<span>' + L('خصم', 'Discount') + ' ' + Math.round(c.term.off * 100) + '%</span><span>−' + money(c.disc) + '</span></div>' +
+          '<div style="border-top:1px solid var(--line);margin:10px 0"></div>'
+        : '') +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline">' +
+      '<b style="font-size:14px">' + L('المبلغ المطلوب', 'Amount due') + '</b>' +
+      '<b style="font-size:24px;color:var(--primary)">' + money(c.net) + '</b></div></div>';
+
+    var amt = document.getElementById('rn_amount');
+    if (amt && !amt.dataset.touched) amt.value = c.net;
+  };
+
+  /* ═══════════ إرسال إثبات التحويل ═══════════ */
+  window.fatRenewSubmit = function () {
+    var g = function (id) { var e = document.getElementById(id); return e ? String(e.value || '').trim() : ''; };
+    var method = g('rn_method'), amount = +g('rn_amount') || 0, ref = g('rn_ref'), date = g('rn_date') || today();
+    if (!amount) return toast(L('اكتب المبلغ اللي حوّلته', 'Enter the amount you transferred'), 'err');
+    if (!ref) return toast(L('اكتب رقم العملية أو آخر ٤ أرقام من الرقم اللي حوّلت منه',
+      'Enter the transaction reference or last 4 digits'), 'err');
+
+    var c = window.fatRenewCalc();
+    var st = window.fatSubState();
+    var shop = '';
+    try { shop = (db.settings && db.settings.company) || ''; } catch (e) {}
+    var email = '';
+    try { email = (typeof CURRENT_EMAIL !== 'undefined' && CURRENT_EMAIL) || ''; } catch (e) {}
+    if (!email) { try { email = (db.settings && db.settings.email) || ''; } catch (e) {} }
+
+    var mLabel = method;
+    window.fatPayMethods().forEach(function (m) { if (m.key === method) mLabel = L(m.label, m.labelEn); });
+
+    var claim = {
+      id: (typeof uid === 'function' ? uid() : String(Date.now())),
+      date: today(), ts: new Date().toISOString(),
+      shop: shop, email: email,
+      plan: c.plan.key, planName: c.planName, months: c.term.m,
+      amount: R2(amount), expected: c.net,
+      method: method, methodLabel: mLabel, ref: ref, transferDate: date,
+      status: 'sent'
+    };
+    try {
+      db.payClaims = db.payClaims || [];
+      db.payClaims.push(claim);
+      save();
+    } catch (e) {}
+    try { logAudit(L('إبلاغ بتحويل اشتراك', 'Subscription payment reported'), c.planName + ' — ' + money(amount) + ' — ' + ref); } catch (e) {}
+
+    var msg =
+      '💳 *' + L('إبلاغ بتحويل — تجديد اشتراك فاتورتي', 'Payment notice — Fatorty subscription') + '*\n' +
+      '───────────────\n' +
+      '🏪 ' + L('المحل', 'Shop') + ': ' + (shop || '—') + '\n' +
+      (email ? ('📧 ' + L('الإيميل', 'Email') + ': ' + email + '\n') : '') +
+      (st.device ? ('🖥️ ' + L('كود الجهاز', 'Device ID') + ': ' + st.device + '\n') : '') +
+      '───────────────\n' +
+      '📦 ' + L('الباقة المطلوبة', 'Requested plan') + ': *' + c.planName + '*\n' +
+      '📅 ' + L('المدة', 'Duration') + ': ' + c.termName + ' (' + c.term.m + ' ' + L('شهر', 'months') + ')\n' +
+      '💰 ' + L('المبلغ المستحق', 'Amount due') + ': ' + money(c.net) + '\n' +
+      '───────────────\n' +
+      '✅ ' + L('المبلغ المحوّل', 'Amount transferred') + ': *' + money(amount) + '*\n' +
+      '🏦 ' + L('الوسيلة', 'Method') + ': ' + mLabel + '\n' +
+      '🔢 ' + L('رقم العملية / آخر ٤ أرقام', 'Reference / last 4') + ': *' + ref + '*\n' +
+      '🗓️ ' + L('تاريخ التحويل', 'Transfer date') + ': ' + date + '\n' +
+      '───────────────\n' +
+      (Math.abs(amount - c.net) > 0.5
+        ? ('⚠️ ' + L('المبلغ المحوّل مختلف عن المستحق', 'Transferred amount differs from due') + '\n')
+        : '') +
+      L('برجاء تفعيل الاشتراك. شكرًا 🌿', 'Please activate the subscription. Thank you 🌿');
+
+    try {
+      window.open('https://wa.me/' + window.fatSalesWA() + '?text=' + encodeURIComponent(msg), '_blank');
+    } catch (e) {}
+
+    try { closeModal(); } catch (e) {}
+    toast('✅ ' + L('اتبعت! هنفعّل اشتراكك في أقرب وقت', 'Sent! We will activate shortly'));
+    try { if (current === 'renew') views.renew(); } catch (e) {}
+  };
+
+  /* ═══════════ الشاشة ═══════════ */
+  try {
+    PG.renew = [
+      ['تجديد الاشتراك', 'ادفع وجدّد اشتراكك في فاتورتي'],
+      ['Renew Subscription', 'Pay and renew your Fatorty subscription']
+    ];
+    var _cvR = window.canView;
+    window.canView = function (v) {
+      if (v === 'renew') return _cvR('settings') || _cvR('reports');
+      return _cvR(v);
+    };
+  } catch (e) {}
+
+  views.renew = function () {
+    var st = window.fatSubState();
+    var methods = window.fatPayMethods();
+    document.getElementById('topActions').innerHTML = '';
+
+    var statusCard = '';
+    if (st.mode !== 'none') {
+      var col = (st.days === null || st.days < 0) ? 'var(--danger)'
+        : (st.days <= 7 ? '#b7791f' : 'var(--ok)');
+      var txt = (st.days === null) ? L('نشط', 'Active')
+        : (st.days < 0 ? L('منتهي', 'Expired')
+          : (st.days + ' ' + L('يوم متبقي', 'days left')));
+      statusCard =
+        '<div class="panel" style="margin-bottom:16px"><div class="panel-b pad">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">' +
+        '<div><div style="font-size:12px;color:var(--muted)">' + L('اشتراكك الحالي', 'Your subscription') + '</div>' +
+        '<div style="font-size:19px;font-weight:800;margin-top:2px">' + esc(st.label || '—') + '</div>' +
+        (st.expiry ? '<div style="font-size:12px;color:var(--muted);margin-top:2px">' +
+          L('ينتهي في', 'Expires') + ' ' + esc(st.expiry) + '</div>' : '') + '</div>' +
+        '<div style="font-size:17px;font-weight:800;color:' + col + '">' + txt + '</div>' +
+        '</div></div></div>';
+    }
+
+    var payBox = methods.length
+      ? '<div class="panel" style="margin-bottom:16px"><div class="panel-h"><h3>🏦 ' +
+        L('حوّل على أي وسيلة من دول', 'Transfer using any of these') + '</h3></div><div class="panel-b pad">' +
+        methods.map(function (m) {
+          var v = String(m.value).replace(/'/g, "\\'");
+          return '<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)">' +
+            '<div style="font-size:24px">' + m.icon + '</div>' +
+            '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:12px;color:var(--muted)">' + L(m.label, m.labelEn) + '</div>' +
+            '<div style="font-size:16px;font-weight:800;font-family:monospace;word-break:break-all">' + esc(m.value) + '</div>' +
+            (m.hint ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + esc(m.hint) + '</div>' : '') +
+            '</div>' +
+            '<button class="btn btn-ghost btn-sm" onclick="fatCopy(\'' + v + '\',this)">📋 ' + L('نسخ', 'Copy') + '</button>' +
+            '</div>';
+        }).join('') +
+        '<div class="hint" style="margin-top:12px">💡 ' + esc(FAT_PAY_NOTE) + '</div>' +
+        '</div></div>'
+      : '<div class="panel" style="margin-bottom:16px"><div class="panel-b pad">' +
+        '<div class="hint" style="color:var(--danger)">⚠️ ' +
+        L('بيانات التحويل مش متسجّلة لسه. كلّمنا على واتساب وهنبعتهالك.',
+          'Payment details are not configured yet. Contact us on WhatsApp.') + '</div>' +
+        '<button class="btn btn-primary" style="margin-top:10px" onclick="fatRenewWA()">💬 ' +
+        L('كلّمنا على واتساب', 'Contact us on WhatsApp') + '</button></div></div>';
+
+    var form = methods.length
+      ? '<div class="panel"><div class="panel-h"><h3>✅ ' + L('بعد ما تحوّل، بلّغنا', 'After transferring, notify us') +
+        '</h3></div><div class="panel-b pad">' +
+        '<div class="grid2">' +
+        '<div class="field"><label>' + L('الوسيلة اللي حوّلت بيها', 'Method used') + '</label>' +
+        '<select id="rn_method">' + methods.map(function (m) {
+          return '<option value="' + m.key + '">' + m.icon + ' ' + L(m.label, m.labelEn) + '</option>';
+        }).join('') + '</select></div>' +
+        '<div class="field"><label>' + L('المبلغ اللي حوّلته', 'Amount transferred') + '</label>' +
+        '<input id="rn_amount" type="number" step="any" min="0" oninput="this.dataset.touched=1"></div>' +
+        '</div><div class="grid2">' +
+        '<div class="field"><label>' + L('رقم العملية / آخر ٤ أرقام', 'Reference / last 4 digits') + '</label>' +
+        '<input id="rn_ref" placeholder="' + L('مثال: 8421', 'e.g. 8421') + '"></div>' +
+        '<div class="field"><label>' + L('تاريخ التحويل', 'Transfer date') + '</label>' +
+        '<input id="rn_date" type="date" value="' + today() + '"></div>' +
+        '</div>' +
+        '<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:6px" onclick="fatRenewSubmit()">' +
+        '📤 ' + L('أبلغنا بالتحويل', 'Send payment notice') + '</button>' +
+        '<div class="hint" style="margin-top:10px">' +
+        L('الرسالة هتتبعت على واتساب فيها كل بياناتك جاهزة — مش محتاج تكتب حاجة.',
+          'A WhatsApp message with all your details will be prepared automatically.') + '</div>' +
+        '</div></div>'
+      : '';
+
+    var hist = '';
+    try {
+      var pcs = (db.payClaims || []).slice().reverse().slice(0, 8);
+      if (pcs.length) {
+        hist = '<div class="panel" style="margin-top:16px"><div class="panel-h"><h3>📜 ' +
+          L('تحويلاتك السابقة', 'Your previous notices') + '</h3></div><div class="panel-b">' +
+          '<table><thead><tr><th>' + L('التاريخ', 'Date') + '</th><th>' + L('الباقة', 'Plan') + '</th><th>' +
+          L('المبلغ', 'Amount') + '</th><th>' + L('المرجع', 'Ref') + '</th></tr></thead><tbody>' +
+          pcs.map(function (p) {
+            return '<tr><td>' + esc(p.date) + '</td><td>' + esc(p.planName || '') + ' · ' + (p.months || 1) +
+              L('ش', 'm') + '</td><td class="t-num">' + money(p.amount) + '</td><td>' + esc(p.ref || '') + '</td></tr>';
+          }).join('') + '</tbody></table></div></div>';
+      }
+    } catch (e) {}
+
+    document.getElementById('content').innerHTML =
+      '<div style="max-width:720px">' + statusCard +
+      '<div class="panel" style="margin-bottom:16px"><div class="panel-h"><h3>💎 ' +
+      L('اختار باقتك ومدتها', 'Choose your plan and duration') + '</h3></div>' +
+      '<div class="panel-b pad"><div id="rnCalc"></div></div></div>' +
+      payBox + form + hist + '</div>';
+
+    window.fatRenewRender();
+  };
+
+  window.fatRenewWA = function () {
+    var shop = '';
+    try { shop = (db.settings && db.settings.company) || ''; } catch (e) {}
+    var c = window.fatRenewCalc();
+    var msg = L('السلام عليكم، عايز أجدّد اشتراك فاتورتي.', 'Hello, I would like to renew my Fatorty subscription.') +
+      '\n' + L('المحل', 'Shop') + ': ' + (shop || '—') +
+      '\n' + L('الباقة', 'Plan') + ': ' + c.planName + ' — ' + c.termName +
+      '\n' + L('المبلغ', 'Amount') + ': ' + money(c.net);
+    try { window.open('https://wa.me/' + window.fatSalesWA() + '?text=' + encodeURIComponent(msg), '_blank'); } catch (e) {}
+  };
+
+  // نافذة سريعة — بتشتغل حتى لو النظام مقفول بشاشة انتهاء الاشتراك
+  window.fatRenewModal = function () {
+    openModal('<div class="modal-h"><h3>💳 ' + L('تجديد الاشتراك', 'Renew subscription') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div>' +
+      '<div class="modal-b" id="rnModalBody"></div>');
+    var b = document.getElementById('rnModalBody');
+    if (!b) return;
+    var methods = window.fatPayMethods();
+    b.innerHTML = '<div id="rnCalc"></div>' +
+      (methods.length
+        ? '<div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">' +
+          '<b style="font-size:13px">🏦 ' + L('حوّل على', 'Transfer to') + '</b>' +
+          methods.map(function (m) {
+            var v = String(m.value).replace(/'/g, "\\'");
+            return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)">' +
+              '<div style="font-size:20px">' + m.icon + '</div><div style="flex:1;min-width:0">' +
+              '<div style="font-size:11.5px;color:var(--muted)">' + L(m.label, m.labelEn) + '</div>' +
+              '<div style="font-size:15px;font-weight:800;font-family:monospace;word-break:break-all">' + esc(m.value) + '</div></div>' +
+              '<button class="btn btn-ghost btn-sm" onclick="fatCopy(\'' + v + '\',this)">📋</button></div>';
+          }).join('') +
+          '<div class="grid2" style="margin-top:12px">' +
+          '<div class="field"><label>' + L('الوسيلة', 'Method') + '</label><select id="rn_method">' +
+          methods.map(function (m) { return '<option value="' + m.key + '">' + L(m.label, m.labelEn) + '</option>'; }).join('') +
+          '</select></div>' +
+          '<div class="field"><label>' + L('المبلغ المحوّل', 'Amount') + '</label>' +
+          '<input id="rn_amount" type="number" step="any" oninput="this.dataset.touched=1"></div></div>' +
+          '<div class="grid2"><div class="field"><label>' + L('رقم العملية / آخر ٤ أرقام', 'Reference') + '</label>' +
+          '<input id="rn_ref"></div>' +
+          '<div class="field"><label>' + L('تاريخ التحويل', 'Date') + '</label>' +
+          '<input id="rn_date" type="date" value="' + today() + '"></div></div>' +
+          '<button class="btn btn-primary" style="width:100%;justify-content:center" onclick="fatRenewSubmit()">📤 ' +
+          L('أبلغنا بالتحويل', 'Send payment notice') + '</button></div>'
+        : '<div class="hint" style="margin-top:12px">' +
+          L('كلّمنا على واتساب وهنبعتلك بيانات التحويل.', 'Contact us on WhatsApp for payment details.') +
+          '</div><button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:10px" onclick="fatRenewWA()">💬 ' +
+          L('واتساب', 'WhatsApp') + '</button>');
+    window.fatRenewRender();
+  };
+
+  /* ═══════════ ربط المداخل الموجودة ═══════════ */
+
+  // زرار «اشترك» في صفحة الباقات بقى يفتح صفحة السداد بدل رسالة فاضية
+  (function () {
+    var _cu = window.contactUpgrade;
+    window.contactUpgrade = function (planKey) {
+      try {
+        window._rnPlan = planKey;
+        closeModal();
+        if (typeof canView === 'function' && canView('renew') && typeof go === 'function') { go('renew'); return; }
+        window.fatRenewModal();
+        return;
+      } catch (e) {}
+      if (typeof _cu === 'function') return _cu.apply(this, arguments);
+    };
+  })();
+
+  // شريط التنبيه السفلي بقى قابل للضغط لما الاشتراك قرّب يخلص
+  (function () {
+    var _rb = window.renderSubBanner;
+    if (typeof _rb !== 'function') return;
+    window.renderSubBanner = function () {
+      var r = _rb.apply(this, arguments);
+      try {
+        var el = document.getElementById('subBanner');
+        if (el && el.style.display !== 'none') {
+          el.style.cursor = 'pointer';
+          el.title = L('اضغط للتجديد', 'Click to renew');
+          el.onclick = function () {
+            try { if (typeof canView === 'function' && canView('renew')) { go('renew'); return; } } catch (e) {}
+            window.fatRenewModal();
+          };
+          if (el.textContent && el.textContent.indexOf('💳') < 0) el.textContent = el.textContent + '  ·  💳 ' + L('جدّد دلوقتي', 'Renew now');
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  // إضافة للقائمة الجانبية
+  function fatInjectRenewNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="renew"]')) return;
+      if (typeof canView === 'function' && !canView('renew')) return;
+      var anchor = nav.querySelector('a[data-view="settings"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'renew');
+      a.innerHTML = '<span class="ic">💳</span> ' + L('تجديد الاشتراك', 'Renew');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('renew'); };
+      anchor.parentNode.insertBefore(a, anchor);
+      if (typeof current !== 'undefined' && current === 'renew') a.classList.add('active');
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        fatInjectRenewNav();
+        return r;
+      };
+    }
+    setTimeout(fatInjectRenewNav, 1600);
+    setTimeout(fatInjectRenewNav, 4400);
+  })();
+
+  // زرار سداد في شاشة انتهاء الاشتراك (اللي بتقفل النظام)
+  setInterval(function () {
+    try {
+      var ov = document.querySelector('[id*="expired"], [id*="Expired"], [id*="subLock"]');
+      if (!ov || ov.querySelector('.fat-pay-btn')) return;
+      var host = ov.querySelector('div');
+      if (!host) return;
+      var b = document.createElement('button');
+      b.className = 'btn btn-primary fat-pay-btn';
+      b.style.cssText = 'justify-content:center;width:100%;margin-top:8px';
+      b.innerHTML = '💳 ' + L('سدّد وجدّد دلوقتي', 'Pay & renew now');
+      b.onclick = function () { window.fatRenewModal(); };
+      host.appendChild(b);
+    } catch (e) {}
+  }, 3000);
+
+})();
+
 </script>
 </body>
 </html>
