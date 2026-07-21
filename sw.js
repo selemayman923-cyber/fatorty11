@@ -1,11 +1,15 @@
-/* فاتورتي — Service Worker v11.0 (Network-First + تحديث تلقائي فوري) */
-const CACHE = 'fatorty-v11.0';
+/* فاتورتي — Service Worker v12.0
+   التغيير الكبير: بدل ما ننزّل التطبيق كامل من النت في كل مرة،
+   بنعرضه فورًا من الكاش وبنتأكد من التحديث في الخلفية.
+   النتيجة: الفتح بقى لحظي، والتحديث بيوصل من غير ما تستنى.  */
+const CACHE = 'fatorty-v12.0';
 const ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
   '/vendor/jsbarcode.min.js',
-  '/vendor/supabase.min.js'
+  '/vendor/supabase.min.js',
+  '/vendor/qrcode.min.js'
 ];
 /* صفحة أوفلاين نظيفة — تظهر فقط لو مفيش نت ومفيش نسخة محفوظة */
 const OFFLINE_HTML = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8">
@@ -21,8 +25,14 @@ button{background:#0f6b5c;color:#fff;border:none;border-radius:10px;padding:12px
 <button onclick="location.reload()">🔄 إعادة المحاولة</button></div></body></html>`;
 const offlineResponse = () =>
   new Response(OFFLINE_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-// التثبيت: خزّن الملفات الأساسية + فعّل نفسك فورًا (متستناش التاب يتقفل)
-// كل ملف بيتخزّن لوحده — لو ملف واحد فشل، الباقي بيتخزّن عادي (addAll كانت بتفشل كلها بملف واحد)
+
+// بلّغ كل التابات المفتوحة إن فيه نسخة جديدة جاهزة
+async function notifyUpdate() {
+  const list = await self.clients.matchAll({ type: 'window' });
+  list.forEach(c => { try { c.postMessage({ type: 'FATORTY_UPDATE_READY' }); } catch (e) {} });
+}
+
+// التثبيت: كل ملف لوحده — لو واحد فشل، الباقي بيتخزّن عادي
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE)
@@ -33,7 +43,8 @@ self.addEventListener('install', e => {
       .catch(() => self.skipWaiting())
   );
 });
-// التفعيل: امسح كل الكاش القديم + تحكم في كل التابات المفتوحة فورًا
+
+// التفعيل: امسح الكاش القديم + تحكم في كل التابات فورًا
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
@@ -41,32 +52,48 @@ self.addEventListener('activate', e => {
       .then(() => self.clients.claim())
   );
 });
+
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;
   const isAppShell = url.pathname === '/' || url.pathname === '/index.html';
+
   if (isAppShell) {
-    // NETWORK-FIRST بدون أي كاش HTTP وسيط — دايمًا يجيب أحدث نسخة فعليًا من السيرفر
+    /* STALE-WHILE-REVALIDATE
+       ١) اعرض من الكاش فورًا (فتح لحظي)
+       ٢) في نفس الوقت اسأل السيرفر: فيه جديد؟ الطلب ده شرطي —
+          لو مفيش تغيير السيرفر بيرد 304 من غير ما ينزّل حاجة
+       ٣) لو فيه جديد: خزّنه وبلّغ المستخدم */
     e.respondWith(
-      fetch(e.request, { cache: 'no-store' })
-        .then(res => {
-          if (res && res.status === 200) {
-            const clone = res.clone();
-            caches.open(CACHE).then(cache => cache.put('/index.html', clone));
-          }
-          return res;
+      caches.open(CACHE).then(cache =>
+        cache.match('/index.html').then(cached => {
+          const fresh = fetch(e.request)
+            .then(res => {
+              if (res && res.status === 200) {
+                const oldTag = cached && (cached.headers.get('etag') || cached.headers.get('last-modified'));
+                const newTag = res.headers.get('etag') || res.headers.get('last-modified');
+                cache.put('/index.html', res.clone());
+                if (cached && oldTag && newTag && oldTag !== newTag) notifyUpdate();
+                else if (cached && !oldTag && !newTag) {
+                  Promise.all([cached.clone().text(), res.clone().text()])
+                    .then(([a, b]) => { if (a !== b) notifyUpdate(); })
+                    .catch(() => {});
+                }
+              }
+              return res;
+            })
+            .catch(() => null);
+
+          // الكاش أولاً — لو مفيش، استنى الشبكة
+          return cached || fresh.then(r => r || offlineResponse());
         })
-        .catch(() =>
-          caches.open(CACHE)
-            .then(cache => cache.match('/index.html'))
-            .then(cached => cached || offlineResponse())
-            .catch(() => offlineResponse())
-        )
+      ).catch(() => offlineResponse())
     );
     return;
   }
-  // باقي الملفات: cache-first مع fallback آمن (مفيش respondWith(undefined) أبدًا)
+
+  // باقي الملفات: من الكاش الأول مع fallback آمن
   e.respondWith(
     caches.match(e.request).then(cached =>
       cached || fetch(e.request).then(res => {
@@ -80,4 +107,9 @@ self.addEventListener('fetch', e => {
       )
     )
   );
+});
+
+// السماح للصفحة تطلب تفعيل النسخة الجديدة فورًا
+self.addEventListener('message', e => {
+  if (e.data && e.data.type === 'FATORTY_SKIP_WAITING') self.skipWaiting();
 });
