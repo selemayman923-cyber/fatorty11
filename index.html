@@ -23220,6 +23220,442 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
 })();
 
+
+/* ============================================================
+   FATORTY v9.3 — عمولة المندوبين (موظفي البيع)
+   مختلفة عن نظام «المسوّقين» الموجود:
+     • المسوّق = شخص برّه بيجيب عملاء بكود خصم
+     • المندوب = موظف عندك بياخد نسبة على اللي بيبيعه
+   بتتركّب فوق نظام الموظفين والخزينة الموجودين من غير ما تغيّر فيهم.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  window.fatCommEmps = function () {
+    try {
+      return (db.employees || []).filter(function (e) { return e && (+e.commRate || 0) > 0; });
+    } catch (e) { return []; }
+  };
+
+  window.fatCommBaseOf = function (s, emp) {
+    var base = (emp && emp.commBase) || 'net';
+    if (base === 'profit') return R2(+s.profit || 0);
+    if (base === 'total') return R2(+s.total || 0);
+    // الافتراضي: صافي البيع قبل الضريبة — الأعدل للطرفين
+    return R2((+s.total || 0) - (+s.vat || +s.tax || 0));
+  };
+
+  window.fatCommOfSale = function (s, emp) {
+    if (!s || !emp) return 0;
+    var rate = +emp.commRate || 0;
+    if (rate <= 0) return 0;
+    return R2(window.fatCommBaseOf(s, emp) * rate / 100);
+  };
+
+  // فواتير المندوب في فترة
+  window.fatCommSales = function (empId, from, to) {
+    var out = [];
+    try {
+      var sales = db.sales || [];
+      try { if (typeof bf === 'function') sales = bf(sales); } catch (e) {}
+      sales.forEach(function (s) {
+        if (!s || s.salesEmp !== empId) return;
+        if (s.voided || s.canceled) return;
+        if (from && s.date < from) return;
+        if (to && s.date > to) return;
+        out.push(s);
+      });
+    } catch (e) {}
+    out.sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
+    return out;
+  };
+
+  window.fatCommStats = function (empId, from, to) {
+    var emp = (db.employees || []).filter(function (e) { return e.id === empId; })[0];
+    var st = { emp: emp, count: 0, sales: 0, profit: 0, earned: 0, paid: 0, due: 0 };
+    if (!emp) return st;
+    window.fatCommSales(empId, from, to).forEach(function (s) {
+      st.count++;
+      st.sales = R2(st.sales + (+s.total || 0));
+      st.profit = R2(st.profit + (+s.profit || 0));
+      st.earned = R2(st.earned + window.fatCommOfSale(s, emp));
+    });
+    (emp.commPayments || []).forEach(function (p) {
+      if (from && p.date < from) return;
+      if (to && p.date > to) return;
+      st.paid = R2(st.paid + (+p.amount || 0));
+    });
+    st.due = R2(st.earned - st.paid);
+    return st;
+  };
+
+  /* ═══════════ ١) اختيار المندوب في الكاشير ═══════════ */
+
+  window._posEmp = '';
+
+  function injectPosEmp() {
+    try {
+      if (document.getElementById('posSalesEmp')) return;
+      var emps = window.fatCommEmps();
+      if (!emps.length) return;
+      var host = document.getElementById('posCustomer');
+      if (!host || !host.parentNode) return;
+
+      var wrap = document.createElement('div');
+      wrap.style.cssText = 'margin-top:7px';
+      wrap.innerHTML = '<select id="posSalesEmp" onchange="fatPosEmpSet(this.value)" ' +
+        'style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;' +
+        'background:var(--panel);color:var(--ink);font-size:12.5px;font-family:inherit">' +
+        '<option value="">👤 ' + L('من غير مندوب', 'No salesperson') + '</option>' +
+        emps.map(function (e) {
+          return '<option value="' + e.id + '"' + (window._posEmp === e.id ? ' selected' : '') + '>🧑‍💼 ' +
+            esc(e.name) + ' (' + (+e.commRate || 0) + '%)</option>';
+        }).join('') + '</select>';
+      host.parentNode.insertBefore(wrap, host.nextSibling);
+    } catch (e) {}
+  }
+
+  window.fatPosEmpSet = function (v) {
+    window._posEmp = v || '';
+    try { sessionStorage.setItem('fat_pos_emp', window._posEmp); } catch (e) {}
+  };
+
+  try {
+    var saved = sessionStorage.getItem('fat_pos_emp');
+    if (saved) window._posEmp = saved;
+  } catch (e) {}
+
+  (function () {
+    var _vp = views.pos;
+    if (typeof _vp !== 'function') return;
+    views.pos = function () {
+      var r = _vp.apply(this, arguments);
+      setTimeout(injectPosEmp, 60);
+      return r;
+    };
+  })();
+  setTimeout(injectPosEmp, 3200);
+
+  // وسم الفاتورة بالمندوب
+  (function () {
+    var _co = window.posCheckout;
+    if (typeof _co !== 'function') return;
+    window.posCheckout = function () {
+      var emp = window._posEmp || '';
+      var before = (db.sales || []).length;
+      var r = _co.apply(this, arguments);
+      try {
+        if (emp && (db.sales || []).length > before) {
+          for (var i = before; i < db.sales.length; i++) {
+            db.sales[i].salesEmp = emp;
+            var e = (db.employees || []).filter(function (x) { return x.id === emp; })[0];
+            if (e) {
+              db.sales[i].salesEmpName = e.name;
+              db.sales[i].commRate = +e.commRate || 0;
+              db.sales[i].commAmt = window.fatCommOfSale(db.sales[i], e);
+            }
+          }
+          save();
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  /* ═══════════ ٢) إعداد نسبة الموظف ═══════════ */
+
+  window.fatCommSet = function (empId) {
+    var e = (db.employees || []).filter(function (x) { return x.id === empId; })[0];
+    if (!e) return;
+    openModal('<div class="modal-h"><h3>🧑‍💼 ' + L('عمولة', 'Commission') + ' — ' + esc(e.name) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('نسبة العمولة %', 'Commission rate %') + '</label>' +
+      '<input id="cm_rate" type="number" step="any" min="0" max="100" value="' + (+e.commRate || '') + '"></div>' +
+      '<div class="field"><label>' + L('محسوبة على', 'Calculated on') + '</label>' +
+      '<select id="cm_base">' +
+      '<option value="net"' + ((e.commBase || 'net') === 'net' ? ' selected' : '') + '>' +
+      L('صافي البيع (قبل الضريبة)', 'Net sales (before tax)') + '</option>' +
+      '<option value="total"' + (e.commBase === 'total' ? ' selected' : '') + '>' +
+      L('إجمالي الفاتورة', 'Invoice total') + '</option>' +
+      '<option value="profit"' + (e.commBase === 'profit' ? ' selected' : '') + '>' +
+      L('الربح', 'Profit') + '</option>' +
+      '</select></div></div>' +
+      '<div class="hint">💡 <b>' + L('أنهي أساس أحسن؟', 'Which base?') + '</b><br>' +
+      L('«الربح» بيحمي هامشك — المندوب مبياخدش عمولة على بيعة بخسارة. «صافي البيع» أسهل في الفهم وأشهر في السوق.',
+        'Profit protects your margin. Net sales is simpler and more common.') + '</div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatCommSetSave(\'' + e.id + '\')">' + L('حفظ', 'Save') + '</button>' +
+      (e.commRate ? '<button class="btn btn-ghost" onclick="fatCommClear(\'' + e.id + '\')">' + L('شيل العمولة', 'Remove') + '</button>' : '') +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatCommSetSave = function (empId) {
+    var e = (db.employees || []).filter(function (x) { return x.id === empId; })[0];
+    if (!e) return;
+    var r = document.getElementById('cm_rate'), b = document.getElementById('cm_base');
+    var rate = r ? +r.value || 0 : 0;
+    if (rate < 0 || rate > 100) return toast(L('النسبة لازم بين ٠ و ١٠٠', 'Rate must be 0–100'), 'err');
+    e.commRate = rate;
+    e.commBase = b ? b.value : 'net';
+    save(); closeModal();
+    try { logAudit(L('تحديد عمولة', 'Set commission'), e.name + ' — ' + rate + '%'); } catch (er) {}
+    toast('✅ ' + L('اتحفظ', 'Saved'));
+    try { if (current === 'commissions') views.commissions(); } catch (er) {}
+  };
+
+  window.fatCommClear = function (empId) {
+    var e = (db.employees || []).filter(function (x) { return x.id === empId; })[0];
+    if (!e) return;
+    delete e.commRate; delete e.commBase;
+    save(); closeModal();
+    toast(L('اتشالت', 'Removed'));
+    try { if (current === 'commissions') views.commissions(); } catch (er) {}
+  };
+
+  /* ═══════════ ٣) صرف العمولة ═══════════ */
+
+  window.fatCommPay = function (empId) {
+    var e = (db.employees || []).filter(function (x) { return x.id === empId; })[0];
+    if (!e) return;
+    var st = window.fatCommStats(empId, window._cmFrom, window._cmTo);
+    if (st.due <= 0.009) return toast(L('مفيش عمولة مستحقة', 'No commission due'), 'err');
+
+    Promise.resolve(promptBox(
+      L('صرف عمولة', 'Pay commission') + ' — ' + e.name + '\n' +
+      L('المستحق', 'Due') + ': ' + money(st.due) + '\n' +
+      L('اكتب المبلغ المصروف:', 'Amount to pay:'),
+      { value: st.due, type: 'number' }
+    )).then(function (v) {
+      if (v === null) return;
+      var amt = R2(+v || 0);
+      if (amt <= 0) return;
+      if (amt > st.due + 0.009) return toast(L('أكبر من المستحق', 'More than due'), 'err');
+
+      var doPay = function (acct) {
+        try {
+          e.commPayments = e.commPayments || [];
+          e.commPayments.push({
+            id: (typeof uid === 'function' ? uid() : String(Date.now())),
+            date: today(), ts: new Date().toISOString(),
+            amount: amt, from: window._cmFrom || '', to: window._cmTo || '',
+            user: (typeof currentUserName === 'function' ? currentUserName() : '')
+          });
+          try { addCash('out', amt, L('عمولة مندوب', 'Sales commission') + ': ' + e.name, null, acct); } catch (er) {}
+          try { logAudit(L('صرف عمولة', 'Commission paid'), e.name + ' — ' + money(amt)); } catch (er) {}
+          save();
+          toast('💸 ' + L('اتصرفت', 'Paid') + ' ' + money(amt));
+          try { if (current === 'commissions') views.commissions(); } catch (er) {}
+        } catch (er) {}
+      };
+
+      try {
+        if (typeof fatAskAccount === 'function') {
+          Promise.resolve(fatAskAccount(L('العمولة تتصرف من', 'Pay from'), 'cash')).then(function (a) {
+            if (a === null) return;
+            doPay(a);
+          });
+          return;
+        }
+      } catch (er) {}
+      doPay('cash');
+    });
+  };
+
+  /* ═══════════ ٤) كشف حساب المندوب ═══════════ */
+
+  window.fatCommStatement = function (empId) {
+    var e = (db.employees || []).filter(function (x) { return x.id === empId; })[0];
+    if (!e) return;
+    var sales = window.fatCommSales(empId, window._cmFrom, window._cmTo);
+    var st = window.fatCommStats(empId, window._cmFrom, window._cmTo);
+
+    openModal('<div class="modal-h"><h3>📄 ' + L('كشف حساب', 'Statement') + ' — ' + esc(e.name) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="cards" style="margin-bottom:14px">' +
+      '<div class="card"><div class="lbl">' + L('فواتير', 'Invoices') + '</div><div class="val">' + st.count + '</div></div>' +
+      '<div class="card"><div class="lbl">' + L('مبيعاته', 'His sales') + '</div><div class="val">' + money(st.sales) + '</div></div>' +
+      '<div class="card"><div class="lbl">' + L('عمولته', 'Earned') + '</div><div class="val" style="color:var(--ok)">' + money(st.earned) + '</div></div>' +
+      '<div class="card"><div class="lbl">' + L('المتبقي له', 'Outstanding') + '</div><div class="val" style="color:var(--danger)">' + money(st.due) + '</div></div>' +
+      '</div>' +
+      (sales.length
+        ? '<table><thead><tr><th>' + L('التاريخ', 'Date') + '</th><th>' + L('الفاتورة', 'Invoice') + '</th>' +
+          '<th>' + L('العميل', 'Customer') + '</th><th>' + L('الإجمالي', 'Total') + '</th>' +
+          '<th>' + L('العمولة', 'Commission') + '</th></tr></thead><tbody>' +
+          sales.slice(0, 200).map(function (s) {
+            return '<tr><td>' + esc(s.date) + '</td><td>#' + esc(s.no) + '</td>' +
+              '<td>' + esc(s.customerName || L('نقدي', 'Cash')) + '</td>' +
+              '<td class="t-num">' + money(s.total) + '</td>' +
+              '<td class="t-num" style="color:var(--ok)">' + money(window.fatCommOfSale(s, e)) + '</td></tr>';
+          }).join('') + '</tbody></table>'
+        : '<div class="empty"><span class="big">📄</span>' + L('مفيش مبيعات في الفترة', 'No sales in this period') + '</div>') +
+      ((e.commPayments || []).length
+        ? '<div style="margin-top:16px"><b style="font-size:13px">💸 ' + L('المصروف', 'Payments') + '</b>' +
+          '<table style="margin-top:6px"><tbody>' +
+          (e.commPayments || []).slice().reverse().slice(0, 20).map(function (p) {
+            return '<tr><td>' + esc(p.date) + '</td><td class="t-num">' + money(p.amount) + '</td>' +
+              '<td style="font-size:11.5px;color:var(--muted)">' + esc(p.user || '') + '</td></tr>';
+          }).join('') + '</tbody></table></div>'
+        : '') +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-ghost" onclick="window.print()">🖨️ ' + L('طباعة', 'Print') + '</button>' +
+      '<button class="btn btn-primary" onclick="closeModal()">' + L('إغلاق', 'Close') + '</button></div>');
+  };
+
+  /* ═══════════ ٥) الشاشة ═══════════ */
+
+  try {
+    PG.commissions = [
+      ['عمولات المندوبين', 'مين باع كام وليه كام'],
+      ['Sales Commissions', 'Who sold what and what they earned']
+    ];
+    var _cvC = window.canView;
+    window.canView = function (v) {
+      if (v === 'commissions') return _cvC('employees') || _cvC('reports');
+      return _cvC(v);
+    };
+  } catch (e) {}
+
+  window.fatCommRange = function () {
+    var f = document.getElementById('cm_from'), t = document.getElementById('cm_to');
+    window._cmFrom = f ? f.value : '';
+    window._cmTo = t ? t.value : '';
+    views.commissions();
+  };
+
+  window.fatCommCSV = function () {
+    var rows = [[L('المندوب', 'Salesperson'), L('النسبة', 'Rate'), L('الأساس', 'Base'),
+      L('فواتير', 'Invoices'), L('مبيعاته', 'Sales'), L('الربح', 'Profit'),
+      L('عمولته', 'Earned'), L('اتصرف', 'Paid'), L('المتبقي', 'Due')]];
+    window.fatCommEmps().forEach(function (e) {
+      var st = window.fatCommStats(e.id, window._cmFrom, window._cmTo);
+      rows.push([e.name, (+e.commRate || 0) + '%', e.commBase || 'net',
+        st.count, st.sales, st.profit, st.earned, st.paid, st.due]);
+    });
+    downloadCSV('commissions-' + today() + '.csv', rows);
+  };
+
+  views.commissions = function () {
+    var emps = window.fatCommEmps();
+    var all = (db.employees || []);
+    var from = window._cmFrom || '', to = window._cmTo || '';
+
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-ghost btn-sm no-print" onclick="fatCommCSV()">📊 CSV</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="window.print()">🖨️</button>';
+
+    if (!all.length) {
+      document.getElementById('content').innerHTML =
+        '<div class="panel" style="max-width:520px"><div class="panel-b pad" style="text-align:center;padding:36px">' +
+        '<div style="font-size:48px">🧑‍💼</div><h3 style="margin:12px 0 6px">' +
+        L('مفيش موظفين لسه', 'No employees yet') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.8">' +
+        L('ضيف موظفينك الأول، وبعدين حدّد نسبة عمولة لكل مندوب.', 'Add your employees first, then set a rate for each.') +
+        '</p><button class="btn btn-primary" style="margin-top:14px" onclick="go(\'employees\')">👥 ' +
+        L('الموظفين', 'Employees') + '</button></div></div>';
+      return;
+    }
+
+    var totEarn = 0, totDue = 0, totSales = 0;
+    emps.forEach(function (e) {
+      var st = window.fatCommStats(e.id, from, to);
+      totEarn = R2(totEarn + st.earned); totDue = R2(totDue + st.due); totSales = R2(totSales + st.sales);
+    });
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">🧑‍💼</div><div class="lbl">' + L('مندوبين', 'Salespeople') +
+      '</div><div class="val">' + emps.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">💰</div><div class="lbl">' + L('مبيعاتهم', 'Their sales') +
+      '</div><div class="val">' + money(totSales) + '</div></div>' +
+      '<div class="card"><div class="ic-bg">🎯</div><div class="lbl">' + L('إجمالي العمولات', 'Total earned') +
+      '</div><div class="val" style="color:var(--ok)">' + money(totEarn) + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⏳</div><div class="lbl">' + L('مستحق للصرف', 'Outstanding') +
+      '</div><div class="val" style="color:var(--danger)">' + money(totDue) + '</div></div>' +
+      '</div>';
+
+    var filter = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:14px 0 12px" class="no-print">' +
+      '<div class="field" style="margin:0"><label style="font-size:11.5px">' + L('من', 'From') + '</label>' +
+      '<input id="cm_from" type="date" value="' + esc(from) + '" onchange="fatCommRange()"></div>' +
+      '<div class="field" style="margin:0"><label style="font-size:11.5px">' + L('إلى', 'To') + '</label>' +
+      '<input id="cm_to" type="date" value="' + esc(to) + '" onchange="fatCommRange()"></div>' +
+      (from || to ? '<button class="btn btn-ghost btn-sm" onclick="window._cmFrom=\'\';window._cmTo=\'\';views.commissions()">' +
+        L('كل الفترات', 'All time') + '</button>' : '') + '</div>';
+
+    var table = '<table><thead><tr><th>' + L('الموظف', 'Employee') + '</th><th>' + L('النسبة', 'Rate') + '</th>' +
+      '<th>' + L('فواتير', 'Invoices') + '</th><th>' + L('مبيعاته', 'Sales') + '</th>' +
+      '<th>' + L('عمولته', 'Earned') + '</th><th>' + L('اتصرف', 'Paid') + '</th>' +
+      '<th>' + L('المتبقي', 'Due') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+      all.map(function (e) {
+        var st = window.fatCommStats(e.id, from, to);
+        var on = (+e.commRate || 0) > 0;
+        var baseLbl = e.commBase === 'profit' ? L('الربح', 'profit')
+                    : e.commBase === 'total' ? L('الإجمالي', 'total') : L('الصافي', 'net');
+        return '<tr' + (on ? '' : ' style="opacity:.55"') + '>' +
+          '<td><b>' + esc(e.name) + '</b>' +
+          (e.job ? '<div style="font-size:10.5px;color:var(--muted)">' + esc(e.job) + '</div>' : '') + '</td>' +
+          '<td>' + (on ? '<b>' + (+e.commRate) + '%</b><div style="font-size:10.5px;color:var(--muted)">' + baseLbl + '</div>'
+                       : '<span style="color:var(--muted)">—</span>') + '</td>' +
+          '<td class="t-num">' + (on ? st.count : '—') + '</td>' +
+          '<td class="t-num">' + (on ? money(st.sales) : '—') + '</td>' +
+          '<td class="t-num" style="color:var(--ok)">' + (on ? money(st.earned) : '—') + '</td>' +
+          '<td class="t-num">' + (on ? money(st.paid) : '—') + '</td>' +
+          '<td class="t-num"><b style="color:' + (st.due > 0.009 ? 'var(--danger)' : 'var(--muted)') + '">' +
+          (on ? money(st.due) : '—') + '</b></td>' +
+          '<td class="no-print">' +
+          '<button class="iconbtn" title="' + L('نسبة العمولة', 'Rate') + '" onclick="fatCommSet(\'' + e.id + '\')">⚙️</button>' +
+          (on ? '<button class="iconbtn" title="' + L('كشف حساب', 'Statement') + '" onclick="fatCommStatement(\'' + e.id + '\')">📄</button>' +
+                (st.due > 0.009 ? '<button class="btn btn-primary btn-sm" onclick="fatCommPay(\'' + e.id + '\')">💸 ' +
+                  L('صرف', 'Pay') + '</button>' : '') : '') +
+          '</td></tr>';
+      }).join('') + '</tbody></table>';
+
+    document.getElementById('content').innerHTML = cards + filter +
+      '<div class="panel"><div class="panel-b">' + table + '</div></div>' +
+      (emps.length
+        ? '<div class="hint" style="margin-top:12px">💡 ' +
+          L('المندوب بيتحدد من الكاشير قبل إتمام البيع — القائمة بتظهر تحت اختيار العميل. العمولة بتتحسب وقت الفاتورة وبتتسجّل عليها.',
+            'Pick the salesperson in the POS before completing the sale.') + '</div>'
+        : '<div class="hint" style="margin-top:12px">💡 ' +
+          L('اضغط ⚙️ جنب أي موظف عشان تحدد نسبة عمولته — وساعتها هيظهر في قائمة الكاشير.',
+            'Press ⚙️ next to an employee to set their rate.') + '</div>');
+  };
+
+  /* ═══════════ ٦) القائمة ═══════════ */
+  function injectCommNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="commissions"]')) return;
+      if (typeof canView === 'function' && !canView('commissions')) return;
+      var hidden = (db.settings && db.settings.hiddenSections) || [];
+      if (hidden.indexOf('commissions') > -1) return;
+      var anchor = nav.querySelector('a[data-view="employees"]') ||
+                   nav.querySelector('a[data-view="payroll"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'commissions');
+      a.innerHTML = '<span class="ic">🧑‍💼</span> ' + L('عمولات المندوبين', 'Commissions');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('commissions'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        injectCommNav();
+        return r;
+      };
+    }
+    setTimeout(injectCommNav, 3000);
+    setTimeout(injectCommNav, 5800);
+  })();
+
+})();
+
 </script>
 </body>
 </html>
