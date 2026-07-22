@@ -1,9 +1,7 @@
 name: CI
-
 on:
   push:
   pull_request:
-
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -19,7 +17,8 @@ jobs:
 
       - name: JS syntax check (inline <script> in index.html)
         run: npm run check:syntax
-        - name: Boot test (jsdom)
+
+      - name: Boot test (jsdom)
         run: npm run test:boot
 
       - name: Fix verification
