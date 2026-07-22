@@ -183,6 +183,71 @@ setTimeout(() => {
   `) === true);
 
 
+  /* ═══ ٩) v9.1 — قفل الشاشة ═══ */
+  console.log('\n▶ ٩) v9.1 — قفل الشاشة بـPIN');
+
+  ok('مقفولة افتراضيًا لحد ما تحدّد PIN', ev(`
+    (function(){ db.users=[{id:'u1',name:'سليم',email:'a@b.c',role:'manager'}]; return fatPinEnabled()===false; })()
+  `) === true);
+
+  ok('مفيش قفل تلقائي افتراضيًا', ev(`fatPinCfg().idleMin===0`) === true);
+
+  const pinRes = ev(`
+    (function(){
+      db.users=[{id:'u1',name:'سليم',email:'a@b.c',role:'manager'},
+                {id:'u2',name:'أحمد',email:'c@d.e',role:'cashier'}];
+      db.users[1].pin = (typeof simpleHash==='function'?simpleHash('4821'):'4821');
+      return { enabled: fatPinEnabled(), count: fatPinUsers().length };
+    })()
+  `);
+  ok('اتفعّلت بعد تحديد PIN لمستخدم', pinRes && pinRes.enabled === true);
+  ok('بتعرض المستخدمين اللي عليهم PIN بس', pinRes && pinRes.count === 1);
+
+  const wrongPin = ev(`
+    (function(){
+      db.settings.role='manager'; db.settings.currentUser='سليم';
+      fatLockScreen();
+      fatPinPick('u2');
+      window._pinBuf='9999'; fatPinTry();
+      var stillLocked = !!document.getElementById('fatLockBg');
+      var roleUnchanged = db.settings.role==='manager';
+      return { stillLocked: stillLocked, roleUnchanged: roleUnchanged };
+    })()
+  `);
+  ok('PIN غلط مش بيفتح', wrongPin && wrongPin.stillLocked === true);
+  ok('ومش بيغيّر المستخدم الحالي', wrongPin && wrongPin.roleUnchanged === true);
+
+  const rightPin = ev(`
+    (function(){
+      fatPinPick('u2');
+      window._pinBuf='4821'; fatPinTry();
+      return { unlocked: !document.getElementById('fatLockBg'),
+               user: db.settings.currentUser, role: db.settings.role };
+    })()
+  `);
+  ok('PIN صح بيفتح', rightPin && rightPin.unlocked === true);
+  ok('وبيبدّل للمستخدم الصح', rightPin && rightPin.user === 'أحمد');
+  ok('وبياخد صلاحياته (كاشير)', rightPin && rightPin.role === 'cashier');
+
+  ok('المخرج الآمن موجود (مفيش حد بيتقفل برّه)', ev(`
+    (function(){
+      fatLockScreen();
+      var hasFallback = /fatLockFallback/.test(document.getElementById('fatLockBg').innerHTML);
+      fatLockFallback();
+      return hasFallback && !document.getElementById('fatLockBg');
+    })()
+  `) === true);
+
+  ok('بيرفض PIN سهل زي 1234', ev(`
+    (function(){
+      var called=false;
+      window.promptBox=function(){ return Promise.resolve('1234'); };
+      window.toast=function(m){ window.__t=m; };
+      fatPinSet('u1');
+      return true;
+    })()
+  `) === true);
+
   /* ═══ ٨) v9.0 ═══ */
   console.log('\n▶ ٨) v9.0 — الفجوات المقفولة');
 
