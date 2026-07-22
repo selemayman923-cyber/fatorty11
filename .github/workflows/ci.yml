@@ -19,6 +19,11 @@ jobs:
 
       - name: JS syntax check (inline <script> in index.html)
         run: npm run check:syntax
+        - name: Boot test (jsdom)
+        run: npm run test:boot
+
+      - name: Fix verification
+        run: npm run test:fixes
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
