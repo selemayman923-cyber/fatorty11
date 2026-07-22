@@ -22008,6 +22008,386 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
 })();
 
+
+/* ============================================================
+   FATORTY v9.0 — إغلاق الفجوات اللي طلعت من المراجعة النقدية
+     ١) تحذير الكاشير *قبل* البيع لو الكمية أكبر من رصيد فرعه
+     ٢) تنبيهات الصلاحية والتشغيلات في جرس الإشعارات
+     ٣) تقرير أداء العروض — العرض جاب مبيعات ولا وكّل من الهامش
+     ٤) تنبيه بالبضاعة اللي دخلت من غير رقم تشغيلة
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+  var R3 = function (n) { return Math.round((+n || 0) * 1000) / 1000; };
+
+  function multiBranch() {
+    try { return (typeof fatBranchList === 'function') && fatBranchList().length > 1; }
+    catch (e) { return false; }
+  }
+
+  /* ═══════════ ١) تحذير رصيد الفرع في الكاشير ═══════════ */
+
+  window.fatPosCfg = function () {
+    try {
+      db.settings = db.settings || {};
+      db.settings.posBranch = db.settings.posBranch || {};
+      var c = db.settings.posBranch;
+      if (c.warn === undefined) c.warn = true;     // تحذير (مش منع)
+      if (c.block === undefined) c.block = false;  // منع البيع تمامًا
+      return c;
+    } catch (e) { return { warn: true, block: false }; }
+  };
+
+  // بيرجّع الأصناف اللي في السلة وكميتها أكبر من رصيد الفرع النشط
+  window.fatCartBranchIssues = function () {
+    var out = [];
+    try {
+      if (!multiBranch()) return out;
+      if (typeof cart === 'undefined' || !Array.isArray(cart)) return out;
+      var b = (typeof fatCurBranch === 'function') ? fatCurBranch() : '';
+      if (!b) return out;
+
+      var byPid = {};
+      cart.forEach(function (c) {
+        if (!c || !c.pid) return;
+        byPid[c.pid] = R3((byPid[c.pid] || 0) + (+c.qty || 0));
+      });
+
+      for (var pid in byPid) {
+        if (!Object.prototype.hasOwnProperty.call(byPid, pid)) continue;
+        var p = findProduct(pid);
+        if (!p) continue;
+        try { if (typeof fatShowsInStock === 'function' && !fatShowsInStock(p)) continue; } catch (e) {}
+        var have = (typeof fatBQOf === 'function') ? fatBQOf(p, b) : R3(p.qty);
+        if (byPid[pid] > have + 1e-9) {
+          out.push({ p: p, want: byPid[pid], have: R3(have), total: R3(p.qty) });
+        }
+      }
+    } catch (e) {}
+    return out;
+  };
+
+  window.fatBranchWarnBar = function () {
+    try {
+      var old = document.getElementById('fatBranchWarn');
+      if (old) old.remove();
+      var cfg = window.fatPosCfg();
+      if (!cfg.warn && !cfg.block) return;
+
+      var issues = window.fatCartBranchIssues();
+      if (!issues.length) return;
+
+      var host = document.getElementById('cartBox') || document.getElementById('cartList') ||
+                 document.querySelector('.pos > div:last-child');
+      if (!host) return;
+
+      var bName = '';
+      try { bName = branchName(fatCurBranch()); } catch (e) {}
+
+      var d = document.createElement('div');
+      d.id = 'fatBranchWarn';
+      d.style.cssText = 'background:#fff7ed;border:1px solid #fed7aa;border-radius:11px;' +
+        'padding:10px 12px;margin:8px 0;font-size:12.5px;color:#9a3412;line-height:1.7';
+      d.innerHTML = '⚠️ <b>' + L('الكمية أكبر من رصيد فرعك', 'Exceeds this branch balance') +
+        (bName ? ' (' + esc(bName) + ')' : '') + '</b><br>' +
+        issues.slice(0, 4).map(function (i) {
+          return '• ' + esc(i.p.name) + ': ' + L('عايز', 'want') + ' <b>' + fmt(i.want) + '</b> · ' +
+            L('في الفرع', 'in branch') + ' <b>' + fmt(i.have) + '</b>' +
+            (i.total > i.have ? ' · ' + L('إجمالي المخزن', 'total stock') + ' ' + fmt(i.total) : '');
+        }).join('<br>') +
+        (issues.length > 4 ? '<br>+' + (issues.length - 4) : '') +
+        '<div style="margin-top:6px;font-size:11.5px;opacity:.85">' +
+        L('البضاعة موجودة عندك بس في فرع تاني — اعمل تحويل، أو كمّل البيع والرصيد هيبقى سالب.',
+          'The stock exists in another branch — transfer it, or continue and the balance will go negative.') +
+        '</div>';
+      host.insertBefore(d, host.firstChild);
+    } catch (e) {}
+  };
+
+  (function () {
+    var _rc = window.renderCart;
+    if (typeof _rc !== 'function') return;
+    window.renderCart = function () {
+      var r = _rc.apply(this, arguments);
+      try { window.fatBranchWarnBar(); } catch (e) {}
+      return r;
+    };
+  })();
+
+  // منع البيع (اختياري — مقفول افتراضيًا)
+  (function () {
+    var _co = window.posCheckout;
+    if (typeof _co !== 'function') return;
+    window.posCheckout = function () {
+      try {
+        if (window.fatPosCfg().block) {
+          var issues = window.fatCartBranchIssues();
+          if (issues.length) {
+            toast('⛔ ' + L('في فرعك مفيش رصيد كافي لـ', 'Not enough branch stock for') + ' ' +
+              issues.map(function (i) { return i.p.name; }).slice(0, 2).join('، ') +
+              ' — ' + L('اعمل تحويل الأول', 'transfer stock first'), 'err');
+            return;
+          }
+        }
+      } catch (e) {}
+      return _co.apply(this, arguments);
+    };
+  })();
+
+  /* ═══════════ ٢) تنبيهات الصلاحية في الجرس ═══════════ */
+
+  (function () {
+    var _ga = window.getAlerts;
+    if (typeof _ga !== 'function' || window._fatAlertsWrapped) return;
+    window._fatAlertsWrapped = true;
+
+    window.getAlerts = function () {
+      var list = [];
+      try { list = _ga.apply(this, arguments) || []; } catch (e) { list = []; }
+      try {
+        if (typeof fatBatchRows !== 'function') return list;
+        var rows = fatBatchRows();
+        if (!rows.length) return list;
+
+        var soonDays = 30;
+        try { soonDays = +fatBatchCfg().soonDays || 30; } catch (e) {}
+
+        var expired = [], soon = [], unassigned = 0;
+        rows.forEach(function (r) {
+          if (r.days !== null && r.days < 0) expired.push(r);
+          else if (r.days !== null && r.days <= soonDays) soon.push(r);
+          if (!r.b.code && !r.b.expiry) unassigned++;
+        });
+
+        if (expired.length) {
+          var eq = 0; expired.forEach(function (r) { eq = R3(eq + (+r.b.qty || 0)); });
+          list.push({
+            type: 'expiry',
+            msg: '⛔ ' + L('بضاعة منتهية الصلاحية لسه في المخزون', 'Expired stock still on hand') +
+                 ': ' + expired.length + ' ' + L('تشغيلة', 'batches') + ' (' + fmt(eq) + ' ' + L('وحدة', 'units') + ')',
+            action: "go('batches')"
+          });
+        }
+        if (soon.length) {
+          list.push({
+            type: 'expiry',
+            msg: '⏳ ' + soon.length + ' ' + L('تشغيلة قربت تنتهي خلال', 'batches expiring within') +
+                 ' ' + soonDays + ' ' + L('يوم', 'days') +
+                 ' — ' + L('أقربها', 'soonest') + ': ' + String(soon[0].p.name),
+            action: "go('batches')"
+          });
+        }
+        if (unassigned) {
+          list.push({
+            type: 'stock',
+            msg: '❓ ' + unassigned + ' ' + L('كمية دخلت من غير رقم تشغيلة — حدّدها',
+                                             'quantities received without a batch number'),
+            action: "go('batches')"
+          });
+        }
+      } catch (e) {}
+      return list;
+    };
+  })();
+
+  /* ═══════════ ٣) تقرير أداء العروض ═══════════ */
+
+  window.fatPromoStats = function (fromDate, toDate) {
+    var stats = {};
+    try {
+      (window.fatPromos ? window.fatPromos() : (db.promos || [])).forEach(function (pr) {
+        stats[pr.id] = {
+          promo: pr, uses: 0, discount: 0, revenue: 0,
+          cost: 0, items: 0
+        };
+      });
+
+      var sales = (db.sales || []);
+      try { if (typeof bf === 'function') sales = bf(sales); } catch (e) {}
+
+      sales.forEach(function (s) {
+        if (!s || !s.promos || !s.promos.length) return;
+        if (fromDate && s.date < fromDate) return;
+        if (toDate && s.date > toDate) return;
+
+        // تكلفة أصناف الفاتورة — عشان نحسب الهامش الحقيقي
+        var cogs = 0, qty = 0;
+        (s.items || []).forEach(function (it) {
+          var p = null;
+          try { p = it.pid ? findProduct(it.pid) : null; } catch (e) {}
+          cogs = R2(cogs + (+((p && p.cost) || it.cost || 0)) * (+it.qty || 0));
+          qty += (+it.qty || 0);
+        });
+
+        s.promos.forEach(function (ap) {
+          var st = stats[ap.id];
+          if (!st) {
+            st = stats[ap.id] = {
+              promo: { id: ap.id, name: ap.name, active: false, __gone: true },
+              uses: 0, discount: 0, revenue: 0, cost: 0, items: 0
+            };
+          }
+          st.uses++;
+          st.discount = R2(st.discount + (+ap.amount || 0));
+          st.revenue = R2(st.revenue + (+s.total || 0));
+          st.cost = R2(st.cost + cogs);
+          st.items += qty;
+        });
+      });
+    } catch (e) {}
+
+    var out = [];
+    for (var k in stats) {
+      if (!Object.prototype.hasOwnProperty.call(stats, k)) continue;
+      var st = stats[k];
+      st.margin = R2(st.revenue - st.cost);
+      st.marginPct = st.revenue > 0 ? Math.round(st.margin / st.revenue * 100) : 0;
+      st.avgTicket = st.uses ? R2(st.revenue / st.uses) : 0;
+      out.push(st);
+    }
+    out.sort(function (a, b) { return b.revenue - a.revenue; });
+    return out;
+  };
+
+  window.fatPromoReportCSV = function () {
+    var rows = [[L('العرض', 'Promotion'), L('مرات الاستخدام', 'Uses'), L('إجمالي الخصم', 'Discount given'),
+      L('مبيعات الفواتير', 'Revenue'), L('تكلفة البضاعة', 'COGS'), L('الهامش', 'Margin'),
+      L('الهامش %', 'Margin %'), L('متوسط الفاتورة', 'Avg ticket')]];
+    window.fatPromoStats().forEach(function (s) {
+      rows.push([s.promo.name, s.uses, s.discount, s.revenue, s.cost, s.margin, s.marginPct + '%', s.avgTicket]);
+    });
+    downloadCSV('promo-performance-' + today() + '.csv', rows);
+  };
+
+  window.fatPromoReport = function () {
+    var stats = window.fatPromoStats();
+    var used = stats.filter(function (s) { return s.uses > 0; });
+
+    var body;
+    if (!used.length) {
+      body = '<div class="empty"><span class="big">📊</span>' +
+        L('مفيش عروض اتطبّقت على فواتير لسه', 'No promotions have been applied to any invoice yet') + '</div>';
+    } else {
+      var totDisc = 0, totRev = 0, totMar = 0;
+      used.forEach(function (s) { totDisc = R2(totDisc + s.discount); totRev = R2(totRev + s.revenue); totMar = R2(totMar + s.margin); });
+
+      body =
+        '<div class="cards" style="margin-bottom:14px">' +
+        '<div class="card"><div class="ic-bg">🎁</div><div class="lbl">' + L('إجمالي الخصم المدفوع', 'Total discount given') +
+        '</div><div class="val" style="color:#d97706">' + money(totDisc) + '</div></div>' +
+        '<div class="card"><div class="ic-bg">💰</div><div class="lbl">' + L('مبيعات جات من العروض', 'Revenue from promo bills') +
+        '</div><div class="val">' + money(totRev) + '</div></div>' +
+        '<div class="card"><div class="ic-bg">📈</div><div class="lbl">' + L('الهامش بعد العروض', 'Margin after promos') +
+        '</div><div class="val" style="color:' + (totMar > 0 ? 'var(--ok)' : 'var(--danger)') + '">' + money(totMar) + '</div></div>' +
+        '</div>' +
+        '<table><thead><tr><th>' + L('العرض', 'Promotion') + '</th><th>' + L('مرات', 'Uses') + '</th>' +
+        '<th>' + L('الخصم', 'Discount') + '</th><th>' + L('المبيعات', 'Revenue') + '</th>' +
+        '<th>' + L('الهامش', 'Margin') + '</th><th>' + L('متوسط الفاتورة', 'Avg ticket') + '</th>' +
+        '<th>' + L('الحكم', 'Verdict') + '</th></tr></thead><tbody>' +
+        used.map(function (s) {
+          // العرض مفيد لو الهامش بعده لسه موجب ومحترم
+          var good = s.margin > 0 && s.marginPct >= 15;
+          var mid = s.margin > 0 && s.marginPct < 15;
+          var verdict = good
+            ? '<span class="badge ok">✅ ' + L('مربح', 'Profitable') + '</span>'
+            : mid ? '<span class="badge warn">⚠️ ' + L('هامش ضعيف', 'Thin margin') + '</span>'
+                  : '<span class="badge danger">🔴 ' + L('بيخسّر', 'Losing') + '</span>';
+          return '<tr><td><b>' + esc(s.promo.name) + '</b>' +
+            (s.promo.__gone ? '<div style="font-size:10.5px;color:var(--muted)">' + L('اتمسح', 'deleted') + '</div>' : '') +
+            '</td><td class="t-num">' + s.uses + '</td>' +
+            '<td class="t-num" style="color:#d97706">' + money(s.discount) + '</td>' +
+            '<td class="t-num">' + money(s.revenue) + '</td>' +
+            '<td class="t-num" style="color:' + (s.margin > 0 ? 'var(--ok)' : 'var(--danger)') + '"><b>' +
+            money(s.margin) + '</b><div style="font-size:10.5px">' + s.marginPct + '%</div></td>' +
+            '<td class="t-num">' + money(s.avgTicket) + '</td>' +
+            '<td>' + verdict + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+
+    openModal('<div class="modal-h"><h3>📊 ' + L('أداء العروض', 'Promotion performance') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div>' +
+      '<div class="modal-b">' + body +
+      '<div class="hint" style="margin-top:12px">💡 ' +
+      L('«الهامش» = مبيعات الفواتير اللي فيها العرض ناقص تكلفة بضاعتها. لو طلع سالب، العرض بيوكل من ربحك.',
+        'Margin = revenue of promo bills minus their cost of goods.') +
+      '</div></div>' +
+      '<div class="modal-f"><button class="btn btn-ghost" onclick="fatPromoReportCSV()">📊 CSV</button>' +
+      '<button class="btn btn-primary" onclick="closeModal()">' + L('إغلاق', 'Close') + '</button></div>');
+  };
+
+  // زرار التقرير في شاشة العروض
+  (function () {
+    var _vp = views.promos;
+    if (typeof _vp !== 'function') return;
+    views.promos = function () {
+      var r = _vp.apply(this, arguments);
+      try {
+        var ta = document.getElementById('topActions');
+        if (ta && ta.innerHTML.indexOf('fatPromoReport') < 0) {
+          ta.innerHTML = '<button class="btn btn-ghost btn-sm" onclick="fatPromoReport()">📊 ' +
+            L('أداء العروض', 'Performance') + '</button> ' + ta.innerHTML;
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  /* ═══════════ ٤) إعدادات تحذير الفرع ═══════════ */
+
+  window.fatBranchWarnSettings = function () {
+    var c = window.fatPosCfg();
+    openModal('<div class="modal-h"><h3>⚠️ ' + L('تحذير رصيد الفرع', 'Branch stock warning') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<label style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--card2);border-radius:10px;cursor:pointer;margin-bottom:10px">' +
+      '<span><b>' + L('نبّه الكاشير', 'Warn the cashier') + '</b>' +
+      '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' +
+      L('يظهر تنبيه في السلة لو الكمية أكبر من رصيد الفرع', 'Shows a notice in the cart') + '</div></span>' +
+      '<input type="checkbox" id="pb_warn"' + (c.warn ? ' checked' : '') + ' style="width:20px;height:20px"></label>' +
+      '<label style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--card2);border-radius:10px;cursor:pointer">' +
+      '<span><b>' + L('امنع البيع تمامًا', 'Block the sale') + '</b>' +
+      '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' +
+      L('الكاشير مش هيقدر يكمّل غير بعد تحويل البضاعة', 'The cashier cannot complete until stock is transferred') +
+      '</div></span>' +
+      '<input type="checkbox" id="pb_block"' + (c.block ? ' checked' : '') + ' style="width:20px;height:20px"></label>' +
+      '<div class="hint" style="margin-top:12px">💡 ' +
+      L('ابدأ بالتنبيه بس. المنع مناسب لما تكون واثق إن توزيع الفروع مظبوط ١٠٠٪.',
+        'Start with warnings only. Blocking suits you once branch distribution is fully accurate.') +
+      '</div></div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatBranchWarnSave()">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatBranchWarnSave = function () {
+    var c = window.fatPosCfg();
+    var w = document.getElementById('pb_warn'), b = document.getElementById('pb_block');
+    if (w) c.warn = !!w.checked;
+    if (b) c.block = !!b.checked;
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظ', 'Saved'));
+    try { if (current === 'branchStock') views.branchStock(); } catch (e) {}
+  };
+
+  // زرار الإعدادات في شاشة مخزون الفروع
+  (function () {
+    var _vb = views.branchStock;
+    if (typeof _vb !== 'function') return;
+    views.branchStock = function () {
+      var r = _vb.apply(this, arguments);
+      try {
+        var ta = document.getElementById('topActions');
+        if (ta && ta.innerHTML.indexOf('fatBranchWarnSettings') < 0) {
+          ta.innerHTML += ' <button class="btn btn-ghost btn-sm no-print" onclick="fatBranchWarnSettings()">⚠️ ' +
+            L('تحذير الكاشير', 'Cashier warning') + '</button>';
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+})();
+
 </script>
 </body>
 </html>
