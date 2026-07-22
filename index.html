@@ -27,10 +27,11 @@
 <meta name="twitter:description" content="أدِر نشاطك باحتراف من مكان واحد. جرّب مجانًا 14 يوم.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Cairo:wght@600;700;800&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Cairo:wght@600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all';this.onload=null">
+<noscript><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Cairo:wght@600;700;800&display=swap" rel="stylesheet"></noscript>
+<!-- الباركود والـQR بقوا بيتحمّلوا عند الحاجة بس (مش وقت الفتح) -->
+<script src="/vendor/supabase.min.js"></script>
+<script>if(!window.supabase){document.write('<scr'+'ipt src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"><\/scr'+'ipt>');}</script>
 <style>
 :root{
   --bg:#f4f1ea; --panel:#fff; --ink:#1c2521; --muted:#7c857f; --line:#e6e1d6;
@@ -1388,7 +1389,7 @@ const DATA_TABLE='user_data';           // per-account row, protected by RLS (le
 const V2_RECORDS='v2_records';          // per-record rows (v2 storage)
 const V2_SETTINGS='v2_settings';        // single settings row per account (v2)
 // collections stored as individual records in v2_records (keyed by `kind`)
-const V2_KINDS=['products','categories','employees','purchaseOrders','targets','customers','suppliers','sales','purchases','returns','quotes','expenses','cash','stockMoves','branches','shifts','heldSales','editLog','banks','recurring','bundles','audit','users','promoters','memberships','serviceOrders','waste','attendance','reservations','shiftSessions','stockTakes','schedule','recurringExpenses','accounts','journal','trash'];
+const V2_KINDS=['products','categories','employees','purchaseOrders','targets','customers','suppliers','sales','purchases','returns','quotes','expenses','cash','stockMoves','branches','shifts','heldSales','editLog','banks','recurring','bundles','audit','users','promoters','memberships','serviceOrders','waste','attendance','reservations','shiftSessions','stockTakes','schedule','recurringExpenses','accounts','journal','trash','transfers','promos','payClaims'];
 // non-array settings-like keys kept together in v2_settings
 const V2_SETTINGS_KEYS=['settings','seq'];
 const LEGACY_KEY='hesaby_db';           // old shared row (for one-time import only)
@@ -1703,7 +1704,12 @@ async function pullV2(opts){
     all=all.concat(data);
     if(data.length<pageSize) break;
     page++;
-    if(page>50) break; // حماية
+    // كان فيه سقف 50 صفحة (50 ألف سجل) بيقطع البيانات بصمت — محل متوسط
+    // بيعدّيه في ٥ شهور. السقف دلوقتي مليون سجل، ومع تحذير لو اتوصلنا له.
+    if(page>1000){
+      try{ toast(L('البيانات كبيرة جدًا — تواصل معانا','Dataset too large — contact support'),'err'); }catch(e){}
+      break;
+    }
   }
   // 2) اسحب الإعدادات
   var {data:sData,error:sErr}=await sb.from(V2_SETTINGS)
@@ -11902,6 +11908,8 @@ function fatTrackError(source, error, context){
     if(_fatLog.errors.length > _fatLog.maxEntries) _fatLog.errors.pop();
     // Persist last errors to localStorage for post-mortem
     try{ localStorage.setItem('fat_error_log', JSON.stringify(_fatLog.errors.slice(0,30))); }catch(e){}
+    // وابعتها كمان — الأخطاء اللي بتموت على جهاز العميل مفيش فايدة منها
+    try{ if(typeof fatReportError==='function') fatReportError(entry); }catch(e){}
   }catch(e){}
 }
 
@@ -17930,11 +17938,11 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
   window.fatAgingTab = function (t) { window._agTab = t; views.aging(); };
 
-  window.fatAgingRemind = function (name) {
+  window.fatAgingRemind = function (idx) {
     try {
-      var rows = window.fatAgingRows(window._agTab === 'sup' ? 'sup' : 'cust');
-      var m = null;
-      for (var i = 0; i < rows.length; i++) if (rows[i].name === name) { m = rows[i]; break; }
+      // بناخد رقم الصف مش الاسم — الأسماء اللي فيها علامات تنصيص كانت بتكسر الزرار
+      var rows = window._agRows || window.fatAgingRows(window._agTab === 'sup' ? 'sup' : 'cust');
+      var m = rows[+idx];
       if (!m) return;
       if (!m.phone) return toast(L('العميل ده مفيش له رقم موبايل مسجّل', 'No phone number on file'), 'err');
       var co = (db.settings && db.settings.company) || '';
@@ -17979,6 +17987,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   views.aging = function () {
     var isSup = (window._agTab === 'sup');
     var rows = window.fatAgingRows(isSup ? 'sup' : 'cust');
+    window._agRows = rows;
 
     document.getElementById('topActions').innerHTML =
       '<button class="btn btn-ghost btn-sm no-print" onclick="fatAgingCSV()">📊 CSV</button> ' +
@@ -18018,7 +18027,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       '<th>' + labels[0] + '</th><th>' + labels[1] + '</th><th>' + labels[2] + '</th><th>' + labels[3] + '</th>' +
       '<th>' + L('الإجمالي', 'Total') + '</th><th>' + L('أقدم فاتورة', 'Oldest') + '</th>' +
       '<th class="no-print"></th></tr></thead><tbody>' +
-      rows.map(function (m) {
+      rows.map(function (m, _ri) {
         var over = (!isSup && m.limit > 0 && m.total > m.limit);
         var cells = m.b.map(function (v, i) {
           return '<td class="t-num" style="' + (v > 0 ? 'color:' + cols[i] : 'color:var(--muted);opacity:.5') + '">' +
@@ -18034,7 +18043,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
           m.oldestDays + ' ' + L('يوم', 'd') + '</td>' +
           '<td class="no-print">' + (m.phone
             ? '<button class="iconbtn" title="' + L('تذكير واتساب', 'WhatsApp reminder') +
-              '" onclick="fatAgingRemind(\'' + String(m.name).replace(/'/g, "\\'") + '\')">💬</button>'
+              '" onclick="fatAgingRemind(' + _ri + ')">💬</button>'
             : '') + '</td></tr>';
       }).join('') +
       '<tr style="background:var(--primary-soft);font-weight:800"><td>' + L('الإجمالي', 'TOTAL') + '</td>' +
@@ -18116,7 +18125,9 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   };
 
   // الفرع اللي الحركة تتحسب عليه (لو المستخدم في وضع «كل الفروع» ← الفرع الأول)
+  window._fatBranchOverride = null;   // بديل آمن لتغيير الفرع النشط مؤقتًا
   window.fatCurBranch = function () {
+    if (window._fatBranchOverride) return window._fatBranchOverride;
     var b = '';
     try { if (typeof activeBranch === 'function') b = activeBranch(); } catch (e) {}
     if (!b || b === '__ALL__') {
@@ -18723,6 +18734,12 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     return st;
   };
 
+  // انسخ بمفتاح الوسيلة — عشان القيمة متتحقنش في HTML
+  window.fatCopyPay = function (key, btn) {
+    var m = window.fatPayMethods().filter(function (x) { return x.key === key; })[0];
+    if (m) window.fatCopy(m.value, btn);
+  };
+
   window.fatCopy = function (txt, btn) {
     var done = function () {
       if (!btn) return;
@@ -18924,7 +18941,6 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       ? '<div class="panel" style="margin-bottom:16px"><div class="panel-h"><h3>🏦 ' +
         L('حوّل على أي وسيلة من دول', 'Transfer using any of these') + '</h3></div><div class="panel-b pad">' +
         methods.map(function (m) {
-          var v = String(m.value).replace(/'/g, "\\'");
           return '<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)">' +
             '<div style="font-size:24px">' + m.icon + '</div>' +
             '<div style="flex:1;min-width:0">' +
@@ -18932,7 +18948,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
             '<div style="font-size:16px;font-weight:800;font-family:monospace;word-break:break-all">' + esc(m.value) + '</div>' +
             (m.hint ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + esc(m.hint) + '</div>' : '') +
             '</div>' +
-            '<button class="btn btn-ghost btn-sm" onclick="fatCopy(\'' + v + '\',this)">📋 ' + L('نسخ', 'Copy') + '</button>' +
+            '<button class="btn btn-ghost btn-sm" onclick="fatCopyPay(\'' + m.key + '\',this)">📋 ' + L('نسخ', 'Copy') + '</button>' +
             '</div>';
         }).join('') +
         '<div class="hint" style="margin-top:12px">💡 ' + esc(FAT_PAY_NOTE) + '</div>' +
@@ -19017,12 +19033,11 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
         ? '<div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">' +
           '<b style="font-size:13px">🏦 ' + L('حوّل على', 'Transfer to') + '</b>' +
           methods.map(function (m) {
-            var v = String(m.value).replace(/'/g, "\\'");
             return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)">' +
               '<div style="font-size:20px">' + m.icon + '</div><div style="flex:1;min-width:0">' +
               '<div style="font-size:11.5px;color:var(--muted)">' + L(m.label, m.labelEn) + '</div>' +
               '<div style="font-size:15px;font-weight:800;font-family:monospace;word-break:break-all">' + esc(m.value) + '</div></div>' +
-              '<button class="btn btn-ghost btn-sm" onclick="fatCopy(\'' + v + '\',this)">📋</button></div>';
+              '<button class="btn btn-ghost btn-sm" onclick="fatCopyPay(\'' + m.key + '\',this)">📋</button></div>';
           }).join('') +
           '<div class="grid2" style="margin-top:12px">' +
           '<div class="field"><label>' + L('الوسيلة', 'Method') + '</label><select id="rn_method">' +
@@ -19803,8 +19818,9 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     setTimeout(fatInjectEtaNav, 4600);
   })();
 
+})();
 
-  /* ============================================================
+/* ============================================================
    FATORTY v8.4 — شاشة المطبخ (KDS)
    بتشتغل فوق نظام الطاولات وأنواع الأوردر الموجود.
    الطلب بيتولد أوتوماتيك أول ما الفاتورة تتعمل، والشيف بيحرّكه
@@ -20306,8 +20322,26 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       used.push({ id: un.id, code: '', expiry: '', qty: R3(need), short: true });
     }
 
-    p.batches = p.batches.filter(function (b) { return Math.abs(+b.qty || 0) > 1e-9; });
+    // التشغيلة اللي خلصت *مبتتمسحش* — ده الفرق بين تتبع حقيقي وتتبع شكلي.
+    // لو حصل استدعاء (recall) لازم تعرف إن التشغيلة دي كانت عندك وخرجت.
+    p.batches.forEach(function (b) {
+      if (Math.abs(+b.qty || 0) <= 1e-9 && !b.depletedAt) b.depletedAt = today();
+    });
+    window.fatBatchPrune(p);
     return used;
+  };
+
+  // تنضيف: تشغيلات خلصت وعدّى عليها سنتين — بعد أي فترة استدعاء معقولة
+  window.fatBatchPrune = function (p) {
+    try {
+      if (!Array.isArray(p.batches) || p.batches.length < 60) return;
+      var cutoff = new Date(new Date(today()).getTime() - 730 * 86400000)
+        .toISOString().slice(0, 10);
+      p.batches = p.batches.filter(function (b) {
+        if (Math.abs(+b.qty || 0) > 1e-9) return true;
+        return !(b.depletedAt && b.depletedAt < cutoff);
+      });
+    } catch (e) {}
   };
 
   window.fatBatchAdd = function (p, qty, branch, info) {
@@ -20448,18 +20482,14 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     if (!p) return;
     if (qty <= 0) return toast(L('اكتب كمية صحيحة', 'Enter a valid quantity'), 'err');
 
-    var prevBranch = null;
-    try {
-      prevBranch = db.settings.activeBranch;
-      if (branch) db.settings.activeBranch = branch;
-    } catch (e) {}
-
+    // مش بنلمس db.settings — بنستخدم تجاوز مؤقت في الذاكرة بس
+    window._fatBranchOverride = branch || null;
     window._fatBatchHint = { code: code, expiry: exp, cost: cost === '' ? null : +cost };
     try {
       moveStock(pid, qty, 'in', L('استلام تشغيلة', 'Batch received') + (code ? ' ' + code : ''), null);
     } finally {
       window._fatBatchHint = null;
-      try { if (prevBranch !== null) db.settings.activeBranch = prevBranch; } catch (e) {}
+      window._fatBranchOverride = null;
     }
 
     try { logAudit(L('استلام تشغيلة', 'Batch received'), p.name + ' ' + code + ' ×' + qty); } catch (e) {}
@@ -20502,7 +20532,10 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     if (!code && !exp) return toast(L('اكتب رقم تشغيلة أو تاريخ انتهاء', 'Enter a batch number or expiry'), 'err');
     b.qty = R3(b.qty - qty);
     window.fatBatchAdd(p, qty, b.branch, { code: code, expiry: exp, cost: b.cost });
-    p.batches = p.batches.filter(function (x) { return Math.abs(+x.qty || 0) > 1e-9; });
+    if (Math.abs(+b.qty || 0) <= 1e-9 && !b.code && !b.expiry) {
+      // «غير محدّد» الفاضية مالهاش قيمة أثرية — دي الوحيدة اللي بتتشال
+      p.batches = p.batches.filter(function (x) { return x !== b; });
+    }
     save(); closeModal();
     toast('✅ ' + L('اتحدّدت', 'Assigned'));
     try { if (current === 'batches') views.batches(); } catch (e) {}
@@ -20521,13 +20554,12 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       { danger: true }
     )).then(function (okv) {
       if (!okv) return;
-      var prev = null;
-      try { prev = db.settings.activeBranch; db.settings.activeBranch = b.branch; } catch (e) {}
+      window._fatBranchOverride = b.branch || null;
       var q = b.qty;
       try {
         moveStock(pid, -q, 'waste', L('إهدار تشغيلة منتهية', 'Expired batch write-off') + (b.code ? ' ' + b.code : ''), null);
       } finally {
-        try { if (prev !== null) db.settings.activeBranch = prev; } catch (e) {}
+        window._fatBranchOverride = null;
       }
       try { logAudit(L('إهدار تشغيلة', 'Batch write-off'), p.name + ' ' + (b.code || '') + ' ×' + q); } catch (e) {}
       save();
@@ -20767,7 +20799,1147 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   })();
 
 })();
+
+/* ============================================================
+   FATORTY v8.6 — محرك العروض التلقائي
+   نقطة الربط: posCalc() — الدالة الوحيدة اللي بتحسب الفاتورة،
+   وبيستخدمها عرض السلة وإتمام البيع مع بعض. غلّفناها مرة واحدة
+   فالعرض بيظهر ويتطبّق متسق في الاتنين.
+   أنواع العروض:
+     • اشتري X خد Y مجانًا (الأرخص هو المجاني)
+     • خصم % على تصنيف أو أصناف معيّنة
+     • خصم % على الفاتورة كلها فوق مبلغ معيّن
+     • خصم مبلغ ثابت فوق مبلغ معيّن
+   مع جدولة: أيام الأسبوع + ساعات (Happy Hour) + تاريخ بداية/نهاية
+   ⚠️ من غير عروض مفعّلة، تأثير الباتش ده = صفر تمامًا.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  window.FAT_PROMO_TYPES = [
+    ['bxgy', 'اشتري X خد Y مجانًا', 'Buy X get Y free'],
+    ['pct_items', 'خصم % على أصناف/تصنيف', '% off selected items'],
+    ['pct_cart', 'خصم % على الفاتورة', '% off whole bill'],
+    ['amount_off', 'خصم مبلغ ثابت', 'Fixed amount off']
+  ];
+  var DAYS = [
+    ['0', 'الأحد', 'Sun'], ['1', 'الاثنين', 'Mon'], ['2', 'الثلاثاء', 'Tue'],
+    ['3', 'الأربعاء', 'Wed'], ['4', 'الخميس', 'Thu'], ['5', 'الجمعة', 'Fri'], ['6', 'السبت', 'Sat']
+  ];
+
+  window.fatPromos = function () {
+    try { db.promos = db.promos || []; return db.promos; } catch (e) { return []; }
+  };
+
+  /* ═══════════ 1) هل العرض شغّال دلوقتي؟ ═══════════ */
+
+  window.fatPromoLive = function (pr, now) {
+    if (!pr || !pr.active) return false;
+    now = now || new Date();
+    try {
+      var d = today();
+      if (pr.startDate && d < pr.startDate) return false;
+      if (pr.endDate && d > pr.endDate) return false;
+      if (pr.days && pr.days.length && pr.days.indexOf(String(now.getDay())) < 0) return false;
+      if (pr.from && pr.to) {
+        var mins = now.getHours() * 60 + now.getMinutes();
+        var toM = function (s) {
+          var a = String(s).split(':');
+          return (+a[0] || 0) * 60 + (+a[1] || 0);
+        };
+        var f = toM(pr.from), t = toM(pr.to);
+        if (f <= t) { if (mins < f || mins > t) return false; }
+        else { if (mins < f && mins > t) return false; }   // عرض بيعدّي منتصف الليل
+      }
+    } catch (e) { return false; }
+    return true;
+  };
+
+  function inScope(pr, p) {
+    if (!p) return false;
+    if (pr.scope === 'cat') return (pr.cats || []).indexOf(p.cat || '') > -1;
+    if (pr.scope === 'items') return (pr.pids || []).indexOf(p.id) > -1;
+    return true;
+  }
+
+  /* ═══════════ 2) تقييم العروض على السلة ═══════════ */
+
+  window.fatPromoEval = function (theCart, T, now) {
+    var out = { amount: 0, applied: [] };
+    try {
+      var list = window.fatPromos().filter(function (pr) { return window.fatPromoLive(pr, now); });
+      if (!list.length || !theCart || !theCart.length) return out;
+
+      // خطوط السلة بأسعارها الفعلية
+      var lines = [];
+      theCart.forEach(function (c) {
+        var p = findProduct(c.pid);
+        if (!p) return;
+        var unit = (typeof lineUnit === 'function') ? (+lineUnit(c) || 0) : (+p.price || 0);
+        var qty = +c.qty || 0;
+        if (qty <= 0) return;
+        lines.push({ p: p, unit: unit, qty: qty, total: R2(unit * qty) });
+      });
+      if (!lines.length) return out;
+
+      var cartSub = 0;
+      lines.forEach(function (l) { cartSub = R2(cartSub + l.total); });
+
+      list.sort(function (a, b) { return (+b.priority || 0) - (+a.priority || 0); });
+
+      list.forEach(function (pr) {
+        var amt = 0, label = '';
+        var mine = lines.filter(function (l) { return inScope(pr, l.p); });
+        var mineSub = 0;
+        mine.forEach(function (l) { mineSub = R2(mineSub + l.total); });
+
+        if (pr.minCart && cartSub < (+pr.minCart)) return;
+
+        if (pr.type === 'bxgy') {
+          var buy = Math.max(1, +pr.buyQty || 1), get = Math.max(1, +pr.getQty || 1);
+          var totalQty = 0;
+          mine.forEach(function (l) { totalQty += l.qty; });
+          var sets = Math.floor(totalQty / (buy + get));
+          if (sets <= 0) return;
+          var freeUnits = sets * get;
+          // المجاني هو الأرخص — الأعدل للعميل والمحل
+          var units = [];
+          mine.forEach(function (l) {
+            var n = Math.min(Math.floor(l.qty), 999);
+            for (var i = 0; i < n; i++) units.push(l.unit);
+          });
+          units.sort(function (a, b) { return a - b; });
+          for (var i = 0; i < freeUnits && i < units.length; i++) amt = R2(amt + units[i]);
+          label = pr.name + ' (' + freeUnits + ' ' + L('مجانًا', 'free') + ')';
+
+        } else if (pr.type === 'pct_items') {
+          if (mineSub <= 0) return;
+          amt = R2(mineSub * (+pr.pct || 0) / 100);
+          label = pr.name + ' (' + (+pr.pct || 0) + '%)';
+
+        } else if (pr.type === 'pct_cart') {
+          amt = R2(cartSub * (+pr.pct || 0) / 100);
+          label = pr.name + ' (' + (+pr.pct || 0) + '%)';
+
+        } else if (pr.type === 'amount_off') {
+          amt = R2(+pr.amount || 0);
+          label = pr.name;
+        }
+
+        if (pr.maxOff && amt > +pr.maxOff) amt = R2(+pr.maxOff);
+        if (amt <= 0.009) return;
+        out.amount = R2(out.amount + amt);
+        out.applied.push({ id: pr.id, name: pr.name, label: label, amount: amt });
+      });
+
+      // الحد الأقصى: الخصومات مجتمعة مش بتعدّي إجمالي السلة
+      var room = Math.max(0, R2(cartSub - ((T && +T.disc) || 0)));
+      if (out.amount > room) {
+        var scale = room > 0 ? room / out.amount : 0;
+        out.applied.forEach(function (a) { a.amount = R2(a.amount * scale); });
+        out.amount = room;
+      }
+    } catch (e) { return { amount: 0, applied: [] }; }
+    return out;
+  };
+
+  /* ═══════════ 3) الربط بحسبة الفاتورة ═══════════ */
+
+  (function () {
+    var _pc = window.posCalc;
+    if (typeof _pc !== 'function' || window._fatPromoWrapped) return;
+    window._fatPromoWrapped = true;
+    window.posCalc = function () {
+      var T = _pc.apply(this, arguments);
+      try {
+        if (!window.fatPromos().length) return T;
+        var pv = window.fatPromoEval(typeof cart !== 'undefined' ? cart : [], T);
+        if (!pv || pv.amount <= 0.009) return T;
+        T.promoVal = pv.amount;
+        T.promoList = pv.applied;
+        // نفس منطق الحسبة الأصلي: الخصم يزيد → الوعاء الضريبي يقل → الإجمالي يتحدّث
+        T.disc = Math.min(T.sub, R2(T.disc + pv.amount));
+        var taxable = R2(T.sub - T.disc);
+        T.vat = R2(taxable * (+T.vatP || 0) / 100);
+        T.total = R2(taxable + T.vat + (+T.deliv || 0));
+        if (T.total < 0) T.total = 0;
+      } catch (e) {}
+      return T;
+    };
+  })();
+
+  // سطر العرض في السلة
+  (function () {
+    var _ut = window.posUpdateTotals;
+    if (typeof _ut !== 'function') return;
+    window.posUpdateTotals = function () {
+      var r = _ut.apply(this, arguments);
+      try {
+        var row = document.getElementById('posDiscRow');
+        if (!row) return r;
+        var old = document.getElementById('fatPromoRow');
+        if (old) old.remove();
+        var T = window.posCalc();
+        if (!T || !T.promoList || !T.promoList.length) return r;
+        var d = document.createElement('div');
+        d.id = 'fatPromoRow';
+        d.innerHTML = T.promoList.map(function (a) {
+          return '<div class="tt" style="font-size:12.5px;color:var(--ok);font-weight:700">' +
+            '<span>🎁 ' + esc(a.label) + '</span><span>− ' + money(a.amount) + '</span></div>';
+        }).join('');
+        row.parentNode.insertBefore(d, row.nextSibling);
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  // تسجيل العروض المطبّقة على الفاتورة (عشان التقارير)
+  (function () {
+    var _co = window.posCheckout;
+    if (typeof _co !== 'function') return;
+    window.posCheckout = function () {
+      var snap = null;
+      try {
+        var T = window.posCalc();
+        if (T && T.promoList && T.promoList.length) snap = T.promoList.slice();
+      } catch (e) {}
+      var before = (db.sales || []).length;
+      var r = _co.apply(this, arguments);
+      try {
+        if (snap && (db.sales || []).length > before) {
+          for (var i = before; i < db.sales.length; i++) {
+            db.sales[i].promos = snap;
+            db.sales[i].promoTotal = snap.reduce(function (a, x) { return R2(a + x.amount); }, 0);
+          }
+          save();
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  /* ═══════════ 4) الشاشة ═══════════ */
+
+  try {
+    PG.promos = [
+      ['العروض والخصومات', 'عروض بتتطبّق لوحدها في الكاشير'],
+      ['Promotions', 'Rules that apply automatically at the till']
+    ];
+    var _cvP = window.canView;
+    window.canView = function (v) {
+      if (v === 'promos') return _cvP('products') || _cvP('reports');
+      return _cvP(v);
+    };
+  } catch (e) {}
+
+  window.fatPromoDesc = function (pr) {
+    var t = pr.type;
+    if (t === 'bxgy') return L('اشتري', 'Buy') + ' ' + (pr.buyQty || 1) + ' ' + L('خد', 'get') + ' ' + (pr.getQty || 1) + ' ' + L('مجانًا', 'free');
+    if (t === 'pct_items') return L('خصم', '') + ' ' + (pr.pct || 0) + '% ' + L('على أصناف مختارة', 'off selected items');
+    if (t === 'pct_cart') return (pr.pct || 0) + '% ' + L('على الفاتورة', 'off the bill') + (pr.minCart ? ' ' + L('فوق', 'over') + ' ' + money(pr.minCart) : '');
+    if (t === 'amount_off') return money(pr.amount || 0) + ' ' + L('خصم', 'off') + (pr.minCart ? ' ' + L('فوق', 'over') + ' ' + money(pr.minCart) : '');
+    return '';
+  };
+
+  window.fatPromoSchedule = function (pr) {
+    var bits = [];
+    if (pr.days && pr.days.length && pr.days.length < 7) {
+      bits.push(pr.days.map(function (d) {
+        var f = DAYS.filter(function (x) { return x[0] === String(d); })[0];
+        return f ? L(f[1], f[2]) : d;
+      }).join('، '));
+    }
+    if (pr.from && pr.to) bits.push('🕐 ' + pr.from + ' – ' + pr.to);
+    if (pr.endDate) bits.push(L('لحد', 'until') + ' ' + pr.endDate);
+    return bits.join(' · ');
+  };
+
+  window.fatPromoToggle = function (id) {
+    var pr = window.fatPromos().filter(function (x) { return x.id === id; })[0];
+    if (!pr) return;
+    pr.active = !pr.active;
+    save();
+    try { logAudit(pr.active ? L('تفعيل عرض', 'Promo on') : L('إيقاف عرض', 'Promo off'), pr.name); } catch (e) {}
+    views.promos();
+  };
+
+  window.fatPromoDelete = function (id) {
+    var pr = window.fatPromos().filter(function (x) { return x.id === id; })[0];
+    if (!pr) return;
+    Promise.resolve(confirmBox(L('تمسح العرض ده؟', 'Delete this promotion?') + '\n\n' + pr.name, { danger: true }))
+      .then(function (okv) {
+        if (!okv) return;
+        db.promos = window.fatPromos().filter(function (x) { return x.id !== id; });
+        save();
+        toast(L('اتمسح', 'Deleted'));
+        views.promos();
+      });
+  };
+
+  window.fatPromoForm = function (id) {
+    var pr = id ? window.fatPromos().filter(function (x) { return x.id === id; })[0] : null;
+    pr = pr || { type: 'bxgy', scope: 'all', active: true, buyQty: 2, getQty: 1, days: [], cats: [], pids: [] };
+    var cats = [];
+    try {
+      var seen = {};
+      (db.products || []).forEach(function (p) { if (p.cat && !seen[p.cat]) { seen[p.cat] = 1; cats.push(p.cat); } });
+    } catch (e) {}
+
+    openModal('<div class="modal-h"><h3>🎁 ' + (id ? L('تعديل عرض', 'Edit promotion') : L('عرض جديد', 'New promotion')) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('اسم العرض (اللي الكاشير هيشوفه)', 'Promotion name') + '</label>' +
+      '<input id="pm_name" value="' + esc(pr.name || '') + '" placeholder="' + L('مثال: عرض الصباح', 'e.g. Morning deal') + '"></div>' +
+      '<div class="field"><label>' + L('نوع العرض', 'Type') + '</label>' +
+      '<select id="pm_type" onchange="fatPromoFormType()">' +
+      window.FAT_PROMO_TYPES.map(function (t) {
+        return '<option value="' + t[0] + '"' + (pr.type === t[0] ? ' selected' : '') + '>' + L(t[1], t[2]) + '</option>';
+      }).join('') + '</select></div>' +
+      '<div id="pm_typeBox"></div>' +
+      '<div class="field"><label>' + L('يطبّق على', 'Applies to') + '</label>' +
+      '<select id="pm_scope" onchange="fatPromoFormScope()">' +
+      '<option value="all"' + (pr.scope === 'all' ? ' selected' : '') + '>' + L('كل الأصناف', 'All items') + '</option>' +
+      '<option value="cat"' + (pr.scope === 'cat' ? ' selected' : '') + '>' + L('تصنيف معيّن', 'Category') + '</option>' +
+      '</select></div>' +
+      '<div id="pm_scopeBox"></div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('أقل قيمة فاتورة (0 = بلا حد)', 'Min bill (0 = none)') + '</label>' +
+      '<input id="pm_min" type="number" step="any" min="0" value="' + (+pr.minCart || '') + '"></div>' +
+      '<div class="field"><label>' + L('أقصى خصم (0 = بلا حد)', 'Max discount (0 = none)') + '</label>' +
+      '<input id="pm_max" type="number" step="any" min="0" value="' + (+pr.maxOff || '') + '"></div></div>' +
+      '<div class="field"><label>' + L('أيام الأسبوع (سيبها فاضية = كل الأيام)', 'Days (empty = all)') + '</label>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+      DAYS.map(function (d) {
+        var on = (pr.days || []).indexOf(d[0]) > -1;
+        return '<label style="display:flex;align-items:center;gap:4px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:12.5px">' +
+          '<input type="checkbox" class="pm_day" value="' + d[0] + '"' + (on ? ' checked' : '') + '> ' + L(d[1], d[2]) + '</label>';
+      }).join('') + '</div></div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>🕐 ' + L('من الساعة', 'From') + '</label><input id="pm_from" type="time" value="' + esc(pr.from || '') + '"></div>' +
+      '<div class="field"><label>🕐 ' + L('لحد الساعة', 'To') + '</label><input id="pm_to" type="time" value="' + esc(pr.to || '') + '"></div></div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('يبدأ في', 'Starts') + '</label><input id="pm_sd" type="date" value="' + esc(pr.startDate || '') + '"></div>' +
+      '<div class="field"><label>' + L('ينتهي في', 'Ends') + '</label><input id="pm_ed" type="date" value="' + esc(pr.endDate || '') + '"></div></div>' +
+      '<div class="hint">💡 ' + L('العرض بيتطبّق لوحده في الكاشير ويظهر في الفاتورة باسمه. سيب الساعات فاضية لو العرض طول اليوم.',
+        'The promo applies automatically at the till. Leave times empty for all-day.') + '</div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatPromoSave(' + (id ? "'" + id + "'" : 'null') + ')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+
+    window._pmDraft = pr;
+    window._pmCats = cats;
+    window.fatPromoFormType();
+    window.fatPromoFormScope();
+  };
+
+  window.fatPromoFormType = function () {
+    var box = document.getElementById('pm_typeBox');
+    if (!box) return;
+    var t = (document.getElementById('pm_type') || {}).value || 'bxgy';
+    var pr = window._pmDraft || {};
+    if (t === 'bxgy') {
+      box.innerHTML = '<div class="grid2">' +
+        '<div class="field"><label>' + L('اشتري كام؟', 'Buy how many?') + '</label>' +
+        '<input id="pm_buy" type="number" min="1" value="' + (+pr.buyQty || 2) + '"></div>' +
+        '<div class="field"><label>' + L('ياخد كام مجانًا؟', 'Get how many free?') + '</label>' +
+        '<input id="pm_get" type="number" min="1" value="' + (+pr.getQty || 1) + '"></div></div>' +
+        '<div class="hint" style="margin-bottom:10px">' +
+        L('المجاني بيتحسب على أرخص صنف في العرض — الأعدل ليك وللعميل.',
+          'The free unit is the cheapest in scope.') + '</div>';
+    } else if (t === 'amount_off') {
+      box.innerHTML = '<div class="field"><label>' + L('مبلغ الخصم', 'Discount amount') + '</label>' +
+        '<input id="pm_amount" type="number" step="any" min="0" value="' + (+pr.amount || '') + '"></div>';
+    } else {
+      box.innerHTML = '<div class="field"><label>' + L('نسبة الخصم %', 'Discount %') + '</label>' +
+        '<input id="pm_pct" type="number" step="any" min="0" max="100" value="' + (+pr.pct || '') + '"></div>';
+    }
+  };
+
+  window.fatPromoFormScope = function () {
+    var box = document.getElementById('pm_scopeBox');
+    if (!box) return;
+    var s = (document.getElementById('pm_scope') || {}).value || 'all';
+    var pr = window._pmDraft || {};
+    if (s !== 'cat') { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="field"><label>' + L('التصنيفات', 'Categories') + '</label>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;max-height:120px;overflow-y:auto">' +
+      (window._pmCats || []).map(function (c) {
+        var on = (pr.cats || []).indexOf(c) > -1;
+        return '<label style="display:flex;align-items:center;gap:4px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:12.5px">' +
+          '<input type="checkbox" class="pm_cat" value="' + esc(c) + '"' + (on ? ' checked' : '') + '> ' + esc(c) + '</label>';
+      }).join('') + '</div></div>';
+  };
+
+  window.fatPromoSave = function (id) {
+    var g = function (i) { var e = document.getElementById(i); return e ? String(e.value || '').trim() : ''; };
+    var name = g('pm_name');
+    if (!name) return toast(L('اكتب اسم للعرض', 'Enter a name'), 'err');
+    var type = g('pm_type');
+
+    var days = [];
+    try {
+      var dn = document.querySelectorAll('.pm_day');
+      for (var i = 0; i < dn.length; i++) if (dn[i].checked) days.push(dn[i].value);
+    } catch (e) {}
+    var cats = [];
+    try {
+      var cn = document.querySelectorAll('.pm_cat');
+      for (var j = 0; j < cn.length; j++) if (cn[j].checked) cats.push(cn[j].value);
+    } catch (e) {}
+
+    var scope = g('pm_scope');
+    if (scope === 'cat' && !cats.length) return toast(L('اختار تصنيف واحد على الأقل', 'Pick at least one category'), 'err');
+
+    var pct = +g('pm_pct') || 0;
+    if ((type === 'pct_items' || type === 'pct_cart') && (pct <= 0 || pct > 100)) {
+      return toast(L('نسبة الخصم لازم بين 1 و 100', 'Percentage must be 1–100'), 'err');
+    }
+    var amount = +g('pm_amount') || 0;
+    if (type === 'amount_off' && amount <= 0) return toast(L('اكتب مبلغ الخصم', 'Enter an amount'), 'err');
+
+    var from = g('pm_from'), to = g('pm_to');
+    if ((from && !to) || (!from && to)) return toast(L('اكتب الساعتين مع بعض أو سيبهم فاضيين', 'Enter both times or neither'), 'err');
+
+    var rec = {
+      id: id || (typeof uid === 'function' ? uid() : String(Date.now())),
+      name: name, type: type, scope: scope, cats: cats, pids: [],
+      buyQty: Math.max(1, +g('pm_buy') || 2),
+      getQty: Math.max(1, +g('pm_get') || 1),
+      pct: pct, amount: amount,
+      minCart: +g('pm_min') || 0, maxOff: +g('pm_max') || 0,
+      days: days, from: from, to: to,
+      startDate: g('pm_sd'), endDate: g('pm_ed'),
+      active: true, priority: 0
+    };
+    var list = window.fatPromos();
+    if (id) {
+      for (var k = 0; k < list.length; k++) {
+        if (list[k].id === id) { rec.active = list[k].active; list[k] = rec; break; }
+      }
+    } else list.push(rec);
+
+    try { logAudit(id ? L('تعديل عرض', 'Edit promo') : L('عرض جديد', 'New promo'), name); } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظ', 'Saved'));
+    try { if (current === 'promos') views.promos(); } catch (e) {}
+  };
+
+  views.promos = function () {
+    var list = window.fatPromos();
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-primary btn-sm" onclick="fatPromoForm()">+ ' + L('عرض جديد', 'New promotion') + '</button>';
+
+    var liveN = list.filter(function (p) { return window.fatPromoLive(p); }).length;
+    var savedToday = 0;
+    try {
+      (db.sales || []).forEach(function (s) {
+        if (s.date === today()) savedToday = R2(savedToday + (+s.promoTotal || 0));
+      });
+    } catch (e) {}
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">🎁</div><div class="lbl">' + L('عروض مسجّلة', 'Promotions') +
+      '</div><div class="val">' + list.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">🟢</div><div class="lbl">' + L('شغّالة دلوقتي', 'Live now') +
+      '</div><div class="val" style="color:var(--ok)">' + liveN + '</div></div>' +
+      '<div class="card"><div class="ic-bg">💸</div><div class="lbl">' + L('خصومات العروض النهاردة', 'Promo discounts today') +
+      '</div><div class="val">' + money(savedToday) + '</div></div></div>';
+
+    var body = list.length
+      ? '<table><thead><tr><th>' + L('العرض', 'Promotion') + '</th><th>' + L('التفاصيل', 'Details') + '</th>' +
+        '<th>' + L('التوقيت', 'Schedule') + '</th><th>' + L('الحالة', 'Status') + '</th><th></th></tr></thead><tbody>' +
+        list.map(function (pr) {
+          var live = window.fatPromoLive(pr);
+          return '<tr><td><b>' + esc(pr.name) + '</b>' +
+            (pr.scope === 'cat' ? '<div style="font-size:10.5px;color:var(--muted)">' + esc((pr.cats || []).join('، ')) + '</div>' : '') +
+            '</td><td style="font-size:12.5px">' + esc(window.fatPromoDesc(pr)) +
+            (pr.minCart ? '<div style="font-size:10.5px;color:var(--muted)">' + L('فوق', 'over') + ' ' + money(pr.minCart) + '</div>' : '') +
+            '</td><td style="font-size:11.5px;color:var(--muted)">' + esc(window.fatPromoSchedule(pr) || L('طول الوقت', 'Always')) + '</td>' +
+            '<td>' + (!pr.active
+              ? '<span class="badge">⏸️ ' + L('موقوف', 'Paused') + '</span>'
+              : live ? '<span class="badge ok">🟢 ' + L('شغّال', 'Live') + '</span>'
+                     : '<span class="badge warn">🕐 ' + L('برّه التوقيت', 'Off-schedule') + '</span>') + '</td>' +
+            '<td class="no-print">' +
+            '<button class="iconbtn" title="' + L('تعديل', 'Edit') + '" onclick="fatPromoForm(\'' + pr.id + '\')">✏️</button>' +
+            '<button class="iconbtn" title="' + (pr.active ? L('إيقاف', 'Pause') : L('تفعيل', 'Activate')) +
+            '" onclick="fatPromoToggle(\'' + pr.id + '\')">' + (pr.active ? '⏸️' : '▶️') + '</button>' +
+            '<button class="iconbtn del" title="' + L('مسح', 'Delete') + '" onclick="fatPromoDelete(\'' + pr.id + '\')">🗑️</button>' +
+            '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty"><span class="big">🎁</span>' +
+        L('مفيش عروض لسه — اضغط «عرض جديد» فوق', 'No promotions yet — press New above') + '</div>';
+
+    document.getElementById('content').innerHTML = cards +
+      '<div class="panel" style="margin-top:14px"><div class="panel-b">' + body + '</div></div>' +
+      '<div class="hint" style="margin-top:12px">💡 ' +
+      L('العرض بيتطبّق لوحده في الكاشير من غير ما الموظف يعمل حاجة، وبيظهر في السلة باسمه وبقيمته — والعميل بيشوفه في الفاتورة.',
+        'Promotions apply automatically at the till and appear by name on the bill.') + '</div>';
+  };
+
+  /* ═══════════ 5) القائمة ═══════════ */
+  function fatInjectPromoNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="promos"]')) return;
+      if (typeof canView === 'function' && !canView('promos')) return;
+      var hidden = (db.settings && db.settings.hiddenSections) || [];
+      if (hidden.indexOf('promos') > -1) return;
+      var anchor = nav.querySelector('a[data-view="products"]') || nav.querySelector('a[data-view="pos"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'promos');
+      a.innerHTML = '<span class="ic">🎁</span> ' + L('العروض', 'Promotions');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('promos'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        fatInjectPromoNav();
+        return r;
+      };
+    }
+    setTimeout(fatInjectPromoNav, 2400);
+    setTimeout(fatInjectPromoNav, 5200);
+  })();
+
 })();
+
+
+/* ============================================================
+   FATORTY v8.7 — إصلاح فقدان البيانات في المزامنة + فحص اتساق المخزون
+
+   الباج: fatMergeKind بتحسم التعارض بالسطر ده:
+       if (lt && ct && lt > ct) → المحلي يكسب
+   وكارت الصنف مالوش ts ولا updatedAt، فالشرط ده مستحيل يتحقق،
+   والنسخة السحابية بتكسب دايمًا — حتى لو المحلية أحدث.
+   النتيجة: بيعة تتسجّل والفلوس تتحصّل وخصم المخزون يتبخّر بصمت.
+
+   الإصلاح (٣ طبقات):
+     ١) وسم كل سجل اتغيّر بـ updatedAt + بصمة الجهاز قبل الرفع
+     ٢) دمج ثلاثي حقيقي: الأساس = آخر نسخة اتزامنت (V2_SNAP)
+        فلو جهاز غيّر الكمية وجهاز غيّر السعر — الاتنين بيعيشوا
+     ٣) سجل تعارضات مرئي بدل ما الحاجة تضيع بصمت
+   وكمان: فحص اتساق المخزون — بيقارن الكمية بآخر رصيد في سجل الحركة
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R3 = function (n) { return Math.round((+n || 0) * 1000) / 1000; };
+
+  /* ═══════════ بصمة الجهاز ═══════════ */
+  window.fatDevTag = function () {
+    try {
+      var t = localStorage.getItem('fat_dev_tag');
+      if (!t) {
+        t = (navigator.platform || 'dev').slice(0, 6).replace(/\W/g, '') + '-' +
+            Math.random().toString(36).slice(2, 6).toUpperCase();
+        localStorage.setItem('fat_dev_tag', t);
+      }
+      return t;
+    } catch (e) { return 'dev'; }
+  };
+
+  function kindsList() {
+    try { if (typeof V2_KINDS !== 'undefined' && V2_KINDS && V2_KINDS.length) return V2_KINDS; } catch (e) {}
+    return ['products', 'sales', 'purchases', 'customers', 'suppliers', 'expenses',
+            'stockMoves', 'employees', 'returns', 'quotes', 'journal'];
+  }
+  function snapOf(kind) {
+    try { if (typeof V2_SNAP !== 'undefined' && V2_SNAP && V2_SNAP[kind]) return V2_SNAP[kind]; } catch (e) {}
+    return {};
+  }
+
+  /* ═══════════ ١) وسم السجلات المتغيّرة ═══════════ */
+
+  window.fatStampChanged = function () {
+    var stamped = 0;
+    try {
+      var now = new Date().toISOString();
+      var dev = window.fatDevTag();
+      var kinds = kindsList();
+      for (var i = 0; i < kinds.length; i++) {
+        var kind = kinds[i];
+        var arr = db[kind];
+        if (!Array.isArray(arr)) continue;
+        var prev = snapOf(kind);
+        for (var j = 0; j < arr.length; j++) {
+          var rec = arr[j];
+          if (!rec || rec.id == null) continue;
+          var lid = String(rec.id);
+          var s;
+          try { s = JSON.stringify(rec); } catch (e) { continue; }
+          // موجود من قبل ومتطابق → ما اتغيّرش، سيبه (عشان مايترفعش من غير داعي)
+          if (prev[lid] !== undefined && prev[lid] === s) continue;
+          rec.updatedAt = now;
+          rec._dev = dev;
+          stamped++;
+        }
+      }
+    } catch (e) {}
+    return stamped;
+  };
+
+  (function () {
+    var _save = window.save;
+    if (typeof _save !== 'function' || window._fatStampWrapped) return;
+    window._fatStampWrapped = true;
+    window.save = function () {
+      try {
+        // البطء: fatStampChanged بتلف على كل السجلات. مالهاش لازمة
+        // غير لما فيه مزامنة سحابية فعلاً هتحصل دلوقتي.
+        var willSync = (typeof sb !== 'undefined' && sb) &&
+                       (typeof CURRENT_UID !== 'undefined' && CURRENT_UID) &&
+                       (typeof V2_READY !== 'undefined' && V2_READY) &&
+                       !window._syncLock;
+        if (willSync) window.fatStampChanged();
+      } catch (e) {}
+      return _save.apply(this, arguments);
+    };
+  })();
+
+  /* ═══════════ ٢) الدمج الثلاثي ═══════════ */
+
+  // حقول مش بتتقارن (مشتقة أو داخلية)
+  var SKIP = { updatedAt: 1, _dev: 1, __chk: 1 };
+
+  window.fatThreeWay = function (local, cloud, baseStr, kind) {
+    var base = null;
+    try { base = baseStr ? JSON.parse(baseStr) : null; } catch (e) {}
+    // مفيش أساس نقارن عليه → المحلي (اللي المستخدم شغّال عليه دلوقتي)
+    if (!base || typeof base !== 'object') return { rec: local, conflicts: [] };
+
+    var out = {}, keys = {}, conflicts = [];
+    [base, cloud, local].forEach(function (o) {
+      if (o && typeof o === 'object') for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) keys[k] = 1;
+    });
+
+    var J = function (v) { try { return JSON.stringify(v); } catch (e) { return String(v); } };
+
+    for (var k in keys) {
+      if (!Object.prototype.hasOwnProperty.call(keys, k)) continue;
+      var b = J(base[k]), c = J(cloud ? cloud[k] : undefined), l = J(local[k]);
+      if (l === c) { out[k] = local[k]; }                 // الاتنين متفقين
+      else if (l === b) { out[k] = cloud ? cloud[k] : local[k]; }  // المحلي ما اتغيّرش → السحابي هو الجديد
+      else if (c === b) { out[k] = local[k]; }            // السحابي ما اتغيّرش → المحلي هو الجديد
+      else {                                             // الاتنين اتغيّروا عن الأساس
+        out[k] = local[k];
+        if (!SKIP[k]) conflicts.push({ field: k, mine: local[k], theirs: cloud ? cloud[k] : undefined });
+      }
+    }
+    if (out.id == null) out.id = local.id;
+    return { rec: out, conflicts: conflicts };
+  };
+
+  window.fatLogConflict = function (kind, rec, conflicts) {
+    if (!conflicts || !conflicts.length) return;
+    try {
+      db.syncConflicts = db.syncConflicts || [];
+      db.syncConflicts.push({
+        id: (typeof uid === 'function' ? uid() : String(Date.now()) + Math.random()),
+        ts: new Date().toISOString(), date: today(),
+        kind: kind, recId: String(rec.id || ''),
+        name: String(rec.name || rec.no || rec.id || ''),
+        dev: window.fatDevTag(),
+        fields: conflicts.slice(0, 12).map(function (c) {
+          var s = function (v) {
+            try {
+              if (v === undefined) return '—';
+              if (typeof v === 'object') return JSON.stringify(v).slice(0, 60);
+              return String(v).slice(0, 60);
+            } catch (e) { return '?'; }
+          };
+          return { field: c.field, mine: s(c.mine), theirs: s(c.theirs) };
+        })
+      });
+      if (db.syncConflicts.length > 300) db.syncConflicts = db.syncConflicts.slice(-300);
+    } catch (e) {}
+  };
+
+  (function () {
+    var _mk = window.fatMergeKind;
+    if (typeof _mk !== 'function' || window._fatMergeFixed) return;
+    window._fatMergeFixed = true;
+
+    window.fatMergeKind = function (localArr, cloudArr, snap, kind) {
+      localArr = Array.isArray(localArr) ? localArr : [];
+      cloudArr = Array.isArray(cloudArr) ? cloudArr : [];
+      snap = snap || {};
+      kind = kind || '';
+
+      var cloudMap = {};
+      cloudArr.forEach(function (r, i) { if (r && r.id != null) cloudMap[String(r.id)] = i; });
+      var merged = cloudArr.slice();
+      var conflictBatch = [];
+
+      localArr.forEach(function (lr) {
+        if (!lr || lr.id == null) return;
+        var id = String(lr.id);
+
+        if (cloudMap[id] === undefined) {
+          // مش في السحابة: جديد محلي لسه ماترفعش → نحتفظ بيه.
+          // لو كان في اللقطة يبقى اتمسح من جهاز تاني → مايرجعش.
+          if (!snap[id]) merged.push(lr);
+          return;
+        }
+
+        var c = merged[cloudMap[id]];
+        var lt = (lr.updatedAt || lr.ts || '');
+        var ct = (c && (c.updatedAt || c.ts)) || '';
+
+        if (lt && ct) {
+          if (lt === ct) return;                       // نفس اللحظة → السحابي زي المحلي
+          merged[cloudMap[id]] = (lt > ct) ? lr : c;   // الأحدث يكسب
+          return;
+        }
+        if (lt && !ct) { merged[cloudMap[id]] = lr; return; }   // المحلي موسوم = أحدث
+        if (!lt && ct) { return; }                              // السحابي موسوم = أحدث
+
+        // مفيش طوابع خالص (بيانات قديمة) → دمج ثلاثي بدل ما ندوس
+        var res = window.fatThreeWay(lr, c, snap[id], kind);
+        merged[cloudMap[id]] = res.rec;
+        if (res.conflicts.length) conflictBatch.push({ rec: res.rec, conflicts: res.conflicts });
+      });
+
+      try {
+        conflictBatch.forEach(function (x) { window.fatLogConflict(kind, x.rec, x.conflicts); });
+        if (conflictBatch.length) {
+          window._fatConflictSeen = (window._fatConflictSeen || 0) + conflictBatch.length;
+        }
+      } catch (e) {}
+
+      return merged;
+    };
+  })();
+
+  // تمرير اسم المجموعة لـ fatMergeKind أثناء السحب (عشان سجل التعارضات يبقى مفهوم)
+  (function () {
+    var _pull = window.pullV2;
+    if (typeof _pull !== 'function') return;
+    window.pullV2 = function () {
+      window._fatConflictSeen = 0;
+      var r = _pull.apply(this, arguments);
+      var after = function () {
+        try {
+          if (window._fatConflictSeen > 0) {
+            toast('⚠️ ' + L('فيه ' + window._fatConflictSeen + ' تعارض بين الأجهزة — راجعه من «تعارضات المزامنة»',
+              window._fatConflictSeen + ' sync conflicts — review them'), 'err');
+          }
+        } catch (e) {}
+      };
+      if (r && typeof r.then === 'function') { r.then(after)['catch'](function () {}); } else { after(); }
+      return r;
+    };
+  })();
+
+  /* ═══════════ ٣) فحص اتساق المخزون ═══════════ */
+
+  // آخر حركة لكل صنف بتحمل الرصيد بعدها — المفروض يساوي p.qty
+  window.fatStockAudit = function () {
+    var last = {};
+    try {
+      (db.stockMoves || []).forEach(function (m) {
+        if (!m || !m.pid || m.balance == null) return;
+        var prev = last[m.pid];
+        var t = m.date || '';
+        if (!prev || t >= prev.t) last[m.pid] = { t: t, bal: +m.balance || 0 };
+      });
+    } catch (e) {}
+
+    var rows = [];
+    (db.products || []).forEach(function (p) {
+      var issues = [];
+      var qty = R3(p.qty);
+
+      var lm = last[p.id];
+      if (lm && Math.abs(R3(lm.bal) - qty) > 0.009) {
+        issues.push({
+          type: 'moves',
+          label: L('الكمية مش مطابقة لآخر رصيد في سجل الحركة', 'Quantity does not match the last movement balance'),
+          expected: R3(lm.bal), actual: qty
+        });
+      }
+      try {
+        if (typeof fatBQSum === 'function' && p.bq) {
+          var bs = fatBQSum(p);
+          if (Math.abs(bs - qty) > 0.009) {
+            issues.push({
+              type: 'branches',
+              label: L('مجموع الفروع مش مطابق للكمية الكلية', 'Branch totals do not match the total quantity'),
+              expected: qty, actual: bs
+            });
+          }
+        }
+      } catch (e) {}
+      try {
+        if (typeof fatBatchOn === 'function' && fatBatchOn(p) && Array.isArray(p.batches)) {
+          var bt = 0;
+          p.batches.forEach(function (b) { bt += (+b.qty || 0); });
+          bt = R3(bt);
+          if (Math.abs(bt - qty) > 0.009) {
+            issues.push({
+              type: 'batches',
+              label: L('مجموع التشغيلات مش مطابق للكمية الكلية', 'Batch totals do not match the total quantity'),
+              expected: qty, actual: bt
+            });
+          }
+        }
+      } catch (e) {}
+
+      if (issues.length) rows.push({ p: p, issues: issues });
+    });
+    return rows;
+  };
+
+  window.fatStockFix = function (pid) {
+    var p = findProduct(pid);
+    if (!p) return;
+    Promise.resolve(confirmBox(
+      L('أظبط أرقام الصنف ده؟', 'Reconcile this item?') + '\n\n' + p.name + '\n\n' +
+      L('الكمية الكلية هي المرجع — هوزّع الفرق على الفرع الرئيسي وعلى تشغيلة «غير محدّد».',
+        'Total quantity is the source of truth; the difference goes to the main branch and an unassigned batch.'),
+      { danger: false }
+    )).then(function (okv) {
+      if (!okv) return;
+      var qty = R3(p.qty);
+      var mainB = '';
+      try { mainB = (typeof fatBranchList === 'function' ? (fatBranchList()[0] || {}).id : '') || ''; } catch (e) {}
+
+      try {
+        if (typeof fatBQSum === 'function' && p.bq && mainB) {
+          var diff = R3(qty - fatBQSum(p));
+          if (Math.abs(diff) > 0.009) p.bq[mainB] = R3((+p.bq[mainB] || 0) + diff);
+        }
+      } catch (e) {}
+      try {
+        if (typeof fatBatchOn === 'function' && fatBatchOn(p) && Array.isArray(p.batches)) {
+          var bt = 0;
+          p.batches.forEach(function (b) { bt += (+b.qty || 0); });
+          var bd = R3(qty - R3(bt));
+          if (Math.abs(bd) > 0.009) {
+            var un = p.batches.filter(function (b) { return !b.code && !b.expiry; })[0];
+            if (!un) {
+              un = { id: (typeof uid === 'function' ? uid() : 'b' + Math.random()),
+                     code: '', expiry: '', qty: 0, branch: mainB, cost: +p.cost || 0, received: today() };
+              p.batches.push(un);
+            }
+            un.qty = R3(un.qty + bd);
+            p.batches = p.batches.filter(function (b) { return Math.abs(+b.qty || 0) > 1e-9; });
+          }
+        }
+      } catch (e) {}
+
+      try { logAudit(L('تصحيح اتساق مخزون', 'Stock reconciliation'), p.name); } catch (e) {}
+      save();
+      toast('✅ ' + L('اتظبط', 'Reconciled'));
+      try { if (current === 'syncHealth') views.syncHealth(); } catch (e) {}
+    });
+  };
+
+  /* ═══════════ ٤) الشاشة ═══════════ */
+
+  try {
+    PG.syncHealth = [
+      ['صحة البيانات', 'تعارضات الأجهزة وفحص اتساق المخزون'],
+      ['Data Health', 'Device conflicts and stock integrity']
+    ];
+    var _cvS = window.canView;
+    window.canView = function (v) {
+      if (v === 'syncHealth') return _cvS('settings') || _cvS('products');
+      return _cvS(v);
+    };
+  } catch (e) {}
+
+  window.fatSyncTab = function (t) { window._shTab = t; views.syncHealth(); };
+
+  window.fatConflictsClear = function () {
+    Promise.resolve(confirmBox(L('تمسح سجل التعارضات كله؟', 'Clear the entire conflict log?'), { danger: true }))
+      .then(function (okv) {
+        if (!okv) return;
+        db.syncConflicts = [];
+        save();
+        toast(L('اتمسح', 'Cleared'));
+        views.syncHealth();
+      });
+  };
+
+  views.syncHealth = function () {
+    var tab = window._shTab || 'stock';
+    var audit = window.fatStockAudit();
+    var conflicts = (db.syncConflicts || []).slice().reverse();
+
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-ghost btn-sm" onclick="views.syncHealth()">🔄 ' + L('إعادة فحص', 'Re-check') + '</button>';
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">' + (audit.length ? '⚠️' : '✅') + '</div>' +
+      '<div class="lbl">' + L('أصناف أرقامها مش متسقة', 'Items with mismatched numbers') + '</div>' +
+      '<div class="val" style="color:' + (audit.length ? 'var(--danger)' : 'var(--ok)') + '">' + audit.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">🔀</div><div class="lbl">' + L('تعارضات بين الأجهزة', 'Device conflicts') +
+      '</div><div class="val" style="color:' + (conflicts.length ? '#d97706' : 'var(--ok)') + '">' + conflicts.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">🖥️</div><div class="lbl">' + L('بصمة الجهاز ده', 'This device') +
+      '</div><div class="val" style="font-size:17px">' + esc(window.fatDevTag()) + '</div></div></div>';
+
+    var tabs = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 12px" class="no-print">' +
+      '<button class="btn ' + (tab === 'stock' ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatSyncTab(\'stock\')">📦 ' +
+      L('اتساق المخزون', 'Stock integrity') + ' (' + audit.length + ')</button>' +
+      '<button class="btn ' + (tab === 'conf' ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatSyncTab(\'conf\')">🔀 ' +
+      L('التعارضات', 'Conflicts') + ' (' + conflicts.length + ')</button></div>';
+
+    var body;
+    if (tab === 'conf') {
+      body = conflicts.length
+        ? '<div style="display:flex;justify-content:flex-end;margin-bottom:8px" class="no-print">' +
+          '<button class="btn btn-ghost btn-sm" onclick="fatConflictsClear()">🗑️ ' + L('مسح السجل', 'Clear log') + '</button></div>' +
+          '<table><thead><tr><th>' + L('التاريخ', 'Date') + '</th><th>' + L('السجل', 'Record') + '</th>' +
+          '<th>' + L('الحقول المتعارضة', 'Conflicting fields') + '</th></tr></thead><tbody>' +
+          conflicts.slice(0, 200).map(function (c) {
+            return '<tr><td style="font-size:11.5px">' + esc(c.date) + '</td>' +
+              '<td><b>' + esc(c.name) + '</b><div style="font-size:10.5px;color:var(--muted)">' + esc(c.kind) + '</div></td>' +
+              '<td style="font-size:11.5px">' + (c.fields || []).map(function (f) {
+                return '<div><b>' + esc(f.field) + '</b>: ' +
+                  L('عندك', 'mine') + ' <span style="color:var(--ok)">' + esc(f.mine) + '</span> · ' +
+                  L('الجهاز التاني', 'theirs') + ' <span style="color:var(--muted)">' + esc(f.theirs) + '</span></div>';
+              }).join('') + '</td></tr>';
+          }).join('') + '</tbody></table>'
+        : '<div class="empty"><span class="big">✅</span>' +
+          L('مفيش تعارضات — كل الأجهزة متفقة', 'No conflicts — all devices agree') + '</div>';
+    } else {
+      body = audit.length
+        ? '<table><thead><tr><th>' + L('الصنف', 'Item') + '</th><th>' + L('المشكلة', 'Issue') + '</th>' +
+          '<th>' + L('المفروض', 'Expected') + '</th><th>' + L('الموجود', 'Actual') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+          audit.slice(0, 200).map(function (r) {
+            return r.issues.map(function (i, ix) {
+              return '<tr>' + (ix === 0
+                ? '<td rowspan="' + r.issues.length + '"><b>' + esc(r.p.name) + '</b>' +
+                  (r.p.sku ? '<div style="font-size:10.5px;color:var(--muted)">' + esc(r.p.sku) + '</div>' : '') + '</td>'
+                : '') +
+                '<td style="font-size:12.5px">' + esc(i.label) + '</td>' +
+                '<td class="t-num" style="color:var(--ok)">' + fmt(i.expected) + '</td>' +
+                '<td class="t-num" style="color:var(--danger)">' + fmt(i.actual) + '</td>' +
+                (ix === 0
+                  ? '<td rowspan="' + r.issues.length + '" class="no-print">' +
+                    '<button class="btn btn-ghost btn-sm" onclick="fatStockFix(\'' + r.p.id + '\')">🔧 ' + L('اظبط', 'Fix') + '</button></td>'
+                  : '') + '</tr>';
+            }).join('');
+          }).join('') + '</tbody></table>'
+        : '<div class="empty"><span class="big">✅</span>' +
+          L('كل أرقام المخزون متسقة', 'All stock numbers are consistent') + '</div>';
+    }
+
+    document.getElementById('content').innerHTML = cards + tabs +
+      '<div class="panel"><div class="panel-b">' + body + '</div></div>' +
+      (tab === 'stock'
+        ? '<div class="hint" style="margin-top:12px">💡 <b>' + L('الفحص ده بيقارن إيه؟', 'What is being checked?') + '</b><br>' +
+          L('١) الكمية الحالية مقابل آخر رصيد اتسجّل في سجل حركة المخزون · ٢) مجموع أرصدة الفروع مقابل الكمية الكلية · ٣) مجموع التشغيلات مقابل الكمية الكلية. أي فرق معناه إن حاجة اتغيّرت من غير ما تعدّي من الحركة الطبيعية — غالبًا مزامنة أو تعديل يدوي.',
+            'It compares the current quantity to the last recorded movement balance, branch totals and batch totals.') + '</div>'
+        : '<div class="hint" style="margin-top:12px">💡 ' +
+          L('التعارض بيتسجّل لما جهازين يغيّروا نفس الحقل في نفس السجل قبل ما يتزامنوا. النظام بياخد نسخة الجهاز اللي انت عليه، وبيسجّل النسخة التانية هنا عشان تراجعها.',
+            'A conflict is logged when two devices change the same field before syncing. Your device wins; the other value is recorded here.') + '</div>');
+  };
+
+  /* ═══════════ ٥) القائمة ═══════════ */
+  function fatInjectSyncNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="syncHealth"]')) return;
+      if (typeof canView === 'function' && !canView('syncHealth')) return;
+      var anchor = nav.querySelector('a[data-view="settings"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'syncHealth');
+      a.innerHTML = '<span class="ic">🩺</span> ' + L('صحة البيانات', 'Data Health');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('syncHealth'); };
+      anchor.parentNode.insertBefore(a, anchor);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        fatInjectSyncNav();
+        return r;
+      };
+    }
+    setTimeout(fatInjectSyncNav, 2600);
+    setTimeout(fatInjectSyncNav, 5400);
+  })();
+
+})();
+
+
+
+/* ============================================================
+   FATORTY v8.8 — تسريع التحميل
+   • QRCode بقت تتحمّل عند أول استخدام بس (اتشالت من الهيد)
+   • نافذة طباعة الفاتورة بترسم الـQR في النافذة الأصلية وتبعته جاهز،
+     فمفيش أي طلب خارجي وقت الطباعة — وشغّالة أوفلاين
+   ============================================================ */
+(function () {
+  'use strict';
+
+  window.fatEnsureQRLib = function () {
+    if (window._fatQrP) return window._fatQrP;
+    window._fatQrP = new Promise(function (res, rej) {
+      if (window.QRCode) return res(window.QRCode);
+      var srcs = ['/vendor/qrcode.min.js',
+                  'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js'];
+      var i = 0;
+      (function next() {
+        if (i >= srcs.length) { window._fatQrP = null; return rej(new Error('qr lib unavailable')); }
+        var sc = document.createElement('script');
+        sc.src = srcs[i++];
+        sc.onload = function () { window.QRCode ? res(window.QRCode) : next(); };
+        sc.onerror = next;
+        document.head.appendChild(sc);
+      })();
+    });
+    return window._fatQrP;
+  };
+
+  // renderQR كانت بتسكت لو المكتبة مش موجودة — دلوقتي بتحمّلها الأول
+  window.renderQR = function (elId, text) {
+    var el = document.getElementById(elId);
+    if (!el) return;
+    el.innerHTML = '';
+    window.fatEnsureQRLib().then(function () {
+      try {
+        new window.QRCode(el, { text: text, width: 92, height: 92,
+                                correctLevel: window.QRCode.CorrectLevel.M });
+      } catch (e) { el.style.display = 'none'; }
+    })['catch'](function () { el.style.display = 'none'; });
+  };
+
+  // ارسم QR وارجّعه كـHTML جاهز — عشان نافذة الطباعة متحتاجش نت
+  window.fatQrHTML = function (text) {
+    try {
+      if (!window.QRCode) return '';
+      var box = document.createElement('div');
+      box.style.cssText = 'position:fixed;left:-9999px;top:0';
+      document.body.appendChild(box);
+      new window.QRCode(box, { text: String(text || ''), width: 70, height: 70,
+                               correctLevel: window.QRCode.CorrectLevel.M });
+      var img = box.querySelector('img'), cv = box.querySelector('canvas');
+      var out = '';
+      if (img && img.src) out = '<img src="' + img.src + '" width="70" height="70">';
+      else if (cv) { try { out = '<img src="' + cv.toDataURL() + '" width="70" height="70">'; } catch (e) {} }
+      document.body.removeChild(box);
+      return out;
+    } catch (e) { return ''; }
+  };
+
+  // سخّن المكتبة بهدوء بعد ما النظام يفتح ويستقر
+  setTimeout(function () { try { window.fatEnsureQRLib(); } catch (e) {} }, 6000);
+
+})();
+
+/* ── إشعار «فيه نسخة جديدة» من الـService Worker ── */
+(function () {
+  'use strict';
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.addEventListener('message', function (ev) {
+    try {
+      if (!ev.data || ev.data.type !== 'FATORTY_UPDATE_READY') return;
+      if (document.getElementById('fatUpdBar')) return;
+      var b = document.createElement('div');
+      b.id = 'fatUpdBar';
+      b.style.cssText =
+        'position:fixed;inset-inline:0;bottom:0;z-index:99999;background:#0f6b5c;color:#fff;' +
+        'padding:11px 16px;display:flex;align-items:center;justify-content:center;gap:14px;' +
+        'font-family:inherit;font-size:13.5px;font-weight:700;box-shadow:0 -4px 20px rgba(0,0,0,.18)';
+      b.innerHTML =
+        '<span>\u2728 ' + (typeof L === 'function'
+          ? L('فيه نسخة جديدة من فاتورتي جاهزة', 'A new version of Fatorty is ready')
+          : 'فيه نسخة جديدة جاهزة') + '</span>' +
+        '<button id="fatUpdBtn" style="background:#fff;color:#0f6b5c;border:none;border-radius:8px;' +
+        'padding:7px 16px;font-weight:800;cursor:pointer;font-family:inherit;font-size:13px">' +
+        (typeof L === 'function' ? L('حدّث دلوقتي', 'Update now') : 'حدّث دلوقتي') + '</button>' +
+        '<button id="fatUpdX" style="background:transparent;color:#fff;border:none;cursor:pointer;' +
+        'font-size:18px;line-height:1;padding:0 4px">\u00d7</button>';
+      document.body.appendChild(b);
+      document.getElementById('fatUpdBtn').onclick = function () { location.reload(); };
+      document.getElementById('fatUpdX').onclick = function () { b.remove(); };
+    } catch (e) {}
+  });
+})();
+
+
+
+/* ============================================================
+   FATORTY v8.9 — رصد الأخطاء عن بُعد
+   المشكلة: الأخطاء كانت بتتسجّل في localStorage على جهاز العميل،
+   يعني سليم عمره ما يشوفها. لو التطبيق وقع عند عميل، مفيش حد يعرف
+   غير لما العميل يزعق — لو زعق أصلًا.
+   الحل: نبعت الخطأ لجدول واحد في Supabase. لو الجدول مش موجود
+   أو النت فاصل، مفيش أي أثر — التطبيق بيكمّل عادي.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var SENT = {};          // بصمة الخطأ → عشان منبعتش نفس الخطأ ألف مرة
+  var COUNT = 0;
+  var MAX_PER_SESSION = 12;
+
+  function fingerprint(e) {
+    return String((e && e.message) || '').slice(0, 120) + '|' +
+           String((e && e.view) || '') + '|' + String((e && e.context) || '').slice(0, 60);
+  }
+
+  window.fatReportError = function (entry) {
+    try {
+      if (!entry) return;
+      if (COUNT >= MAX_PER_SESSION) return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      var fp = fingerprint(entry);
+      if (SENT[fp]) return;
+      SENT[fp] = 1;
+      COUNT++;
+
+      if (typeof sb === 'undefined' || !sb) return;
+
+      var shop = '', email = '', org = null, dev = '';
+      try { shop = (db.settings && db.settings.company) || ''; } catch (e) {}
+      try { email = (typeof CURRENT_EMAIL !== 'undefined' && CURRENT_EMAIL) || ''; } catch (e) {}
+      try { org = (typeof CURRENT_ORG !== 'undefined' && CURRENT_ORG) || null; } catch (e) {}
+      try { dev = (typeof fatDevTag === 'function') ? fatDevTag() : ''; } catch (e) {}
+
+      var row = {
+        org_id: org,
+        user_email: String(email).slice(0, 120),
+        shop: String(shop).slice(0, 120),
+        message: String(entry.message || '').slice(0, 600),
+        source: String(entry.source || '').slice(0, 80),
+        context: String(entry.context || '').slice(0, 300),
+        view: String(entry.view || '').slice(0, 60),
+        device: String(dev).slice(0, 40),
+        ua: String((navigator && navigator.userAgent) || '').slice(0, 240)
+      };
+
+      // ملحوظة: لو الجدول مش متعمل، ده بيفشل بصمت — ومفيش أي تأثير على التطبيق
+      var r = sb.from('error_reports').insert(row);
+      if (r && typeof r.then === 'function') r.then(function () {}, function () {});
+    } catch (e) {}
+  };
+
+  // الأخطاء اللي حصلت قبل ما الدالة دي تتعرّف — ابعتها لما التطبيق يستقر
+  setTimeout(function () {
+    try {
+      var raw = localStorage.getItem('fat_error_log');
+      if (!raw) return;
+      var list = JSON.parse(raw) || [];
+      list.slice(0, 5).forEach(function (e) { window.fatReportError(e); });
+    } catch (e) {}
+  }, 8000);
+
+})();
+
 </script>
 </body>
 </html>
