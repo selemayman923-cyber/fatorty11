@@ -22388,6 +22388,838 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
 })();
 
+
+/* ============================================================
+   FATORTY v9.1 — قفل الشاشة و تبديل الكاشير بـPIN
+
+   ⚠️ بصراحة: ده *مانع سوء استخدام* مش *حاجز أمني*.
+      البيانات على الجهاز، وأي حد فاهم تقنيًا يقدر يتخطاه.
+      قيمته الحقيقية: حد يقعد على الكاشير وانت مش موجود مايقدرش
+      يبيع باسمك، والتبديل بين الكاشيرين يبقى بثانيتين مش بإيميل وباسورد.
+
+   فيه دايمًا مخرج: زرار «دخول بالإيميل وكلمة السر» في شاشة القفل،
+   فمستحيل حد يتقفل برّه النظام.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var LOCK_KEY = 'fat_locked';
+
+  function H(s) {
+    try { if (typeof simpleHash === 'function') return simpleHash(String(s)); } catch (e) {}
+    var h = 0, str = String(s);
+    for (var i = 0; i < str.length; i++) { h = ((h << 5) - h) + str.charCodeAt(i); h |= 0; }
+    return 'x' + h;
+  }
+
+  window.fatPinCfg = function () {
+    try {
+      db.settings = db.settings || {};
+      db.settings.pinLock = db.settings.pinLock || {};
+      var c = db.settings.pinLock;
+      if (c.idleMin === undefined) c.idleMin = 0;      // 0 = مفيش قفل تلقائي
+      if (c.lockOnLoad === undefined) c.lockOnLoad = false;
+      return c;
+    } catch (e) { return { idleMin: 0, lockOnLoad: false }; }
+  };
+
+  window.fatPinUsers = function () {
+    try { return (db.users || []).filter(function (u) { return u && u.pin; }); }
+    catch (e) { return []; }
+  };
+  window.fatPinEnabled = function () { return window.fatPinUsers().length > 0; };
+
+  /* ═══════════ ١) شاشة القفل ═══════════ */
+
+  window._pinBuf = '';
+  window._pinUser = null;
+
+  window.fatLock = function () {
+    if (!window.fatPinEnabled()) {
+      return toast(L('حدّد PIN لمستخدم واحد على الأقل من الإعدادات الأول',
+        'Set a PIN for at least one user first'), 'err');
+    }
+    try { localStorage.setItem(LOCK_KEY, '1'); } catch (e) {}
+    window.fatLockScreen();
+  };
+
+  window.fatLockScreen = function () {
+    if (document.getElementById('fatLockBg')) return;
+    var users = window.fatPinUsers();
+    var shop = '';
+    try { shop = (db.settings && db.settings.company) || 'فاتورتي'; } catch (e) {}
+
+    var bg = document.createElement('div');
+    bg.id = 'fatLockBg';
+    bg.style.cssText =
+      'position:fixed;inset:0;z-index:2147483600;background:linear-gradient(160deg,#0f6b5c,#0a4a40);' +
+      'display:flex;align-items:center;justify-content:center;padding:18px;' +
+      'font-family:inherit;direction:rtl;overflow-y:auto';
+    bg.innerHTML =
+      '<div style="background:var(--panel,#fff);border-radius:22px;max-width:380px;width:100%;' +
+      'padding:26px 22px;box-shadow:0 24px 70px rgba(0,0,0,.35);text-align:center">' +
+      '<div style="font-size:40px;margin-bottom:6px">🔒</div>' +
+      '<div style="font-size:13px;color:var(--muted,#667);margin-bottom:2px">' + esc(shop) + '</div>' +
+      '<h3 style="margin:0 0 18px;font-size:18px;color:var(--ink,#123)">' +
+      L('الشاشة مقفولة', 'Screen locked') + '</h3>' +
+      '<div id="fatLockUsers" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px"></div>' +
+      '<div id="fatLockPad" style="display:none">' +
+      '<div id="fatPinDots" style="display:flex;justify-content:center;gap:9px;margin:6px 0 14px"></div>' +
+      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:9px">' +
+      [1, 2, 3, 4, 5, 6, 7, 8, 9].map(function (n) {
+        return '<button type="button" onclick="fatPinTap(\'' + n + '\')" ' +
+          'style="padding:15px 0;font-size:20px;font-weight:700;border:1px solid var(--line,#ddd);' +
+          'border-radius:13px;background:var(--card2,#f6f8f7);color:var(--ink,#123);cursor:pointer;font-family:inherit">' + n + '</button>';
+      }).join('') +
+      '<button type="button" onclick="fatPinBack()" style="padding:15px 0;font-size:17px;border:1px solid var(--line,#ddd);' +
+      'border-radius:13px;background:var(--card2,#f6f8f7);color:var(--ink,#123);cursor:pointer;font-family:inherit">⌫</button>' +
+      '<button type="button" onclick="fatPinTap(\'0\')" style="padding:15px 0;font-size:20px;font-weight:700;' +
+      'border:1px solid var(--line,#ddd);border-radius:13px;background:var(--card2,#f6f8f7);color:var(--ink,#123);cursor:pointer;font-family:inherit">0</button>' +
+      '<button type="button" onclick="fatPinPick(null)" style="padding:15px 0;font-size:14px;border:1px solid var(--line,#ddd);' +
+      'border-radius:13px;background:var(--card2,#f6f8f7);color:var(--muted,#667);cursor:pointer;font-family:inherit">↩</button>' +
+      '</div></div>' +
+      '<div id="fatLockMsg" style="min-height:20px;margin-top:12px;font-size:12.5px;color:#c0392b;font-weight:600"></div>' +
+      '<button type="button" onclick="fatLockFallback()" style="margin-top:10px;background:none;border:none;' +
+      'color:var(--muted,#667);font-size:12px;cursor:pointer;text-decoration:underline;font-family:inherit">' +
+      L('دخول بالإيميل وكلمة السر', 'Sign in with email & password') + '</button>' +
+      '</div>';
+    document.body.appendChild(bg);
+
+    var list = document.getElementById('fatLockUsers');
+    list.innerHTML = users.map(function (u) {
+      var nm = esc(u.name || u.email || '—');
+      var role = esc(u.role || '');
+      return '<button type="button" onclick="fatPinPick(\'' + u.id + '\')" ' +
+        'style="display:flex;align-items:center;gap:11px;padding:12px 14px;border:1px solid var(--line,#ddd);' +
+        'border-radius:13px;background:var(--panel,#fff);cursor:pointer;text-align:right;font-family:inherit;width:100%">' +
+        '<span style="width:36px;height:36px;border-radius:50%;background:var(--primary,#0f6b5c);color:#fff;' +
+        'display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px">' +
+        esc(String(u.name || u.email || '?').trim().charAt(0).toUpperCase()) + '</span>' +
+        '<span style="flex:1"><b style="font-size:14px;color:var(--ink,#123)">' + nm + '</b>' +
+        (role ? '<div style="font-size:11px;color:var(--muted,#667)">' + role + '</div>' : '') + '</span>' +
+        '</button>';
+    }).join('');
+    window._pinBuf = ''; window._pinUser = null;
+  };
+
+  window.fatPinPick = function (uid) {
+    window._pinUser = uid;
+    window._pinBuf = '';
+    var list = document.getElementById('fatLockUsers');
+    var pad = document.getElementById('fatLockPad');
+    var msg = document.getElementById('fatLockMsg');
+    if (msg) msg.textContent = '';
+    if (list) list.style.display = uid ? 'none' : 'flex';
+    if (pad) pad.style.display = uid ? 'block' : 'none';
+    window.fatPinDots();
+  };
+
+  window.fatPinDots = function () {
+    var d = document.getElementById('fatPinDots');
+    if (!d) return;
+    var n = (window._pinBuf || '').length;
+    var out = '';
+    for (var i = 0; i < Math.max(4, n); i++) {
+      out += '<span style="width:12px;height:12px;border-radius:50%;background:' +
+        (i < n ? 'var(--primary,#0f6b5c)' : 'var(--line,#ddd)') + '"></span>';
+    }
+    d.innerHTML = out;
+  };
+
+  window.fatPinTap = function (n) {
+    if ((window._pinBuf || '').length >= 8) return;
+    window._pinBuf = (window._pinBuf || '') + String(n);
+    window.fatPinDots();
+    if (window._pinBuf.length >= 4) window.fatPinTry();
+  };
+
+  window.fatPinBack = function () {
+    window._pinBuf = (window._pinBuf || '').slice(0, -1);
+    window.fatPinDots();
+  };
+
+  window.fatPinTry = function () {
+    var u = (db.users || []).filter(function (x) { return x.id === window._pinUser; })[0];
+    if (!u) return;
+    if (u.pin !== H(window._pinBuf)) {
+      // ٥ محاولات غلط → تهدئة ١٠ ثواني
+      window._pinFails = (window._pinFails || 0) + 1;
+      var msg = document.getElementById('fatLockMsg');
+      if (window._pinFails >= 5) {
+        window._pinFails = 0;
+        if (msg) msg.textContent = L('محاولات كتير — استنى شوية', 'Too many attempts — wait');
+        var pad = document.getElementById('fatLockPad');
+        if (pad) pad.style.opacity = '.4', pad.style.pointerEvents = 'none';
+        setTimeout(function () {
+          if (pad) pad.style.opacity = '1', pad.style.pointerEvents = '';
+          if (msg) msg.textContent = '';
+        }, 10000);
+      } else if (msg) {
+        msg.textContent = L('PIN غلط', 'Wrong PIN');
+      }
+      window._pinBuf = '';
+      window.fatPinDots();
+      return;
+    }
+    window._pinFails = 0;
+    window.fatUnlockAs(u);
+  };
+
+  window.fatUnlockAs = function (u) {
+    try {
+      db.settings.role = u.role || 'cashier';
+      db.settings.currentUser = u.name || u.email || '';
+      save();
+      logAudit(L('فتح القفل', 'Unlocked'), db.settings.currentUser);
+    } catch (e) {}
+    try { localStorage.removeItem(LOCK_KEY); } catch (e) {}
+    var bg = document.getElementById('fatLockBg');
+    if (bg) bg.remove();
+    window._pinBuf = ''; window._pinUser = null;
+    window.fatTouchActivity();
+    try { renderNav(); } catch (e) {}
+    try { go(typeof defaultView === 'function' ? defaultView() : 'pos'); } catch (e) {}
+    toast('👋 ' + L('أهلاً', 'Welcome') + ' ' + (u.name || u.email || ''));
+  };
+
+  // المخرج الآمن — مستحيل حد يتقفل برّه
+  window.fatLockFallback = function () {
+    try { localStorage.removeItem(LOCK_KEY); } catch (e) {}
+    var bg = document.getElementById('fatLockBg');
+    if (bg) bg.remove();
+    try {
+      var ls = document.getElementById('loginScreen');
+      if (ls) { ls.style.display = ''; return; }
+    } catch (e) {}
+    try { if (typeof authSignOut === 'function') return authSignOut(); } catch (e) {}
+    location.reload();
+  };
+
+  /* ═══════════ ٢) القفل التلقائي عند الخمول ═══════════ */
+
+  window._lastAct = Date.now();
+  window.fatTouchActivity = function () { window._lastAct = Date.now(); };
+
+  ['click', 'keydown', 'touchstart', 'mousemove'].forEach(function (ev) {
+    try { document.addEventListener(ev, function () { window._lastAct = Date.now(); }, { passive: true }); }
+    catch (e) { try { document.addEventListener(ev, function () { window._lastAct = Date.now(); }); } catch (e2) {} }
+  });
+
+  setInterval(function () {
+    try {
+      var c = window.fatPinCfg();
+      if (!c.idleMin || !window.fatPinEnabled()) return;
+      if (document.getElementById('fatLockBg')) return;
+      if (Date.now() - window._lastAct > c.idleMin * 60000) window.fatLock();
+    } catch (e) {}
+  }, 20000);
+
+  // لو كان مقفول قبل ما الصفحة تتقفل، يفضل مقفول
+  setTimeout(function () {
+    try {
+      if (!window.fatPinEnabled()) return;
+      var c = window.fatPinCfg();
+      var wasLocked = false;
+      try { wasLocked = localStorage.getItem(LOCK_KEY) === '1'; } catch (e) {}
+      if (wasLocked || c.lockOnLoad) window.fatLockScreen();
+    } catch (e) {}
+  }, 2500);
+
+  /* ═══════════ ٣) الإعدادات ═══════════ */
+
+  window.fatPinSettings = function () {
+    var users = (db.users || []);
+    var c = window.fatPinCfg();
+    openModal('<div class="modal-h"><h3>🔒 ' + L('قفل الشاشة وتبديل الكاشير', 'Screen lock & user switching') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="hint" style="margin-bottom:14px">⚠️ <b>' + L('اعرف الفرق', 'Know the limits') + ':</b> ' +
+      L('القفل ده بيمنع سوء الاستخدام — حد يقعد على الكاشير وانت مش موجود. مش بديل عن كلمة السر، ومش بيحمي البيانات من حد فاهم تقنيًا.',
+        'This prevents casual misuse. It is not a replacement for your password and not a security boundary.') +
+      '</div>' +
+      (users.length
+        ? users.map(function (u) {
+            return '<div style="display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line)">' +
+              '<div style="flex:1;min-width:0"><b style="font-size:13.5px">' + esc(u.name || u.email) + '</b>' +
+              '<div style="font-size:11px;color:var(--muted)">' + esc(u.role || '') + '</div></div>' +
+              (u.pin
+                ? '<span class="badge ok">🔒 ' + L('عليه PIN', 'PIN set') + '</span>' +
+                  '<button class="btn btn-ghost btn-sm" onclick="fatPinClear(\'' + u.id + '\')">' + L('شيله', 'Remove') + '</button>'
+                : '<button class="btn btn-primary btn-sm" onclick="fatPinSet(\'' + u.id + '\')">' + L('حدّد PIN', 'Set PIN') + '</button>') +
+              '</div>';
+          }).join('')
+        : '<div class="hint">' + L('مفيش مستخدمين — ضيف مستخدمين من الإعدادات الأول',
+            'No users yet — add users in Settings first') + '</div>') +
+      '<div class="field" style="margin-top:16px"><label>' +
+      L('اقفل تلقائيًا بعد (دقيقة) — صفر = مفيش قفل تلقائي', 'Auto-lock after (min) — 0 = off') + '</label>' +
+      '<input id="pin_idle" type="number" min="0" max="240" value="' + (+c.idleMin || 0) + '"></div>' +
+      '<label style="display:flex;align-items:center;justify-content:space-between;padding:11px;background:var(--card2);border-radius:10px;cursor:pointer">' +
+      '<span>' + L('اقفل كل مرة النظام يفتح', 'Lock every time the app opens') + '</span>' +
+      '<input type="checkbox" id="pin_onload"' + (c.lockOnLoad ? ' checked' : '') + ' style="width:20px;height:20px"></label>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatPinSaveCfg()">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إغلاق', 'Close') + '</button></div>');
+  };
+
+  window.fatPinSet = function (uid) {
+    var u = (db.users || []).filter(function (x) { return x.id === uid; })[0];
+    if (!u) return;
+    Promise.resolve(promptBox(
+      L('PIN جديد لـ', 'New PIN for') + ' ' + (u.name || u.email) + '\n' +
+      L('من ٤ لـ ٨ أرقام', '4 to 8 digits'), { value: '' }
+    )).then(function (v) {
+      if (v === null) return;
+      var pin = String(v || '').replace(/\D/g, '');
+      if (pin.length < 4 || pin.length > 8) {
+        return toast(L('لازم من ٤ لـ ٨ أرقام', 'Must be 4–8 digits'), 'err');
+      }
+      if (/^(\d)\1+$/.test(pin) || pin === '1234' || pin === '0000' || pin === '12345678') {
+        return toast(L('الرقم ده سهل جدًا — اختار غيره', 'Too easy to guess — pick another'), 'err');
+      }
+      u.pin = H(pin);
+      save();
+      try { logAudit(L('تحديد PIN', 'Set PIN'), u.name || u.email); } catch (e) {}
+      toast('✅ ' + L('اتحدّد', 'Set'));
+      window.fatPinSettings();
+    });
+  };
+
+  window.fatPinClear = function (uid) {
+    var u = (db.users || []).filter(function (x) { return x.id === uid; })[0];
+    if (!u) return;
+    Promise.resolve(confirmBox(L('تشيل الـPIN بتاع', 'Remove the PIN for') + ' ' + (u.name || u.email) + '؟'))
+      .then(function (okv) {
+        if (!okv) return;
+        delete u.pin;
+        save();
+        toast(L('اتشال', 'Removed'));
+        window.fatPinSettings();
+      });
+  };
+
+  window.fatPinSaveCfg = function () {
+    var c = window.fatPinCfg();
+    var i = document.getElementById('pin_idle'), o = document.getElementById('pin_onload');
+    if (i) c.idleMin = Math.max(0, Math.min(240, +i.value || 0));
+    if (o) c.lockOnLoad = !!o.checked;
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظ', 'Saved'));
+  };
+
+  /* ═══════════ ٤) زرار القفل في الشريط العلوي ═══════════ */
+
+  function injectLockBtn() {
+    try {
+      if (document.getElementById('fatLockBtn')) return;
+      if (!window.fatPinEnabled()) return;
+      var anchor = document.getElementById('themeBtn') || document.getElementById('alertsBtn');
+      if (!anchor || !anchor.parentNode) return;
+      var b = document.createElement('button');
+      b.id = 'fatLockBtn';
+      b.className = 'iconbtn';
+      b.title = L('اقفل الشاشة', 'Lock screen');
+      b.innerHTML = '🔒';
+      b.onclick = function () { window.fatLock(); };
+      anchor.parentNode.insertBefore(b, anchor);
+    } catch (e) {}
+  }
+  setTimeout(injectLockBtn, 3000);
+  setTimeout(injectLockBtn, 6000);
+
+  // مدخل من شاشة الإعدادات
+  (function () {
+    var _vs = views.settings;
+    if (typeof _vs !== 'function') return;
+    views.settings = function () {
+      var r = _vs.apply(this, arguments);
+      try {
+        var ta = document.getElementById('topActions');
+        if (ta && ta.innerHTML.indexOf('fatPinSettings') < 0) {
+          ta.innerHTML = '<button class="btn btn-ghost btn-sm" onclick="fatPinSettings()">🔒 ' +
+            L('قفل الشاشة', 'Screen lock') + '</button> ' + ta.innerHTML;
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        injectLockBtn();
+        return r;
+      };
+    }
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.2 — التقسيط
+   بيتركّب فوق نظام الآجل الموجود (s.dueAmount + c.balance + addCash)
+   من غير ما يغيّر أي حاجة فيه — بيضيف *جدول* للسداد بس.
+   القسط لما يتدفع بيتعامل بالظبط زي أي تحصيل عادي.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  function addDays(d, n) {
+    var x = new Date(d + 'T12:00:00');
+    x.setDate(x.getDate() + n);
+    return x.toISOString().slice(0, 10);
+  }
+  function addMonths(d, n) {
+    var x = new Date(d + 'T12:00:00');
+    var day = x.getDate();
+    x.setMonth(x.getMonth() + n);
+    if (x.getDate() < day) x.setDate(0);   // آخر يوم في الشهر لو الشهر أقصر
+    return x.toISOString().slice(0, 10);
+  }
+
+  /* ═══════════ ١) توليد الجدول ═══════════ */
+
+  window.fatInstBuild = function (total, count, every, unit, startDate) {
+    count = Math.max(1, Math.min(60, +count || 1));
+    every = Math.max(1, +every || 1);
+    var per = R2(total / count);
+    var out = [], acc = 0, d = startDate || today();
+    for (var i = 1; i <= count; i++) {
+      var amt = (i === count) ? R2(total - acc) : per;   // آخر قسط بيستوعب الكسور
+      acc = R2(acc + amt);
+      out.push({ no: i, dueDate: d, amount: amt, paid: false, paidAmt: 0 });
+      d = (unit === 'day') ? addDays(d, every) : addMonths(d, every);
+    }
+    return out;
+  };
+
+  window.fatInstSales = function () {
+    var out = [];
+    try {
+      var sales = db.sales || [];
+      try { if (typeof bf === 'function') sales = bf(sales); } catch (e) {}
+      sales.forEach(function (s) {
+        if (s && Array.isArray(s.installments) && s.installments.length) out.push(s);
+      });
+    } catch (e) {}
+    return out;
+  };
+
+  window.fatInstRows = function () {
+    var rows = [];
+    window.fatInstSales().forEach(function (s) {
+      (s.installments || []).forEach(function (it) {
+        if (it.paid) return;
+        var late = it.dueDate < today();
+        var days = 0;
+        try {
+          days = Math.floor((new Date(today()) - new Date(it.dueDate + 'T12:00:00')) / 86400000);
+        } catch (e) {}
+        rows.push({ s: s, it: it, late: late, days: days });
+      });
+    });
+    rows.sort(function (a, b) { return String(a.it.dueDate).localeCompare(String(b.it.dueDate)); });
+    return rows;
+  };
+
+  window.fatInstTotals = function () {
+    var t = { due: 0, overdue: 0, upcoming: 0, count: 0, lateCount: 0, collected: 0 };
+    window.fatInstSales().forEach(function (s) {
+      (s.installments || []).forEach(function (it) {
+        if (it.paid) { t.collected = R2(t.collected + (+it.paidAmt || +it.amount || 0)); return; }
+        t.count++;
+        t.due = R2(t.due + (+it.amount || 0));
+        if (it.dueDate < today()) { t.overdue = R2(t.overdue + (+it.amount || 0)); t.lateCount++; }
+        else t.upcoming = R2(t.upcoming + (+it.amount || 0));
+      });
+    });
+    return t;
+  };
+
+  /* ═══════════ ٢) إنشاء خطة تقسيط ═══════════ */
+
+  window.fatInstPlan = function (saleId) {
+    var credit = [];
+    try {
+      var sales = db.sales || [];
+      try { if (typeof bf === 'function') sales = bf(sales); } catch (e) {}
+      credit = sales.filter(function (s) {
+        return (+s.dueAmount || 0) > 0.009 && !(s.installments && s.installments.length);
+      }).slice(-100).reverse();
+    } catch (e) {}
+
+    if (!credit.length && !saleId) {
+      return toast(L('مفيش فواتير آجل من غير خطة تقسيط', 'No credit invoices without a plan'), 'err');
+    }
+
+    var sel = saleId || (credit[0] && credit[0].id) || '';
+    openModal('<div class="modal-h"><h3>📅 ' + L('خطة تقسيط جديدة', 'New installment plan') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('الفاتورة الآجلة', 'Credit invoice') + '</label>' +
+      '<select id="ins_sale" onchange="fatInstPreview()">' +
+      credit.map(function (s) {
+        return '<option value="' + s.id + '"' + (s.id === sel ? ' selected' : '') + '>#' + esc(s.no) + ' — ' +
+          esc(s.customerName || L('نقدي', 'Walk-in')) + ' — ' + money(s.dueAmount) + '</option>';
+      }).join('') + '</select></div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('عدد الأقساط', 'Number of installments') + '</label>' +
+      '<input id="ins_count" type="number" min="1" max="60" value="6" oninput="fatInstPreview()"></div>' +
+      '<div class="field"><label>' + L('كل', 'Every') + '</label>' +
+      '<div style="display:flex;gap:6px">' +
+      '<input id="ins_every" type="number" min="1" value="1" oninput="fatInstPreview()" style="width:70px">' +
+      '<select id="ins_unit" onchange="fatInstPreview()" style="flex:1">' +
+      '<option value="month">' + L('شهر', 'month') + '</option>' +
+      '<option value="day">' + L('يوم', 'day') + '</option>' +
+      '</select></div></div></div>' +
+      '<div class="field"><label>' + L('أول قسط في', 'First due date') + '</label>' +
+      '<input id="ins_start" type="date" value="' + today() + '" onchange="fatInstPreview()"></div>' +
+      '<div id="ins_prev" style="background:var(--card2);border-radius:12px;padding:12px;max-height:200px;overflow-y:auto"></div>' +
+      '<div class="hint" style="margin-top:10px">💡 ' +
+      L('الجدول ده بيقسّم المتبقي على الفاتورة. لما القسط يتدفع، بيتعامل زي أي تحصيل عادي — بيقلّل رصيد العميل وبيدخل الخزينة.',
+        'The plan splits the invoice balance. Paying an installment behaves like any normal collection.') +
+      '</div></div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatInstSave()">' + L('إنشاء الخطة', 'Create plan') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+    window.fatInstPreview();
+  };
+
+  window.fatInstPreview = function () {
+    var box = document.getElementById('ins_prev');
+    if (!box) return;
+    var g = function (i) { var e = document.getElementById(i); return e ? e.value : ''; };
+    var s = (db.sales || []).filter(function (x) { return x.id === g('ins_sale'); })[0];
+    if (!s) { box.innerHTML = ''; return; }
+    var plan = window.fatInstBuild(+s.dueAmount || 0, g('ins_count'), g('ins_every'), g('ins_unit'), g('ins_start'));
+    box.innerHTML =
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' +
+      L('المتبقي على الفاتورة', 'Invoice balance') + ': <b style="color:var(--ink)">' + money(s.dueAmount) + '</b></div>' +
+      plan.map(function (p) {
+        return '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px">' +
+          '<span>' + L('قسط', 'Inst.') + ' ' + p.no + ' — ' + esc(p.dueDate) + '</span>' +
+          '<b>' + money(p.amount) + '</b></div>';
+      }).join('');
+  };
+
+  window.fatInstSave = function () {
+    var g = function (i) { var e = document.getElementById(i); return e ? e.value : ''; };
+    var s = (db.sales || []).filter(function (x) { return x.id === g('ins_sale'); })[0];
+    if (!s) return;
+    if ((+s.dueAmount || 0) <= 0.009) return toast(L('الفاتورة مدفوعة بالكامل', 'Invoice is fully paid'), 'err');
+    var count = +g('ins_count') || 0;
+    if (count < 1 || count > 60) return toast(L('عدد الأقساط لازم بين ١ و ٦٠', 'Between 1 and 60'), 'err');
+    if (!g('ins_start')) return toast(L('اختار تاريخ أول قسط', 'Pick the first due date'), 'err');
+
+    s.installments = window.fatInstBuild(+s.dueAmount || 0, count, g('ins_every'), g('ins_unit'), g('ins_start'));
+    s.instCreated = today();
+    try { logAudit(L('خطة تقسيط', 'Installment plan'), '#' + s.no + ' — ' + count + ' ' + L('قسط', 'installments')); } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('الخطة اتعملت', 'Plan created'));
+    try { if (current === 'installments') views.installments(); } catch (e) {}
+  };
+
+  window.fatInstCancel = function (saleId) {
+    var s = (db.sales || []).filter(function (x) { return x.id === saleId; })[0];
+    if (!s) return;
+    var anyPaid = (s.installments || []).some(function (i) { return i.paid; });
+    Promise.resolve(confirmBox(
+      L('تلغي خطة التقسيط؟', 'Cancel this installment plan?') + '\n\n#' + s.no + '\n' +
+      (anyPaid ? L('الأقساط المدفوعة هتفضل مسجّلة كتحصيل عادي.', 'Paid installments remain recorded as normal collections.')
+               : L('الفاتورة هترجع آجل عادي.', 'The invoice returns to normal credit.')),
+      { danger: true }
+    )).then(function (okv) {
+      if (!okv) return;
+      delete s.installments;
+      delete s.instCreated;
+      save();
+      toast(L('اتلغت', 'Cancelled'));
+      try { if (current === 'installments') views.installments(); } catch (e) {}
+    });
+  };
+
+  /* ═══════════ ٣) سداد قسط ═══════════ */
+
+  window.fatInstPay = function (saleId, no) {
+    var s = (db.sales || []).filter(function (x) { return x.id === saleId; })[0];
+    if (!s) return;
+    var it = (s.installments || []).filter(function (x) { return x.no === +no; })[0];
+    if (!it || it.paid) return;
+
+    Promise.resolve(promptBox(
+      L('تحصيل قسط', 'Collect installment') + ' ' + it.no + ' — ' + (s.customerName || '#' + s.no) + '\n' +
+      L('المستحق', 'Due') + ': ' + money(it.amount) + '\n' +
+      L('اكتب المبلغ المحصَّل:', 'Amount collected:'),
+      { value: it.amount, type: 'number' }
+    )).then(function (v) {
+      if (v === null) return;
+      var amt = R2(+v || 0);
+      if (amt <= 0) return;
+      if (amt > (+s.dueAmount || 0) + 0.009) {
+        return toast(L('المبلغ أكبر من المتبقي على الفاتورة', 'More than the invoice balance'), 'err');
+      }
+
+      var doPay = function (acct) {
+        try {
+          // نفس منطق التحصيل العادي بالظبط
+          s.paidAmount = R2((+s.paidAmount || 0) + amt);
+          s.dueAmount = R2((+s.dueAmount || 0) - amt);
+          if (s.dueAmount < 0.009) s.dueAmount = 0;
+
+          var c = null;
+          try { c = s.customerId ? findCustomer(s.customerId) : null; } catch (e) {}
+          if (c) c.balance = R2((+c.balance || 0) - amt);
+
+          it.paidAmt = amt;
+          if (amt >= (+it.amount || 0) - 0.009) {
+            it.paid = true;
+            it.paidAt = today();
+          } else {
+            // سداد جزئي: الباقي يروح لقسط إضافي في نفس التاريخ
+            it.amount = R2((+it.amount || 0) - amt);
+            it.paidAmt = 0;
+            s.installments.push({
+              no: (s.installments.length + 1), dueDate: it.dueDate,
+              amount: amt, paid: true, paidAt: today(), paidAmt: amt, partialOf: it.no
+            });
+          }
+
+          try { addCash('in', amt, L('قسط', 'Installment') + ' ' + it.no + ' — ' + L('فاتورة', 'Invoice') + ' #' + s.no, s.id, acct); } catch (e) {}
+          try { logAudit(L('تحصيل قسط', 'Installment collected'), '#' + s.no + ' — ' + money(amt)); } catch (e) {}
+          save();
+          toast('💵 ' + money(amt) + ' — ' +
+            (s.dueAmount > 0.009 ? L('الباقي', 'Remaining') + ': ' + money(s.dueAmount)
+                                 : L('✓ الفاتورة اتسددت بالكامل', '✓ Invoice fully settled')));
+          try { if (current === 'installments') views.installments(); } catch (e) {}
+        } catch (e) {}
+      };
+
+      // نسأل عن الحساب زي باقي النظام
+      try {
+        if (typeof fatAskAccount === 'function') {
+          Promise.resolve(fatAskAccount(L('التحصيل يدخل في', 'Collect into'), 'cash')).then(function (a) {
+            if (a === null) return;
+            doPay(a);
+          });
+          return;
+        }
+      } catch (e) {}
+      doPay('cash');
+    });
+  };
+
+  window.fatInstRemind = function (saleId, no) {
+    var s = (db.sales || []).filter(function (x) { return x.id === saleId; })[0];
+    if (!s) return;
+    var it = (s.installments || []).filter(function (x) { return x.no === +no; })[0];
+    if (!it) return;
+    var c = null;
+    try { c = s.customerId ? findCustomer(s.customerId) : null; } catch (e) {}
+    var phone = (c && (c.phone || c.phone2)) || '';
+    if (!phone) return toast(L('العميل مالوش رقم موبايل', 'No phone number for this customer'), 'err');
+
+    var shop = '';
+    try { shop = (db.settings && db.settings.company) || ''; } catch (e) {}
+    var late = it.dueDate < today();
+    var msg = L('السلام عليكم', 'Hello') + ' ' + (c.name || '') + '\n\n' +
+      (late ? '⏰ ' + L('تذكير بقسط متأخر', 'Overdue installment reminder')
+            : '📅 ' + L('تذكير بموعد قسط', 'Installment reminder')) + '\n' +
+      L('فاتورة', 'Invoice') + ': #' + s.no + '\n' +
+      L('قسط رقم', 'Installment') + ': ' + it.no + '\n' +
+      L('المبلغ', 'Amount') + ': ' + money(it.amount) + '\n' +
+      L('تاريخ الاستحقاق', 'Due date') + ': ' + it.dueDate + '\n' +
+      L('إجمالي المتبقي على الفاتورة', 'Invoice balance') + ': ' + money(s.dueAmount) + '\n\n' +
+      (shop ? shop : '') + '\n' + L('شكرًا لتعاملكم معانا 🌿', 'Thank you 🌿');
+
+    var num = String(phone).replace(/\D/g, '');
+    if (num.charAt(0) === '0') num = '2' + num;
+    try {
+      if (typeof fatWaSend === 'function') return fatWaSend(num, msg);
+      window.open('https://wa.me/' + num + '?text=' + encodeURIComponent(msg), '_blank');
+    } catch (e) {}
+  };
+
+  /* ═══════════ ٤) الشاشة ═══════════ */
+
+  try {
+    PG.installments = [
+      ['التقسيط', 'أقساط العملاء — المستحق والمتأخر'],
+      ['Installments', 'Customer instalment schedules']
+    ];
+    var _cvI = window.canView;
+    window.canView = function (v) {
+      if (v === 'installments') return _cvI('customers') || _cvI('reports');
+      return _cvI(v);
+    };
+  } catch (e) {}
+
+  window.fatInstTab = function (t) { window._insTab = t; views.installments(); };
+
+  window.fatInstCSV = function () {
+    var rows = [[L('الفاتورة', 'Invoice'), L('العميل', 'Customer'), L('قسط', 'Inst.'),
+      L('الاستحقاق', 'Due date'), L('المبلغ', 'Amount'), L('الحالة', 'Status'), L('أيام التأخير', 'Days late')]];
+    window.fatInstSales().forEach(function (s) {
+      (s.installments || []).forEach(function (it) {
+        var late = !it.paid && it.dueDate < today();
+        var days = 0;
+        try { days = Math.floor((new Date(today()) - new Date(it.dueDate + 'T12:00:00')) / 86400000); } catch (e) {}
+        rows.push(['#' + s.no, s.customerName || '', it.no, it.dueDate, it.amount,
+          it.paid ? L('مدفوع', 'Paid') : (late ? L('متأخر', 'Overdue') : L('قادم', 'Upcoming')),
+          late ? days : '']);
+      });
+    });
+    downloadCSV('installments-' + today() + '.csv', rows);
+  };
+
+  views.installments = function () {
+    var tab = window._insTab || 'due';
+    var t = window.fatInstTotals();
+    var rows = window.fatInstRows();
+
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-primary btn-sm" onclick="fatInstPlan()">+ ' + L('خطة تقسيط', 'New plan') + '</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="fatInstCSV()">📊 CSV</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="window.print()">🖨️</button>';
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">📅</div><div class="lbl">' + L('إجمالي المستحق', 'Total outstanding') +
+      '</div><div class="val">' + money(t.due) + '</div>' +
+      '<div class="sub">' + t.count + ' ' + L('قسط', 'installments') + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⏰</div><div class="lbl">' + L('متأخر', 'Overdue') +
+      '</div><div class="val" style="color:var(--danger)">' + money(t.overdue) + '</div>' +
+      '<div class="sub">' + t.lateCount + ' ' + L('قسط', 'installments') + '</div></div>' +
+      '<div class="card"><div class="ic-bg">📆</div><div class="lbl">' + L('قادم', 'Upcoming') +
+      '</div><div class="val">' + money(t.upcoming) + '</div></div>' +
+      '<div class="card"><div class="ic-bg">✅</div><div class="lbl">' + L('اتحصّل', 'Collected') +
+      '</div><div class="val" style="color:var(--ok)">' + money(t.collected) + '</div></div>' +
+      '</div>';
+
+    var list = tab === 'late' ? rows.filter(function (r) { return r.late; })
+             : tab === 'soon' ? rows.filter(function (r) { return !r.late; })
+             : rows;
+
+    var tabs = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 12px" class="no-print">' +
+      [['due', L('كل المستحق', 'All due'), rows.length],
+       ['late', '⏰ ' + L('متأخر', 'Overdue'), rows.filter(function (r) { return r.late; }).length],
+       ['soon', '📆 ' + L('قادم', 'Upcoming'), rows.filter(function (r) { return !r.late; }).length],
+       ['plans', '📋 ' + L('الخطط', 'Plans'), window.fatInstSales().length]]
+        .map(function (x) {
+          return '<button class="btn ' + (tab === x[0] ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatInstTab(\'' + x[0] + '\')">' +
+            x[1] + ' (' + x[2] + ')</button>';
+        }).join('') + '</div>';
+
+    var body;
+    if (tab === 'plans') {
+      var plans = window.fatInstSales();
+      body = plans.length
+        ? '<table><thead><tr><th>' + L('الفاتورة', 'Invoice') + '</th><th>' + L('العميل', 'Customer') + '</th>' +
+          '<th>' + L('الأقساط', 'Installments') + '</th><th>' + L('اتسدد', 'Paid') + '</th>' +
+          '<th>' + L('المتبقي', 'Remaining') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+          plans.map(function (s) {
+            var paid = (s.installments || []).filter(function (i) { return i.paid; }).length;
+            var tot = (s.installments || []).length;
+            return '<tr><td><b>#' + esc(s.no) + '</b><div style="font-size:10.5px;color:var(--muted)">' + esc(s.date) + '</div></td>' +
+              '<td>' + esc(s.customerName || '—') + '</td>' +
+              '<td>' + paid + ' / ' + tot +
+              '<div style="height:5px;background:var(--line);border-radius:3px;margin-top:4px;overflow:hidden">' +
+              '<div style="height:100%;width:' + (tot ? Math.round(paid / tot * 100) : 0) + '%;background:var(--ok)"></div></div></td>' +
+              '<td class="t-num" style="color:var(--ok)">' + money((+s.paidAmount || 0)) + '</td>' +
+              '<td class="t-num" style="color:var(--danger)"><b>' + money(+s.dueAmount || 0) + '</b></td>' +
+              '<td class="no-print"><button class="iconbtn del" title="' + L('إلغاء الخطة', 'Cancel plan') +
+              '" onclick="fatInstCancel(\'' + s.id + '\')">🗑️</button></td></tr>';
+          }).join('') + '</tbody></table>'
+        : '<div class="empty"><span class="big">📅</span>' +
+          L('مفيش خطط تقسيط — اضغط «خطة تقسيط» فوق', 'No plans yet — press New plan above') + '</div>';
+    } else {
+      body = list.length
+        ? '<table><thead><tr><th>' + L('الاستحقاق', 'Due date') + '</th><th>' + L('العميل', 'Customer') + '</th>' +
+          '<th>' + L('الفاتورة', 'Invoice') + '</th><th>' + L('قسط', 'Inst.') + '</th>' +
+          '<th>' + L('المبلغ', 'Amount') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+          list.slice(0, 300).map(function (r) {
+            return '<tr>' +
+              '<td><b style="color:' + (r.late ? 'var(--danger)' : 'var(--ink)') + '">' + esc(r.it.dueDate) + '</b>' +
+              (r.late ? '<div style="font-size:10.5px;color:var(--danger)">⏰ ' + L('متأخر', 'late') + ' ' +
+                        r.days + ' ' + L('يوم', 'd') + '</div>' : '') + '</td>' +
+              '<td>' + esc(r.s.customerName || '—') + '</td>' +
+              '<td>#' + esc(r.s.no) + '</td>' +
+              '<td>' + r.it.no + ' / ' + (r.s.installments || []).length + '</td>' +
+              '<td class="t-num"><b>' + money(r.it.amount) + '</b></td>' +
+              '<td class="no-print">' +
+              '<button class="btn btn-primary btn-sm" onclick="fatInstPay(\'' + r.s.id + '\',' + r.it.no + ')">💵 ' +
+              L('تحصيل', 'Collect') + '</button> ' +
+              '<button class="iconbtn" title="' + L('تذكير واتساب', 'WhatsApp reminder') +
+              '" onclick="fatInstRemind(\'' + r.s.id + '\',' + r.it.no + ')">💬</button></td></tr>';
+          }).join('') + '</tbody></table>'
+        : '<div class="empty"><span class="big">✅</span>' +
+          L('مفيش أقساط مستحقة هنا', 'Nothing due here') + '</div>';
+    }
+
+    document.getElementById('content').innerHTML = cards + tabs +
+      '<div class="panel"><div class="panel-b">' + body + '</div></div>' +
+      (t.lateCount
+        ? '<div class="hint" style="margin-top:12px;color:var(--danger)">⏰ <b>' + t.lateCount + ' ' +
+          L('قسط متأخر بقيمة', 'overdue installments worth') + ' ' + money(t.overdue) + '</b><br>' +
+          L('اضغط 💬 جنب القسط عشان تبعت تذكير واتساب للعميل بكل التفاصيل جاهزة.',
+            'Press 💬 to send a ready WhatsApp reminder.') + '</div>'
+        : '');
+  };
+
+  /* ═══════════ ٥) القائمة ═══════════ */
+  function injectInstNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="installments"]')) return;
+      if (typeof canView === 'function' && !canView('installments')) return;
+      var hidden = (db.settings && db.settings.hiddenSections) || [];
+      if (hidden.indexOf('installments') > -1) return;
+      var anchor = nav.querySelector('a[data-view="aging"]') ||
+                   nav.querySelector('a[data-view="customers"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'installments');
+      a.innerHTML = '<span class="ic">📅</span> ' + L('التقسيط', 'Installments');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('installments'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        injectInstNav();
+        return r;
+      };
+    }
+    setTimeout(injectInstNav, 2800);
+    setTimeout(injectInstNav, 5600);
+  })();
+
+  /* ═══════════ ٦) تنبيه الأقساط المتأخرة في الجرس ═══════════ */
+  (function () {
+    var _ga = window.getAlerts;
+    if (typeof _ga !== 'function') return;
+    window.getAlerts = function () {
+      var list = [];
+      try { list = _ga.apply(this, arguments) || []; } catch (e) { list = []; }
+      try {
+        var t = window.fatInstTotals();
+        if (t.lateCount) {
+          list.push({
+            type: 'overdue',
+            msg: '⏰ ' + t.lateCount + ' ' + L('قسط متأخر بقيمة', 'overdue installments worth') + ' ' + money(t.overdue),
+            action: "go('installments')"
+          });
+        }
+      } catch (e) {}
+      return list;
+    };
+  })();
+
+})();
+
 </script>
 </body>
 </html>

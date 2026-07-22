@@ -109,13 +109,18 @@ setTimeout(() => {
     ['v8.5 · التشغيلات', 'fatBatchConsume'],
     ['v8.6 · العروض', 'fatPromoEval'],
     ['v8.7 · المزامنة', 'fatThreeWay'],
-    ['v8.8 · تسريع التحميل', 'fatEnsureQRLib']
+    ['v8.8 · تسريع التحميل', 'fatEnsureQRLib'],
+    ['v8.9 · رصد الأخطاء', 'fatReportError'],
+    ['v9.0 · تحذير رصيد الفرع', 'fatCartBranchIssues'],
+    ['v9.0 · تقرير أداء العروض', 'fatPromoStats'],
+    ['v9.1 · قفل الشاشة', 'fatLockScreen'],
+    ['v9.2 · التقسيط', 'fatInstBuild']
   ];
   checks.forEach(([label, fn]) => ok(label, typeof w[fn] === 'function'));
 
   /* ═══ ٥) الشاشات اتسجّلت ═══ */
   console.log('\n▶ الشاشات الجديدة اتسجّلت');
-  const screens = ['aging', 'branchStock', 'renew', 'etaPrep', 'kds', 'batches', 'promos', 'syncHealth'];
+  const screens = ['aging', 'branchStock', 'renew', 'etaPrep', 'kds', 'batches', 'promos', 'syncHealth', 'installments'];
   // views و V2_KINDS معرّفين بـconst فمش على window — نقيّمهم جوه نطاق الصفحة
   const evalIn = expr => { try { return w.eval(expr); } catch (e) { return undefined; } };
   screens.forEach(s => ok('شاشة ' + s, evalIn(`typeof views!=='undefined' && typeof views['${s}']==='function'`) === true));
