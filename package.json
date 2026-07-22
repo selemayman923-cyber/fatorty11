@@ -3,9 +3,12 @@
   "private": true,
   "scripts": {
     "check:syntax": "node tools/extract-inline-js.js",
+    "test:boot": "node tools/test-boot.js index.html",
+    "test:fixes": "node tools/test-fixes.js index.html",
     "test": "playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "^1.48.0"
+    "@playwright/test": "^1.48.0",
+    "jsdom": "^24.0.0"
   }
 }
