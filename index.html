@@ -21593,22 +21593,90 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
       if (issues.length) rows.push({ p: p, issues: issues });
     });
+
+    // كشف الكروت المكررة — نفس الاسم/الكود بأكتر من سجل
+    try {
+      var byKey = {};
+      (db.products || []).forEach(function (p) {
+        var k = String(p.sku || p.barcode || '').trim().toLowerCase() ||
+                ('n:' + String(p.name || '').trim().toLowerCase());
+        if (!k || k === 'n:') return;
+        (byKey[k] = byKey[k] || []).push(p);
+      });
+      for (var k in byKey) {
+        if (!Object.prototype.hasOwnProperty.call(byKey, k)) continue;
+        if (byKey[k].length < 2) continue;
+        byKey[k].forEach(function (p) {
+          var r = null;
+          for (var i = 0; i < rows.length; i++) if (rows[i].p.id === p.id) r = rows[i];
+          if (!r) { r = { p: p, issues: [] }; rows.push(r); }
+          r.issues.push({
+            type: 'dup',
+            label: L('كارت مكرر — فيه ' + byKey[k].length + ' سجلات بنفس الكود/الاسم',
+                     'Duplicate card — ' + byKey[k].length + ' records share this code/name'),
+            expected: 1, actual: byKey[k].length
+          });
+        });
+      }
+    } catch (e) {}
+
     return rows;
   };
 
   window.fatStockFix = function (pid) {
     var p = findProduct(pid);
     if (!p) return;
+    var issues = [];
+    try {
+      var found = window.fatStockAudit().filter(function (r) { return r.p.id === pid; })[0];
+      issues = (found && found.issues) || [];
+    } catch (e) {}
+    var hasDup = issues.some(function (i) { return i.type === 'dup'; });
+    var movesIssue = issues.filter(function (i) { return i.type === 'moves'; })[0];
+
+    if (hasDup) {
+      return toast(L('الصنف ده مكرر — ادمج الكروت الأول من شاشة الأصناف، وبعدين اظبط',
+                     'This item is duplicated — merge the cards first'), 'err');
+    }
+
+    var lines = [p.name, ''];
+    if (movesIssue) {
+      var d = R3(qtyOf(p) - movesIssue.expected);
+      lines.push(L('هتتسجّل حركة تسوية بفرق', 'An adjustment movement of') + ' ' +
+                 (d > 0 ? '+' : '') + fmt(d) + ' ' +
+                 L('عشان سجل الحركة يفسّر الكمية الحالية.', 'will be recorded to explain the current quantity.'));
+      lines.push(L('الكمية نفسها مش هتتغيّر.', 'The quantity itself will not change.'));
+    }
+    lines.push(L('توزيع الفروع والتشغيلات هيتظبط على الكمية الكلية.',
+                 'Branch and batch totals will be aligned to the total quantity.'));
+
+    function qtyOf(x) { return R3(x.qty); }
+
     Promise.resolve(confirmBox(
-      L('أظبط أرقام الصنف ده؟', 'Reconcile this item?') + '\n\n' + p.name + '\n\n' +
-      L('الكمية الكلية هي المرجع — هوزّع الفرق على الفرع الرئيسي وعلى تشغيلة «غير محدّد».',
-        'Total quantity is the source of truth; the difference goes to the main branch and an unassigned batch.'),
+      L('أظبط أرقام الصنف ده؟', 'Reconcile this item?') + '\n\n' + lines.join('\n'),
       { danger: false }
     )).then(function (okv) {
       if (!okv) return;
       var qty = R3(p.qty);
       var mainB = '';
       try { mainB = (typeof fatBranchList === 'function' ? (fatBranchList()[0] || {}).id : '') || ''; } catch (e) {}
+
+      // حركة تسوية: بنخلي السجل يفسّر الكمية — مش بنغيّر الكمية بصمت
+      try {
+        if (movesIssue) {
+          var diff = R3(qty - movesIssue.expected);
+          if (Math.abs(diff) > 0.009) {
+            db.stockMoves = db.stockMoves || [];
+            db.stockMoves.push({
+              id: (typeof uid === 'function' ? uid() : String(Date.now())),
+              date: today(), pid: p.id, name: p.name,
+              delta: diff, kind: 'adjust', balance: qty, branch: mainB,
+              note: L('تسوية اتساق — فرق بين الكمية وسجل الحركة',
+                      'Integrity adjustment — quantity vs movement log')
+            });
+          }
+        }
+      } catch (e) {}
 
       try {
         if (typeof fatBQSum === 'function' && p.bq && mainB) {
