@@ -182,8 +182,62 @@ setTimeout(() => {
     })()
   `) === true);
 
-  console.log('\n' + '─'.repeat(50));
-  console.log(`النتيجة: ${pass} نجحت · ${fail} فشلت`);
-  dom.window.close();
-  process.exit(fail ? 1 : 0);
+
+  /* ═══ ٧) شاشة صحة البيانات — الإصلاح الجديد ═══ */
+  console.log('\n▶ ٧) صحة البيانات: التكرار والتسوية');
+  const dupRes = ev(`
+    (function(){
+      db.branches=[{id:'b1',name:'رئيسي'}];
+      db.products=[
+        {id:'d1',name:'بن تركي',sku:'C100',qty:6.65,cost:1},
+        {id:'d2',name:'بن تركي',sku:'C100',qty:6.65,cost:1},
+        {id:'d3',name:'سليم',sku:'X1',qty:5,cost:1}
+      ];
+      db.stockMoves=[
+        {pid:'d1',date:today(),balance:6.90},
+        {pid:'d2',date:today(),balance:6.90},
+        {pid:'d3',date:today(),balance:5}
+      ];
+      var a=fatStockAudit();
+      var d1=a.filter(function(r){return r.p.id==='d1';})[0];
+      return {
+        flaggedDup: !!(d1 && d1.issues.some(function(i){return i.type==='dup';})),
+        flaggedMoves: !!(d1 && d1.issues.some(function(i){return i.type==='moves';})),
+        cleanNotFlagged: !a.filter(function(r){return r.p.id==='d3';})[0]
+      };
+    })()
+  `);
+  ok('كشف الكارت المكرر', dupRes && dupRes.flaggedDup === true);
+  ok('ولسه بيكشف فرق سجل الحركة', dupRes && dupRes.flaggedMoves === true);
+  ok('الصنف السليم مش بيتفلگ', dupRes && dupRes.cleanNotFlagged === true);
+
+  const fixRes = ev(`
+    (function(){
+      db.products=[{id:'f1',name:'صنف',sku:'F1',qty:8,cost:1,bq:{b1:8}}];
+      db.stockMoves=[{pid:'f1',date:today(),balance:10}];
+      var before=db.stockMoves.length;
+      window.confirmBox=function(){ return Promise.resolve(true); };  // نوافق تلقائيًا
+      fatStockFix('f1');
+      return { pending:true, before:before };
+    })()
+  `);
+  setTimeout(() => {
+    const after = ev(`
+      (function(){
+        var mv=(db.stockMoves||[]).filter(function(m){return m.kind==='adjust';})[0];
+        return { added: !!mv, delta: mv?mv.delta:null, qtyUnchanged: findProduct('f1').qty===8,
+                 clean: fatStockAudit().filter(function(r){return r.p.id==='f1';}).length===0 };
+      })()
+    `);
+    ok('التصحيح سجّل حركة تسوية', after && after.added === true);
+    ok('التسوية بالفرق الصح (−٢)', after && after.delta === -2);
+    ok('الكمية نفسها ما اتغيّرتش', after && after.qtyUnchanged === true);
+    ok('المشكلة اتحلّت بعد التسوية', after && after.clean === true);
+
+    console.log('\n' + '─'.repeat(50));
+    console.log(`النتيجة: ${pass} نجحت · ${fail} فشلت`);
+    dom.window.close();
+    process.exit(fail ? 1 : 0);
+  }, 400);
+
 }, 2500);
