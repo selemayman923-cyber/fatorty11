@@ -183,6 +183,74 @@ setTimeout(() => {
   `) === true);
 
 
+  /* ═══ ٨) v9.0 ═══ */
+  console.log('\n▶ ٨) v9.0 — الفجوات المقفولة');
+
+  const branchWarn = ev(`
+    (function(){
+      db.branches=[{id:'b1',name:'المعادي'},{id:'b2',name:'طنطا'}];
+      db.settings.activeBranch='b1';
+      db.products=[{id:'w1',name:'أسمنت',qty:100,cost:1,bq:{b1:5,b2:95}}];
+      cart=[{lid:'l1',pid:'w1',qty:20}];
+      var iss=fatCartBranchIssues();
+      return { count:iss.length, want:iss[0]&&iss[0].want, have:iss[0]&&iss[0].have, total:iss[0]&&iss[0].total };
+    })()
+  `);
+  ok('كشف إن الكمية أكبر من رصيد الفرع', branchWarn && branchWarn.count === 1);
+  ok('عرف المطلوب والمتاح', branchWarn && branchWarn.want === 20 && branchWarn.have === 5);
+  ok('وبيقول إن الإجمالي متوفر في فرع تاني', branchWarn && branchWarn.total === 100);
+  ok('مفيش تحذير لو الرصيد كفاية', ev(`
+    (function(){ cart=[{lid:'l1',pid:'w1',qty:3}]; return fatCartBranchIssues().length===0; })()
+  `) === true);
+  ok('مفيش تحذير لفرع واحد بس', ev(`
+    (function(){
+      var keep=db.branches; db.branches=[{id:'b1',name:'وحيد'}];
+      cart=[{lid:'l1',pid:'w1',qty:999}];
+      var n=fatCartBranchIssues().length; db.branches=keep; return n===0;
+    })()
+  `) === true);
+  ok('المنع مقفول افتراضيًا', ev(`fatPosCfg().block===false && fatPosCfg().warn===true`) === true);
+
+  const alerts = ev(`
+    (function(){
+      db.products=[{id:'e1',name:'لبن',qty:10,cost:1,trackBatch:true,bq:{b1:10},batches:[
+        {id:'b_old',code:'A',expiry:'2020-01-01',qty:4,branch:'b1'},
+        {id:'b_soon',code:'B',expiry:'2026-07-25',qty:3,branch:'b1'},
+        {id:'b_un',code:'',expiry:'',qty:3,branch:'b1'}]}];
+      var a=getAlerts();
+      return {
+        expired: a.filter(function(x){return x.type==='expiry' && /منتهية/.test(x.msg);}).length,
+        soon:    a.filter(function(x){return x.type==='expiry' && /قربت/.test(x.msg);}).length,
+        unassigned: a.filter(function(x){return /تشغيلة/.test(x.msg) && x.type==='stock';}).length
+      };
+    })()
+  `);
+  ok('تنبيه البضاعة المنتهية في الجرس', alerts && alerts.expired === 1);
+  ok('تنبيه اللي قرب ينتهي', alerts && alerts.soon === 1);
+  ok('تنبيه الكمية بدون تشغيلة', alerts && alerts.unassigned === 1);
+
+  const promoRep = ev(`
+    (function(){
+      db.promos=[{id:'pr1',name:'عرض رابح',active:true,type:'pct_cart',pct:5,scope:'all',days:[]},
+                 {id:'pr2',name:'عرض خاسر',active:true,type:'pct_cart',pct:80,scope:'all',days:[]}];
+      db.products=[{id:'x1',name:'ص',cost:70,price:100,qty:99}];
+      db.sales=[
+        {id:'s1',no:1,date:today(),total:190,items:[{pid:'x1',qty:2,price:100}],
+         promos:[{id:'pr1',name:'عرض رابح',amount:10}], promoTotal:10},
+        {id:'s2',no:2,date:today(),total:40,items:[{pid:'x1',qty:2,price:100}],
+         promos:[{id:'pr2',name:'عرض خاسر',amount:160}], promoTotal:160}
+      ];
+      var st=fatPromoStats();
+      var good=st.filter(function(x){return x.promo.id==='pr1';})[0];
+      var bad=st.filter(function(x){return x.promo.id==='pr2';})[0];
+      return { goodMargin:good&&good.margin, badMargin:bad&&bad.margin,
+               goodUses:good&&good.uses, goodDisc:good&&good.discount };
+    })()
+  `);
+  ok('التقرير بيحسب الاستخدام والخصم', promoRep && promoRep.goodUses === 1 && promoRep.goodDisc === 10);
+  ok('العرض الرابح هامشه موجب (190−140=50)', promoRep && promoRep.goodMargin === 50);
+  ok('العرض الخاسر هامشه سالب (40−140=−100)', promoRep && promoRep.badMargin === -100);
+
   /* ═══ ٧) شاشة صحة البيانات — الإصلاح الجديد ═══ */
   console.log('\n▶ ٧) صحة البيانات: التكرار والتسوية');
   const dupRes = ev(`

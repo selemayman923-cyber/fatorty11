@@ -109,7 +109,10 @@ setTimeout(() => {
     ['v8.5 · التشغيلات', 'fatBatchConsume'],
     ['v8.6 · العروض', 'fatPromoEval'],
     ['v8.7 · المزامنة', 'fatThreeWay'],
-    ['v8.8 · تسريع التحميل', 'fatEnsureQRLib']
+    ['v8.8 · تسريع التحميل', 'fatEnsureQRLib'],
+    ['v8.9 · رصد الأخطاء', 'fatReportError'],
+    ['v9.0 · تحذير رصيد الفرع', 'fatCartBranchIssues'],
+    ['v9.0 · تقرير أداء العروض', 'fatPromoStats']
   ];
   checks.forEach(([label, fn]) => ok(label, typeof w[fn] === 'function'));
 
