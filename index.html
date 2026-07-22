@@ -23656,6 +23656,479 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
 })();
 
+
+/* ============================================================
+   FATORTY v9.4 — مستويات الولاء + QR الطاولات
+   ملحوظة: c.tier عندك مستخدمة لمستوى *السعر* (جملة/أونلاين) —
+   فمالمستهاش. مستوى الولاء بيتحسب لوحده من إجمالي مشتريات العميل.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  /* ═══════════ ١) إعداد المستويات ═══════════ */
+
+  var DEFAULT_TIERS = [
+    { key: 'bronze', name: 'برونزي', nameEn: 'Bronze', min: 0, mult: 1, disc: 0, icon: '🥉', color: '#b45309' },
+    { key: 'silver', name: 'فضي', nameEn: 'Silver', min: 5000, mult: 1.25, disc: 0, icon: '🥈', color: '#64748b' },
+    { key: 'gold', name: 'ذهبي', nameEn: 'Gold', min: 20000, mult: 1.5, disc: 3, icon: '🥇', color: '#d97706' },
+    { key: 'platinum', name: 'بلاتيني', nameEn: 'Platinum', min: 50000, mult: 2, disc: 5, icon: '💎', color: '#7c3aed' }
+  ];
+
+  window.fatLoyCfg = function () {
+    try {
+      db.settings = db.settings || {};
+      db.settings.loyTiersCfg = db.settings.loyTiersCfg || {};
+      var c = db.settings.loyTiersCfg;
+      if (c.on === undefined) c.on = false;
+      if (c.months === undefined) c.months = 12;      // فترة الحساب
+      if (!Array.isArray(c.tiers) || !c.tiers.length) c.tiers = JSON.parse(JSON.stringify(DEFAULT_TIERS));
+      return c;
+    } catch (e) { return { on: false, months: 12, tiers: DEFAULT_TIERS }; }
+  };
+
+  window.fatLoyOn = function () { try { return !!window.fatLoyCfg().on; } catch (e) { return false; } };
+
+  // إجمالي مشتريات العميل خلال الفترة
+  window.fatCustSpend = function (cid, months) {
+    var total = 0;
+    try {
+      months = months || window.fatLoyCfg().months || 12;
+      var cutoff = '';
+      try {
+        var d = new Date(today() + 'T12:00:00');
+        d.setMonth(d.getMonth() - months);
+        cutoff = d.toISOString().slice(0, 10);
+      } catch (e) {}
+      var sales = db.sales || [];
+      try { if (typeof bf === 'function') sales = bf(sales); } catch (e) {}
+      sales.forEach(function (s) {
+        if (!s || s.customerId !== cid) return;
+        if (s.voided || s.canceled) return;
+        if (cutoff && s.date < cutoff) return;
+        total = R2(total + (+s.total || 0));
+      });
+    } catch (e) {}
+    return total;
+  };
+
+  window.fatCustTier = function (cid) {
+    var cfg = window.fatLoyCfg();
+    var tiers = (cfg.tiers || []).slice().sort(function (a, b) { return (+b.min || 0) - (+a.min || 0); });
+    var spend = window.fatCustSpend(cid, cfg.months);
+    for (var i = 0; i < tiers.length; i++) {
+      if (spend >= (+tiers[i].min || 0)) {
+        return { tier: tiers[i], spend: spend, next: tiers[i - 1] || null,
+                 toNext: tiers[i - 1] ? R2((+tiers[i - 1].min || 0) - spend) : 0 };
+      }
+    }
+    var last = tiers[tiers.length - 1] || DEFAULT_TIERS[0];
+    return { tier: last, spend: spend, next: null, toNext: 0 };
+  };
+
+  window.fatTierName = function (t) { return L(t.name || t.key, t.nameEn || t.key); };
+
+  /* ═══════════ ٢) مضاعف النقاط عند البيع ═══════════ */
+
+  (function () {
+    var _co = window.posCheckout;
+    if (typeof _co !== 'function') return;
+    window.posCheckout = function () {
+      var cid = '';
+      try { cid = (document.getElementById('posCustomer') || {}).value || ''; } catch (e) {}
+      var before = (db.sales || []).length;
+      var r = _co.apply(this, arguments);
+      try {
+        if (!window.fatLoyOn() || !cid) return r;
+        if ((db.sales || []).length <= before) return r;
+        var t = window.fatCustTier(cid);
+        var mult = +((t.tier && t.tier.mult) || 1);
+        if (mult <= 1) return r;
+
+        var c = findCustomer(cid);
+        if (!c) return r;
+        // نقاط إضافية = الفرق بين المضاعف و١ على النقاط الأساسية للفاتورة
+        var s = db.sales[db.sales.length - 1];
+        var rate = +((db.settings && db.settings.loyaltyRate) || 0);
+        if (rate <= 0) return r;
+        var basePts = Math.floor((+s.total || 0) / 100 * rate);
+        var bonus = Math.floor(basePts * (mult - 1));
+        if (bonus > 0) {
+          c.points = (+c.points || 0) + bonus;
+          s.tierBonusPts = bonus;
+          s.loyTier = t.tier.key;
+          save();
+          toast('⭐ ' + window.fatTierName(t.tier) + ' — ' + L('نقاط إضافية', 'bonus points') + ': +' + bonus);
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  /* ═══════════ ٣) شارة المستوى في الكاشير ═══════════ */
+
+  (function () {
+    var _lc = window.posLoyaltyCard;
+    if (typeof _lc !== 'function') return;
+    window.posLoyaltyCard = function (cid) {
+      var base = '';
+      try { base = _lc.apply(this, arguments) || ''; } catch (e) {}
+      try {
+        if (!window.fatLoyOn() || !cid) return base;
+        var t = window.fatCustTier(cid);
+        if (!t || !t.tier) return base;
+        var badge =
+          '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;' +
+          'border:1px solid ' + t.tier.color + '33;background:' + t.tier.color + '11;' +
+          'border-radius:11px;padding:8px 12px;margin:4px 0 8px">' +
+          '<div style="font-size:12.5px"><b style="color:' + t.tier.color + '">' +
+          (t.tier.icon || '⭐') + ' ' + esc(window.fatTierName(t.tier)) + '</b>' +
+          (t.tier.disc > 0 ? ' <span style="color:var(--ok);font-weight:700">−' + t.tier.disc + '%</span>' : '') +
+          (t.tier.mult > 1 ? ' <span style="color:var(--muted)">×' + t.tier.mult + ' ' + L('نقاط', 'pts') + '</span>' : '') +
+          '</div>' +
+          (t.next
+            ? '<div style="font-size:11px;color:var(--muted);text-align:end">' +
+              L('باقي', 'To') + ' ' + money(t.toNext) + '<br>' + L('لـ', 'for') + ' ' +
+              esc(window.fatTierName(t.next)) + '</div>'
+            : '<div style="font-size:11px;color:var(--ok)">✓ ' + L('أعلى مستوى', 'Top tier') + '</div>') +
+          '</div>';
+        return badge + base;
+      } catch (e) { return base; }
+    };
+  })();
+
+  // خصم المستوى التلقائي
+  (function () {
+    var _pc = window.posCalc;
+    if (typeof _pc !== 'function' || window._fatTierCalcWrapped) return;
+    window._fatTierCalcWrapped = true;
+    window.posCalc = function () {
+      var T = _pc.apply(this, arguments);
+      try {
+        if (!window.fatLoyOn()) return T;
+        var cid = (document.getElementById('posCustomer') || {}).value || '';
+        if (!cid) return T;
+        var t = window.fatCustTier(cid);
+        var pct = +((t.tier && t.tier.disc) || 0);
+        if (pct <= 0) return T;
+
+        var extra = R2((+T.sub || 0) * pct / 100);
+        var room = Math.max(0, R2((+T.sub || 0) - (+T.disc || 0)));
+        if (extra > room) extra = room;
+        if (extra <= 0.009) return T;
+
+        T.tierDisc = extra;
+        T.tierName = window.fatTierName(t.tier);
+        T.disc = R2((+T.disc || 0) + extra);
+        var taxable = R2((+T.sub || 0) - T.disc);
+        T.vat = R2(taxable * (+T.vatP || 0) / 100);
+        T.total = R2(taxable + T.vat + (+T.deliv || 0));
+        if (T.total < 0) T.total = 0;
+      } catch (e) {}
+      return T;
+    };
+  })();
+
+  /* ═══════════ ٤) شاشة الولاء ═══════════ */
+
+  try {
+    PG.loyalty = [
+      ['مستويات الولاء', 'كل ما العميل يشتري أكتر، ياخد أكتر'],
+      ['Loyalty Tiers', 'The more they spend, the more they get']
+    ];
+    var _cvL = window.canView;
+    window.canView = function (v) {
+      if (v === 'loyalty') return _cvL('customers') || _cvL('reports');
+      return _cvL(v);
+    };
+  } catch (e) {}
+
+  window.fatLoyToggle = function () {
+    var c = window.fatLoyCfg();
+    c.on = !c.on;
+    save();
+    try { renderNav(); } catch (e) {}
+    views.loyalty();
+    toast(c.on ? '✅ ' + L('اتفعّلت', 'Enabled') : L('اتقفلت', 'Disabled'));
+  };
+
+  window.fatLoyTierEdit = function (key) {
+    var c = window.fatLoyCfg();
+    var t = (c.tiers || []).filter(function (x) { return x.key === key; })[0];
+    if (!t) return;
+    openModal('<div class="modal-h"><h3>' + (t.icon || '⭐') + ' ' + esc(window.fatTierName(t)) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('اسم المستوى', 'Tier name') + '</label>' +
+      '<input id="lt_name" value="' + esc(t.name || '') + '"></div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('يبدأ من (إجمالي مشتريات)', 'Starts at (total spend)') + '</label>' +
+      '<input id="lt_min" type="number" step="any" min="0" value="' + (+t.min || 0) + '"></div>' +
+      '<div class="field"><label>' + L('مضاعف النقاط', 'Points multiplier') + '</label>' +
+      '<input id="lt_mult" type="number" step="0.25" min="1" max="5" value="' + (+t.mult || 1) + '"></div></div>' +
+      '<div class="field"><label>' + L('خصم تلقائي على كل فاتورة %', 'Automatic discount %') + '</label>' +
+      '<input id="lt_disc" type="number" step="any" min="0" max="50" value="' + (+t.disc || 0) + '"></div>' +
+      '<div class="hint">⚠️ ' +
+      L('الخصم التلقائي بيتطبّق على كل فاتورة للعميل ده. ابدأ بنسبة صغيرة — ٣٪ على عميل بيشتري بـ٥٠ ألف = ١٥٠٠ جنيه في السنة.',
+        'The automatic discount applies to every invoice. Start small.') + '</div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatLoyTierSave(\'' + key + '\')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatLoyTierSave = function (key) {
+    var c = window.fatLoyCfg();
+    var t = (c.tiers || []).filter(function (x) { return x.key === key; })[0];
+    if (!t) return;
+    var g = function (i) { var e = document.getElementById(i); return e ? e.value : ''; };
+    var nm = String(g('lt_name') || '').trim();
+    if (nm) t.name = nm;
+    t.min = Math.max(0, +g('lt_min') || 0);
+    t.mult = Math.max(1, Math.min(5, +g('lt_mult') || 1));
+    t.disc = Math.max(0, Math.min(50, +g('lt_disc') || 0));
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظ', 'Saved'));
+    views.loyalty();
+  };
+
+  window.fatLoyCSV = function () {
+    var cfg = window.fatLoyCfg();
+    var rows = [[L('العميل', 'Customer'), L('الهاتف', 'Phone'), L('المستوى', 'Tier'),
+      L('مشترياته', 'Spend'), L('نقاطه', 'Points'), L('باقي للترقية', 'To next tier')]];
+    (db.customers || []).forEach(function (c) {
+      var t = window.fatCustTier(c.id);
+      rows.push([c.name, c.phone || '', window.fatTierName(t.tier), t.spend, c.points || 0,
+        t.next ? t.toNext : '']);
+    });
+    downloadCSV('loyalty-tiers-' + today() + '.csv', rows);
+  };
+
+  views.loyalty = function () {
+    var cfg = window.fatLoyCfg();
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn ' + (cfg.on ? 'btn-ghost' : 'btn-primary') + ' btn-sm" onclick="fatLoyToggle()">' +
+      (cfg.on ? '⏸️ ' + L('إيقاف', 'Disable') : '▶️ ' + L('تفعيل', 'Enable')) + '</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="fatLoyCSV()">📊 CSV</button>';
+
+    if (!cfg.on) {
+      document.getElementById('content').innerHTML =
+        '<div class="panel" style="max-width:600px"><div class="panel-b pad" style="text-align:center;padding:34px">' +
+        '<div style="font-size:48px">⭐</div><h3 style="margin:12px 0 8px">' +
+        L('مستويات الولاء مقفولة', 'Loyalty tiers are off') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.9;max-width:420px;margin:0 auto">' +
+        L('لما تشغّلها، كل عميل بياخد مستوى حسب إجمالي مشترياته — وكل ما يشتري أكتر، ياخد نقاط أكتر وخصم أعلى. بيشجّعه يرجعلك بدل ما يروح لغيرك.',
+          'Each customer gets a tier based on total spend — higher tiers earn more points and bigger discounts.') +
+        '</p>' +
+        '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:18px 0">' +
+        (cfg.tiers || []).map(function (t) {
+          return '<div style="border:1px solid ' + t.color + '44;background:' + t.color + '11;border-radius:12px;padding:10px 14px;min-width:100px">' +
+            '<div style="font-size:22px">' + (t.icon || '⭐') + '</div>' +
+            '<div style="font-weight:800;font-size:13px;color:' + t.color + '">' + esc(window.fatTierName(t)) + '</div>' +
+            '<div style="font-size:11px;color:var(--muted)">' + L('من', 'from') + ' ' + money(t.min) + '</div></div>';
+        }).join('') + '</div>' +
+        '<button class="btn btn-primary" onclick="fatLoyToggle()">▶️ ' + L('تفعيل', 'Enable') + '</button>' +
+        '</div></div>';
+      return;
+    }
+
+    var counts = {};
+    (cfg.tiers || []).forEach(function (t) { counts[t.key] = 0; });
+    var custs = (db.customers || []).map(function (c) {
+      var t = window.fatCustTier(c.id);
+      counts[t.tier.key] = (counts[t.tier.key] || 0) + 1;
+      return { c: c, t: t };
+    }).filter(function (x) { return x.t.spend > 0; })
+      .sort(function (a, b) { return b.t.spend - a.t.spend; });
+
+    var tierCards = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px">' +
+      (cfg.tiers || []).map(function (t) {
+        return '<div style="border:1px solid ' + t.color + '44;background:' + t.color + '0d;border-radius:14px;padding:14px;position:relative">' +
+          '<button class="iconbtn no-print" onclick="fatLoyTierEdit(\'' + t.key + '\')" ' +
+          'style="position:absolute;top:8px;inset-inline-end:8px;font-size:12px">⚙️</button>' +
+          '<div style="font-size:26px">' + (t.icon || '⭐') + '</div>' +
+          '<div style="font-weight:800;font-size:15px;color:' + t.color + ';margin:3px 0">' + esc(window.fatTierName(t)) + '</div>' +
+          '<div style="font-size:11.5px;color:var(--muted);line-height:1.7">' +
+          L('من', 'From') + ' <b>' + money(t.min) + '</b><br>' +
+          (t.mult > 1 ? '×' + t.mult + ' ' + L('نقاط', 'points') + '<br>' : '') +
+          (t.disc > 0 ? '<span style="color:var(--ok);font-weight:700">−' + t.disc + '% ' + L('على كل فاتورة', 'every bill') + '</span><br>' : '') +
+          '</div>' +
+          '<div style="margin-top:8px;font-size:13px;font-weight:800">' + (counts[t.key] || 0) + ' ' +
+          L('عميل', 'customers') + '</div></div>';
+      }).join('') + '</div>';
+
+    var table = custs.length
+      ? '<table><thead><tr><th>' + L('العميل', 'Customer') + '</th><th>' + L('المستوى', 'Tier') + '</th>' +
+        '<th>' + L('مشترياته', 'Spend') + '</th><th>' + L('نقاطه', 'Points') + '</th>' +
+        '<th>' + L('باقي للترقية', 'To next tier') + '</th></tr></thead><tbody>' +
+        custs.slice(0, 200).map(function (x) {
+          return '<tr><td><b>' + esc(x.c.name) + '</b>' +
+            (x.c.phone ? '<div style="font-size:10.5px;color:var(--muted)">' + esc(x.c.phone) + '</div>' : '') + '</td>' +
+            '<td><span style="color:' + x.t.tier.color + ';font-weight:700">' + (x.t.tier.icon || '⭐') + ' ' +
+            esc(window.fatTierName(x.t.tier)) + '</span></td>' +
+            '<td class="t-num">' + money(x.t.spend) + '</td>' +
+            '<td class="t-num">' + (x.c.points || 0) + '</td>' +
+            '<td class="t-num" style="color:var(--muted)">' +
+            (x.t.next ? money(x.t.toNext) + '<div style="font-size:10px">' + esc(window.fatTierName(x.t.next)) + '</div>' : '—') +
+            '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty"><span class="big">⭐</span>' + L('مفيش عملاء بمشتريات لسه', 'No customers with purchases yet') + '</div>';
+
+    document.getElementById('content').innerHTML = tierCards +
+      '<div class="panel"><div class="panel-h"><h3>👥 ' + L('عملاؤك ومستوياتهم', 'Customers by tier') + '</h3>' +
+      '<span class="badge">' + L('حسب مشتريات آخر', 'Last') + ' ' + cfg.months + ' ' + L('شهر', 'months') + '</span></div>' +
+      '<div class="panel-b">' + table + '</div></div>' +
+      '<div class="hint" style="margin-top:12px">💡 ' +
+      L('المستوى بيتحسب لوحده من مشتريات العميل — مفيش أي خطوة يدوية. الكاشير بيشوف مستوى العميل وخصمه أول ما يختاره.',
+        'Tiers are calculated automatically from spend — the cashier sees the tier and discount instantly.') + '</div>';
+  };
+
+  /* ═══════════ ٥) QR الطاولات ═══════════ */
+
+  window.fatTableQRCfg = function () {
+    try {
+      db.settings = db.settings || {};
+      db.settings.tableQR = db.settings.tableQR || {};
+      var c = db.settings.tableQR;
+      if (!c.msg) c.msg = 'عايز أطلب من طاولة {رقم}';
+      return c;
+    } catch (e) { return { msg: 'عايز أطلب من طاولة {رقم}' }; }
+  };
+
+  window.fatTableQRLink = function (no) {
+    var wa = '';
+    try {
+      wa = String((db.settings && db.settings.waNumber) || (db.settings && db.settings.phone) || '').replace(/\D/g, '');
+    } catch (e) {}
+    if (!wa) return '';
+    if (wa.charAt(0) === '0') wa = '2' + wa;
+    var msg = String(window.fatTableQRCfg().msg || '').replace('{رقم}', no).replace('{no}', no);
+    return 'https://wa.me/' + wa + '?text=' + encodeURIComponent(msg);
+  };
+
+  window.fatTableQRPrint = function () {
+    var tables = (db.tables || []).slice().sort(function (a, b) { return (+a.no) - (+b.no); });
+    if (!tables.length) return toast(L('مفيش طاولات مضافة', 'No tables added'), 'err');
+    if (!window.fatTableQRLink(1)) {
+      return toast(L('اكتب رقم واتساب المحل من الإعدادات الأول', 'Set your WhatsApp number in Settings first'), 'err');
+    }
+
+    var shop = '';
+    try { shop = (db.settings && db.settings.company) || ''; } catch (e) {}
+
+    Promise.resolve(
+      (typeof fatEnsureQRLib === 'function') ? fatEnsureQRLib() : Promise.resolve()
+    ).then(function () {
+      var cards = tables.map(function (t) {
+        var qr = (typeof fatQrHTML === 'function') ? fatQrHTML(window.fatTableQRLink(t.no)) : '';
+        return '<div class="tq">' +
+          '<div class="tq-shop">' + esc(shop) + '</div>' +
+          '<div class="tq-no">🪑 ' + L('طاولة', 'Table') + ' ' + esc(t.no) + '</div>' +
+          '<div class="tq-img">' + qr + '</div>' +
+          '<div class="tq-hint">' + L('امسح الكود للطلب أو نداء الجرسون', 'Scan to order or call the waiter') + '</div>' +
+          '</div>';
+      }).join('');
+
+      var w = window.open('', '_tq', 'width=800,height=900');
+      if (!w) return toast(L('اسمح بالنوافذ المنبثقة', 'Allow pop-ups'), 'err');
+      w.document.write('<html dir="rtl"><head><meta charset="utf-8"><title>' +
+        L('أكواد الطاولات', 'Table QR codes') + '</title><style>' +
+        'body{font-family:Tahoma,Arial,sans-serif;margin:0;padding:14px;background:#fff}' +
+        '.wrap{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}' +
+        '.tq{border:2px dashed #999;border-radius:14px;padding:16px;text-align:center;page-break-inside:avoid}' +
+        '.tq-shop{font-size:13px;color:#666;margin-bottom:4px}' +
+        '.tq-no{font-size:22px;font-weight:800;color:#0f6b5c;margin-bottom:10px}' +
+        '.tq-img{min-height:74px}' +
+        '.tq-hint{font-size:11.5px;color:#666;margin-top:8px;line-height:1.6}' +
+        '@media print{@page{margin:8mm}}' +
+        '</style></head><body><div class="wrap">' + cards + '</div>' +
+        '<script>setTimeout(function(){window.print();},400);<\/script></body></html>');
+      w.document.close();
+    })['catch'](function () {
+      toast(L('تعذّر تحميل مكتبة الأكواد', 'Could not load the QR library'), 'err');
+    });
+  };
+
+  window.fatTableQRSettings = function () {
+    var c = window.fatTableQRCfg();
+    var link = window.fatTableQRLink(5);
+    openModal('<div class="modal-h"><h3>📱 ' + L('أكواد الطاولات', 'Table QR codes') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="hint" style="margin-bottom:14px">💡 ' +
+      L('كل طاولة بتاخد كود مطبوع. العميل يمسحه من موبايله فيتفتحله واتساب برسالة جاهزة فيها رقم طاولته — يطلب أو ينادي الجرسون من غير ما يستنى حد.',
+        'Each table gets a printed code. Scanning opens WhatsApp with a ready message including the table number.') +
+      '</div>' +
+      '<div class="field"><label>' + L('الرسالة اللي هتتبعت (اكتب {رقم} مكان رقم الطاولة)', 'Message ({no} = table number)') + '</label>' +
+      '<input id="tq_msg" value="' + esc(c.msg || '') + '"></div>' +
+      (link
+        ? '<div class="field"><label>' + L('معاينة (طاولة ٥)', 'Preview (table 5)') + '</label>' +
+          '<div style="font-size:11.5px;color:var(--muted);word-break:break-all;direction:ltr;text-align:left;' +
+          'background:var(--card2);padding:9px;border-radius:9px">' + esc(link) + '</div></div>'
+        : '<div class="hint" style="color:var(--danger)">⚠️ ' +
+          L('اكتب رقم واتساب المحل من الإعدادات الأول', 'Set your WhatsApp number in Settings first') + '</div>') +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatTableQRSave()">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="fatTableQRPrint()">🖨️ ' + L('اطبع الأكواد', 'Print codes') + '</button>' +
+      '</div>');
+  };
+
+  window.fatTableQRSave = function () {
+    var c = window.fatTableQRCfg();
+    var e = document.getElementById('tq_msg');
+    if (e) c.msg = String(e.value || '').trim() || 'عايز أطلب من طاولة {رقم}';
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظ', 'Saved'));
+  };
+
+  // زرار في شاشة الطاولات
+  (function () {
+    var _fp = views.floorPlan;
+    if (typeof _fp !== 'function') return;
+    views.floorPlan = function () {
+      var r = _fp.apply(this, arguments);
+      try {
+        var ta = document.getElementById('topActions');
+        if (ta && ta.innerHTML.indexOf('fatTableQR') < 0) {
+          ta.innerHTML += ' <button class="btn btn-ghost btn-sm" onclick="fatTableQRSettings()">📱 ' +
+            L('أكواد الطاولات', 'Table QR') + '</button>';
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  /* ═══════════ ٦) القائمة ═══════════ */
+  function injectLoyNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="loyalty"]')) return;
+      if (typeof canView === 'function' && !canView('loyalty')) return;
+      var hidden = (db.settings && db.settings.hiddenSections) || [];
+      if (hidden.indexOf('loyalty') > -1) return;
+      var anchor = nav.querySelector('a[data-view="customers"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'loyalty');
+      a.innerHTML = '<span class="ic">⭐</span> ' + L('مستويات الولاء', 'Loyalty');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('loyalty'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        injectLoyNav();
+        return r;
+      };
+    }
+    setTimeout(injectLoyNav, 3200);
+    setTimeout(injectLoyNav, 6000);
+  })();
+
+})();
+
 </script>
 </body>
 </html>
