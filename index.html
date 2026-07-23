@@ -24129,6 +24129,1030 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
 })();
 
+
+/* ============================================================
+   FATORTY v9.5 — إدارة الطيارين + أوامر التصنيع
+
+   الطيارين: أهم حاجة فيهم مش «مين وصّل إيه» — دي **تسوية الفلوس**.
+     الطيار بياخد ٥ طلبات بـ٨٠٠ جنيه، يرجع يسلّم ٨٠٠ ناقص أجرته.
+     الشاشة دي بتقولك كل طيار عليه كام ولك كام عنده.
+
+   التصنيع: الأصناف عندها «مكوّنات» أصلاً (BOM). أمر التصنيع بياخد
+     المكوّنات من المخزن وينتج الصنف النهائي — بتكلفته الحقيقية.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+  var R3 = function (n) { return Math.round((+n || 0) * 1000) / 1000; };
+
+  /* ══════════════════════════════════════════
+     الجزء الأول: الطيارين
+     ══════════════════════════════════════════ */
+
+  window.fatDrivers = function () {
+    try { db.drivers = db.drivers || []; return db.drivers; } catch (e) { return []; }
+  };
+
+  window.fatDriverOrders = function (did, onlyOpen) {
+    var out = [];
+    try {
+      var sales = db.sales || [];
+      try { if (typeof bf === 'function') sales = bf(sales); } catch (e) {}
+      sales.forEach(function (s) {
+        if (!s || s.driverId !== did) return;
+        if (s.voided || s.canceled) return;
+        if (onlyOpen && s.driverSettled) return;
+        out.push(s);
+      });
+    } catch (e) {}
+    out.sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
+    return out;
+  };
+
+  // كل طيار: كام طلب معاه، وكام فلوس محصّلة عنده، وكام أجرته
+  window.fatDriverStats = function (did) {
+    var d = window.fatDrivers().filter(function (x) { return x.id === did; })[0];
+    var st = { d: d, open: 0, cash: 0, fees: 0, net: 0, delivered: 0 };
+    if (!d) return st;
+    window.fatDriverOrders(did, true).forEach(function (s) {
+      st.open++;
+      // الفلوس اللي الطيار محصّلها فعليًا (الدفع عند الاستلام)
+      var collected = (s.payMethod === 'credit') ? 0 : R2(+s.total || 0);
+      st.cash = R2(st.cash + collected);
+      st.fees = R2(st.fees + (+s.driverFee || +d.fee || 0));
+    });
+    window.fatDriverOrders(did, false).forEach(function (s) {
+      if (s.driverDelivered) st.delivered++;
+    });
+    st.net = R2(st.cash - st.fees);   // اللي المفروض الطيار يسلّمه
+    return st;
+  };
+
+  window.fatDriverForm = function (id) {
+    var d = id ? window.fatDrivers().filter(function (x) { return x.id === id; })[0] : null;
+    d = d || { name: '', phone: '', fee: 0, active: true };
+    openModal('<div class="modal-h"><h3>🛵 ' + (id ? L('تعديل طيار', 'Edit driver') : L('طيار جديد', 'New driver')) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('الاسم', 'Name') + '</label><input id="dv_name" value="' + esc(d.name || '') + '"></div>' +
+      '<div class="field"><label>' + L('الموبايل', 'Phone') + '</label><input id="dv_phone" value="' + esc(d.phone || '') + '"></div>' +
+      '</div>' +
+      '<div class="field"><label>' + L('أجرة التوصيلة (افتراضية)', 'Default delivery fee') + '</label>' +
+      '<input id="dv_fee" type="number" step="any" min="0" value="' + (+d.fee || '') + '"></div>' +
+      '<div class="hint">💡 ' +
+      L('الأجرة دي بتتحسب على كل طلب يوصّله. تقدر تغيّرها لطلب معيّن وقت التسليم.',
+        'This fee applies per delivered order and can be overridden per order.') + '</div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatDriverSave(' + (id ? "'" + id + "'" : 'null') + ')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatDriverSave = function (id) {
+    var g = function (i) { var e = document.getElementById(i); return e ? String(e.value || '').trim() : ''; };
+    var name = g('dv_name');
+    if (!name) return toast(L('اكتب اسم الطيار', 'Enter a name'), 'err');
+    var rec = { name: name, phone: g('dv_phone'), fee: +g('dv_fee') || 0, active: true };
+    var list = window.fatDrivers();
+    if (id) {
+      for (var i = 0; i < list.length; i++) if (list[i].id === id) { Object.assign(list[i], rec); break; }
+    } else {
+      rec.id = (typeof uid === 'function' ? uid() : String(Date.now()));
+      list.push(rec);
+    }
+    try { logAudit(id ? L('تعديل طيار', 'Edit driver') : L('طيار جديد', 'New driver'), name); } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظ', 'Saved'));
+    try { if (current === 'drivers') views.drivers(); } catch (e) {}
+  };
+
+  window.fatDriverDel = function (id) {
+    var d = window.fatDrivers().filter(function (x) { return x.id === id; })[0];
+    if (!d) return;
+    var st = window.fatDriverStats(id);
+    if (st.open) return toast(L('عنده طلبات مفتوحة — سوّي معاه الأول', 'Has open orders — settle first'), 'err');
+    Promise.resolve(confirmBox(L('تمسح الطيار ده؟', 'Delete this driver?') + '\n\n' + d.name, { danger: true }))
+      .then(function (okv) {
+        if (!okv) return;
+        db.drivers = window.fatDrivers().filter(function (x) { return x.id !== id; });
+        save(); toast(L('اتمسح', 'Deleted'));
+        try { if (current === 'drivers') views.drivers(); } catch (e) {}
+      });
+  };
+
+  // إسناد طلب لطيار
+  window.fatDriverAssign = function (saleId) {
+    var s = (db.sales || []).filter(function (x) { return x.id === saleId; })[0];
+    if (!s) return;
+    var list = window.fatDrivers().filter(function (d) { return d.active !== false; });
+    if (!list.length) return toast(L('ضيف طيار الأول', 'Add a driver first'), 'err');
+    openModal('<div class="modal-h"><h3>🛵 ' + L('إسناد لطيار', 'Assign to driver') + ' — #' + esc(s.no) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('الطيار', 'Driver') + '</label><select id="da_id">' +
+      list.map(function (d) {
+        return '<option value="' + d.id + '"' + (s.driverId === d.id ? ' selected' : '') + '>' +
+          esc(d.name) + (d.fee ? ' — ' + money(d.fee) + '/' + L('طلب', 'order') : '') + '</option>';
+      }).join('') + '</select></div>' +
+      '<div class="field"><label>' + L('أجرة التوصيلة', 'Delivery fee') + '</label>' +
+      '<input id="da_fee" type="number" step="any" min="0" value="' +
+      (+s.driverFee || +list[0].fee || 0) + '"></div>' +
+      '<div class="hint">' + L('إجمالي الطلب', 'Order total') + ': <b>' + money(s.total) + '</b>' +
+      (s.payMethod === 'credit'
+        ? '<br>⚠️ ' + L('الطلب ده آجل — الطيار مش هيحصّل فلوس', 'This is a credit order — no cash to collect')
+        : '<br>💵 ' + L('الطيار هيحصّل', 'The driver collects') + ' ' + money(s.total)) +
+      '</div></div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatDriverAssignSave(\'' + s.id + '\')">' + L('إسناد', 'Assign') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatDriverAssignSave = function (saleId) {
+    var s = (db.sales || []).filter(function (x) { return x.id === saleId; })[0];
+    if (!s) return;
+    var did = (document.getElementById('da_id') || {}).value || '';
+    var fee = +((document.getElementById('da_fee') || {}).value) || 0;
+    if (!did) return;
+    var d = window.fatDrivers().filter(function (x) { return x.id === did; })[0];
+    s.driverId = did;
+    s.driverName = d ? d.name : '';
+    s.driverFee = fee;
+    s.driverAt = new Date().toISOString();
+    delete s.driverSettled;
+    try { logAudit(L('إسناد لطيار', 'Assigned to driver'), '#' + s.no + ' — ' + (d ? d.name : '')); } catch (e) {}
+    save(); closeModal();
+    toast('🛵 ' + L('اتسند لـ', 'Assigned to') + ' ' + (d ? d.name : ''));
+    try { if (current === 'drivers') views.drivers(); } catch (e) {}
+  };
+
+  window.fatDriverDelivered = function (saleId) {
+    var s = (db.sales || []).filter(function (x) { return x.id === saleId; })[0];
+    if (!s) return;
+    s.driverDelivered = true;
+    s.driverDeliveredAt = new Date().toISOString();
+    save();
+    toast('✅ ' + L('اتسجّل كمُسلَّم', 'Marked delivered'));
+    try { if (current === 'drivers') views.drivers(); } catch (e) {}
+  };
+
+  // تسوية الحساب مع الطيار — دي أهم حاجة
+  window.fatDriverSettle = function (did) {
+    var d = window.fatDrivers().filter(function (x) { return x.id === did; })[0];
+    if (!d) return;
+    var st = window.fatDriverStats(did);
+    if (!st.open) return toast(L('مفيش طلبات محتاجة تسوية', 'Nothing to settle'), 'err');
+
+    openModal('<div class="modal-h"><h3>🧾 ' + L('تسوية حساب', 'Settle') + ' — ' + esc(d.name) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div style="background:var(--card2);border-radius:12px;padding:14px;margin-bottom:14px">' +
+      '<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px">' +
+      '<span>' + L('طلبات', 'Orders') + '</span><b>' + st.open + '</b></div>' +
+      '<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px">' +
+      '<span>' + L('فلوس محصّلة عنده', 'Cash he collected') + '</span><b>' + money(st.cash) + '</b></div>' +
+      '<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;color:var(--danger)">' +
+      '<span>− ' + L('أجرته', 'His fees') + '</span><b>' + money(st.fees) + '</b></div>' +
+      '<div style="border-top:1px solid var(--line);margin:8px 0"></div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline">' +
+      '<b style="font-size:14px">' + L('المفروض يسلّمك', 'He should hand over') + '</b>' +
+      '<b style="font-size:22px;color:' + (st.net >= 0 ? 'var(--ok)' : 'var(--danger)') + '">' + money(st.net) + '</b></div>' +
+      '</div>' +
+      '<div class="field"><label>' + L('المبلغ اللي سلّمه فعلاً', 'Amount actually handed over') + '</label>' +
+      '<input id="ds_amt" type="number" step="any" value="' + st.net + '" oninput="fatDriverSettleDiff()"></div>' +
+      '<div id="ds_diff" style="font-size:12.5px;font-weight:700;min-height:20px"></div>' +
+      '<div class="hint" style="margin-top:8px">' +
+      L('التسوية بتقفل كل الطلبات دي، وبتسجّل الفلوس في الخزينة وأجرة الطيار كمصروف.',
+        'Settling closes these orders, records the cash and logs the driver fee as an expense.') +
+      '</div></div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatDriverSettleSave(\'' + did + '\')">✅ ' + L('تسوية', 'Settle') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+    window.fatDriverSettleDiff();
+  };
+
+  window.fatDriverSettleDiff = function () {
+    var box = document.getElementById('ds_diff');
+    if (!box) return;
+    var el = document.getElementById('ds_amt');
+    var amt = el ? +el.value || 0 : 0;
+    var expect = 0;
+    try {
+      var m = /fatDriverSettleSave\('([^']+)'\)/.exec(document.getElementById('modal').innerHTML);
+      if (m) expect = window.fatDriverStats(m[1]).net;
+    } catch (e) {}
+    var diff = R2(amt - expect);
+    if (Math.abs(diff) < 0.009) { box.innerHTML = '<span style="color:var(--ok)">✅ ' + L('مظبوط', 'Balanced') + '</span>'; return; }
+    box.innerHTML = diff > 0
+      ? '<span style="color:var(--ok)">▲ ' + L('زيادة', 'Over by') + ' ' + money(diff) + '</span>'
+      : '<span style="color:var(--danger)">▼ ' + L('عجز', 'Short by') + ' ' + money(Math.abs(diff)) + '</span>';
+  };
+
+  window.fatDriverSettleSave = function (did) {
+    var d = window.fatDrivers().filter(function (x) { return x.id === did; })[0];
+    if (!d) return;
+    var st = window.fatDriverStats(did);
+    var el = document.getElementById('ds_amt');
+    var amt = el ? R2(+el.value || 0) : st.net;
+    var diff = R2(amt - st.net);
+
+    var finish = function (acct) {
+      try {
+        var orders = window.fatDriverOrders(did, true);
+        orders.forEach(function (s) { s.driverSettled = today(); });
+
+        if (amt > 0) {
+          try { addCash('in', amt, L('تسوية طيار', 'Driver settlement') + ': ' + d.name, null, acct); } catch (e) {}
+        }
+        if (st.fees > 0) {
+          d.paidFees = R2((+d.paidFees || 0) + st.fees);
+        }
+        d.settlements = d.settlements || [];
+        d.settlements.push({
+          id: (typeof uid === 'function' ? uid() : String(Date.now())),
+          date: today(), ts: new Date().toISOString(),
+          orders: orders.length, cash: st.cash, fees: st.fees,
+          expected: st.net, received: amt, diff: diff,
+          user: (typeof currentUserName === 'function' ? currentUserName() : '')
+        });
+        try {
+          logAudit(L('تسوية طيار', 'Driver settlement'),
+            d.name + ' — ' + orders.length + ' ' + L('طلب', 'orders') + ' — ' + money(amt) +
+            (Math.abs(diff) > 0.009 ? ' (' + L('فرق', 'diff') + ' ' + money(diff) + ')' : ''));
+        } catch (e) {}
+        save(); closeModal();
+        toast(Math.abs(diff) < 0.009
+          ? '✅ ' + L('التسوية تمت', 'Settled')
+          : (diff < 0 ? '⚠️ ' : '▲ ') + L('اتسجّل فرق', 'Difference recorded') + ': ' + money(diff));
+        try { if (current === 'drivers') views.drivers(); } catch (e) {}
+      } catch (e) {}
+    };
+
+    try {
+      if (typeof fatAskAccount === 'function') {
+        Promise.resolve(fatAskAccount(L('الفلوس تدخل في', 'Cash into'), 'cash')).then(function (a) {
+          if (a === null) return;
+          finish(a);
+        });
+        return;
+      }
+    } catch (e) {}
+    finish('cash');
+  };
+
+  /* ═══ شاشة الطيارين ═══ */
+
+  try {
+    PG.drivers = [
+      ['الطيارين', 'مين وصّل إيه — وعنده كام فلوس'],
+      ['Drivers', 'Deliveries and cash reconciliation']
+    ];
+    var _cvD = window.canView;
+    window.canView = function (v) {
+      if (v === 'drivers') return _cvD('pos') || _cvD('reports');
+      return _cvD(v);
+    };
+  } catch (e) {}
+
+  window.fatDriverTab = function (t) { window._dvTab = t; views.drivers(); };
+
+  views.drivers = function () {
+    var list = window.fatDrivers();
+    var tab = window._dvTab || 'live';
+
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-primary btn-sm" onclick="fatDriverForm()">+ ' + L('طيار', 'Driver') + '</button>';
+
+    // طلبات توصيل من غير طيار
+    var unassigned = [];
+    try {
+      var sales = db.sales || [];
+      try { if (typeof bf === 'function') sales = bf(sales); } catch (e) {}
+      unassigned = sales.filter(function (s) {
+        return s && s.orderType === 'delivery' && !s.driverId && s.date === today() && !s.voided;
+      });
+    } catch (e) {}
+
+    if (!list.length) {
+      document.getElementById('content').innerHTML =
+        '<div class="panel" style="max-width:520px"><div class="panel-b pad" style="text-align:center;padding:36px">' +
+        '<div style="font-size:48px">🛵</div><h3 style="margin:12px 0 6px">' +
+        L('مفيش طيارين لسه', 'No drivers yet') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.8">' +
+        L('ضيف طياريك، واسند لكل واحد طلباته. الشاشة هتقولك كل طيار عنده كام فلوس محصّلة ولك كام عنده.',
+          'Add your drivers and assign orders. This screen tracks what cash each driver is holding.') +
+        '</p><button class="btn btn-primary" style="margin-top:14px" onclick="fatDriverForm()">+ ' +
+        L('طيار جديد', 'New driver') + '</button></div></div>';
+      return;
+    }
+
+    var totCash = 0, totOpen = 0;
+    list.forEach(function (d) {
+      var st = window.fatDriverStats(d.id);
+      totCash = R2(totCash + st.net); totOpen += st.open;
+    });
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">🛵</div><div class="lbl">' + L('طيارين', 'Drivers') +
+      '</div><div class="val">' + list.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">📦</div><div class="lbl">' + L('طلبات برّه', 'Orders out') +
+      '</div><div class="val">' + totOpen + '</div></div>' +
+      '<div class="card"><div class="ic-bg">💵</div><div class="lbl">' + L('فلوس عند الطيارين', 'Cash with drivers') +
+      '</div><div class="val" style="color:' + (totCash > 0 ? 'var(--danger)' : 'var(--ok)') + '">' + money(totCash) + '</div></div>' +
+      (unassigned.length
+        ? '<div class="card"><div class="ic-bg">⚠️</div><div class="lbl">' + L('طلبات بدون طيار', 'Unassigned') +
+          '</div><div class="val" style="color:#d97706">' + unassigned.length + '</div></div>'
+        : '') + '</div>';
+
+    var tabs = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 12px" class="no-print">' +
+      [['live', '🛵 ' + L('الطيارين', 'Drivers'), list.length],
+       ['un', '⚠️ ' + L('بدون طيار', 'Unassigned'), unassigned.length]]
+        .map(function (x) {
+          return '<button class="btn ' + (tab === x[0] ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatDriverTab(\'' + x[0] + '\')">' +
+            x[1] + ' (' + x[2] + ')</button>';
+        }).join('') + '</div>';
+
+    var body;
+    if (tab === 'un') {
+      body = unassigned.length
+        ? '<table><thead><tr><th>' + L('الطلب', 'Order') + '</th><th>' + L('العميل', 'Customer') + '</th>' +
+          '<th>' + L('الإجمالي', 'Total') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+          unassigned.map(function (s) {
+            return '<tr><td><b>#' + esc(s.no) + '</b></td><td>' + esc(s.customerName || '—') + '</td>' +
+              '<td class="t-num">' + money(s.total) + '</td>' +
+              '<td class="no-print"><button class="btn btn-primary btn-sm" onclick="fatDriverAssign(\'' + s.id + '\')">🛵 ' +
+              L('اسند', 'Assign') + '</button></td></tr>';
+          }).join('') + '</tbody></table>'
+        : '<div class="empty"><span class="big">✅</span>' + L('كل الطلبات مسنودة', 'All orders assigned') + '</div>';
+    } else {
+      body = '<table><thead><tr><th>' + L('الطيار', 'Driver') + '</th><th>' + L('طلبات معاه', 'Orders out') + '</th>' +
+        '<th>' + L('فلوس محصّلة', 'Cash held') + '</th><th>' + L('أجرته', 'His fees') + '</th>' +
+        '<th>' + L('المفروض يسلّم', 'Should hand over') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+        list.map(function (d) {
+          var st = window.fatDriverStats(d.id);
+          return '<tr><td><b>' + esc(d.name) + '</b>' +
+            (d.phone ? '<div style="font-size:10.5px;color:var(--muted)">' + esc(d.phone) + '</div>' : '') + '</td>' +
+            '<td class="t-num">' + st.open + '</td>' +
+            '<td class="t-num">' + money(st.cash) + '</td>' +
+            '<td class="t-num" style="color:var(--danger)">' + money(st.fees) + '</td>' +
+            '<td class="t-num"><b style="color:' + (st.net > 0.009 ? 'var(--danger)' : 'var(--muted)') + '">' +
+            money(st.net) + '</b></td>' +
+            '<td class="no-print">' +
+            (st.open ? '<button class="btn btn-primary btn-sm" onclick="fatDriverSettle(\'' + d.id + '\')">🧾 ' +
+              L('تسوية', 'Settle') + '</button> ' : '') +
+            '<button class="iconbtn" onclick="fatDriverForm(\'' + d.id + '\')">✏️</button>' +
+            '<button class="iconbtn del" onclick="fatDriverDel(\'' + d.id + '\')">🗑️</button>' +
+            '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+
+    document.getElementById('content').innerHTML = cards + tabs +
+      '<div class="panel"><div class="panel-b">' + body + '</div></div>' +
+      '<div class="hint" style="margin-top:12px">💡 <b>' + L('«المفروض يسلّم»', 'Should hand over') + '</b> = ' +
+      L('الفلوس اللي حصّلها ناقص أجرته. لما يرجع، اضغط «تسوية» واكتب اللي سلّمه فعلاً — النظام هيسجّل أي فرق.',
+        'Cash collected minus his fee. Press Settle and enter what he actually handed over.') + '</div>';
+  };
+
+  /* ══════════════════════════════════════════
+     الجزء الثاني: أوامر التصنيع
+     ══════════════════════════════════════════ */
+
+  window.fatMakeable = function () {
+    try {
+      return (db.products || []).filter(function (p) {
+        return p && Array.isArray(p.components) && p.components.length;
+      });
+    } catch (e) { return []; }
+  };
+
+  // أقصى كمية ينفع تتصنّع من المتاح
+  window.fatProdMax = function (p) {
+    if (!p || !p.components || !p.components.length) return 0;
+    var max = Infinity;
+    p.components.forEach(function (c) {
+      var cp = findProduct(c.pid);
+      var need = +c.qty || 0;
+      if (!cp || need <= 0) return;
+      max = Math.min(max, Math.floor((+cp.qty || 0) / need));
+    });
+    return (max === Infinity) ? 0 : Math.max(0, max);
+  };
+
+  window.fatProdCost = function (p, qty) {
+    var c = 0;
+    (p.components || []).forEach(function (x) {
+      var cp = findProduct(x.pid);
+      c = R2(c + (+((cp && cp.cost) || 0)) * (+x.qty || 0));
+    });
+    return R2(c * (+qty || 1));
+  };
+
+  window.fatProdOrders = function () {
+    try { db.prodOrders = db.prodOrders || []; return db.prodOrders; } catch (e) { return []; }
+  };
+
+  window.fatProdForm = function () {
+    var list = window.fatMakeable();
+    if (!list.length) {
+      return toast(L('مفيش أصناف ليها مكوّنات — حدّد المكوّنات من كارت الصنف الأول',
+        'No items with components — set them on the item card first'), 'err');
+    }
+    openModal('<div class="modal-h"><h3>🏭 ' + L('أمر تصنيع جديد', 'New production order') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('الصنف المطلوب تصنيعه', 'Item to produce') + '</label>' +
+      '<select id="pr_pid" onchange="fatProdPreview()">' +
+      list.map(function (p) { return '<option value="' + p.id + '">' + esc(p.name) + '</option>'; }).join('') +
+      '</select></div>' +
+      '<div class="field"><label>' + L('الكمية', 'Quantity') + '</label>' +
+      '<input id="pr_qty" type="number" step="any" min="0.001" value="1" oninput="fatProdPreview()"></div>' +
+      '<div id="pr_prev" style="background:var(--card2);border-radius:12px;padding:12px;max-height:220px;overflow-y:auto"></div>' +
+      '<div class="field" style="margin-top:10px"><label>' + L('ملاحظات', 'Notes') + '</label>' +
+      '<input id="pr_note" placeholder="' + L('اختياري', 'optional') + '"></div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatProdRun()">🏭 ' + L('تنفيذ التصنيع', 'Produce') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+    window.fatProdPreview();
+  };
+
+  window.fatProdPreview = function () {
+    var box = document.getElementById('pr_prev');
+    if (!box) return;
+    var pid = (document.getElementById('pr_pid') || {}).value || '';
+    var qty = +((document.getElementById('pr_qty') || {}).value) || 0;
+    var p = findProduct(pid);
+    if (!p) { box.innerHTML = ''; return; }
+    var max = window.fatProdMax(p);
+    var short = [];
+
+    box.innerHTML =
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' +
+      L('هيتخصم من المخزن', 'Will be consumed') + ':</div>' +
+      (p.components || []).map(function (c) {
+        var cp = findProduct(c.pid);
+        var need = R3((+c.qty || 0) * qty);
+        var have = R3((cp && cp.qty) || 0);
+        var bad = need > have + 1e-9;
+        if (bad) short.push((cp && cp.name) || '—');
+        return '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px' +
+          (bad ? ';color:var(--danger)' : '') + '">' +
+          '<span>' + esc((cp && cp.name) || '—') + '</span>' +
+          '<span><b>' + fmt(need) + '</b> <span style="color:var(--muted)">/ ' + fmt(have) + '</span></span></div>';
+      }).join('') +
+      '<div style="display:flex;justify-content:space-between;margin-top:10px;font-size:13px">' +
+      '<b>' + L('تكلفة التصنيع', 'Production cost') + '</b>' +
+      '<b style="color:var(--primary)">' + money(window.fatProdCost(p, qty)) + '</b></div>' +
+      (short.length
+        ? '<div style="margin-top:8px;color:var(--danger);font-size:12px">⚠️ ' +
+          L('مش كفاية', 'Not enough') + ': ' + esc(short.join('، ')) +
+          '<br>' + L('أقصى كمية ممكنة دلوقتي', 'Max possible now') + ': <b>' + max + '</b></div>'
+        : '<div style="margin-top:8px;color:var(--ok);font-size:12px">✅ ' +
+          L('المكوّنات متاحة', 'Components available') + ' — ' +
+          L('أقصى كمية', 'max') + ': ' + max + '</div>');
+  };
+
+  window.fatProdRun = function () {
+    var pid = (document.getElementById('pr_pid') || {}).value || '';
+    var qty = +((document.getElementById('pr_qty') || {}).value) || 0;
+    var note = String((document.getElementById('pr_note') || {}).value || '').trim();
+    var p = findProduct(pid);
+    if (!p) return;
+    if (qty <= 0) return toast(L('اكتب كمية صحيحة', 'Enter a valid quantity'), 'err');
+
+    var short = [];
+    (p.components || []).forEach(function (c) {
+      var cp = findProduct(c.pid);
+      var need = R3((+c.qty || 0) * qty);
+      if (!cp || need > R3(cp.qty) + 1e-9) short.push((cp && cp.name) || '—');
+    });
+    if (short.length) {
+      return toast(L('المكوّنات مش كفاية', 'Not enough components') + ': ' + short.join('، '), 'err');
+    }
+
+    var ref = 'MFG-' + String(typeof uid === 'function' ? uid() : Date.now()).slice(-6).toUpperCase();
+    var cost = window.fatProdCost(p, qty);
+
+    try {
+      // اخصم المكوّنات
+      (p.components || []).forEach(function (c) {
+        var need = R3((+c.qty || 0) * qty);
+        moveStock(c.pid, -need, 'out', L('تصنيع', 'Production') + ' ' + ref, ref);
+      });
+      // ضيف المنتج النهائي
+      moveStock(pid, qty, 'in', L('تصنيع', 'Production') + ' ' + ref + (note ? ' — ' + note : ''), ref);
+
+      window.fatProdOrders().push({
+        id: (typeof uid === 'function' ? uid() : String(Date.now())),
+        ref: ref, date: today(), ts: new Date().toISOString(),
+        pid: pid, name: p.name, qty: qty, cost: cost, note: note,
+        components: (p.components || []).map(function (c) {
+          var cp = findProduct(c.pid);
+          return { pid: c.pid, name: (cp && cp.name) || '', qty: R3((+c.qty || 0) * qty) };
+        }),
+        user: (typeof currentUserName === 'function' ? currentUserName() : '')
+      });
+      try { logAudit(L('أمر تصنيع', 'Production order'), ref + ' — ' + p.name + ' ×' + qty); } catch (e) {}
+      save(); closeModal();
+      toast('🏭 ' + L('تم التصنيع', 'Produced') + ' ' + fmt(qty) + ' ' + esc(p.name));
+      try { if (current === 'production') views.production(); } catch (e) {}
+    } catch (e) {
+      toast(L('حصل خطأ في التصنيع', 'Production failed'), 'err');
+    }
+  };
+
+  /* ═══ شاشة التصنيع ═══ */
+
+  try {
+    PG.production = [
+      ['أوامر التصنيع', 'حوّل الخامات لمنتج نهائي بتكلفته الحقيقية'],
+      ['Production', 'Turn raw materials into finished goods']
+    ];
+    var _cvP = window.canView;
+    window.canView = function (v) {
+      if (v === 'production') return _cvP('products') || _cvP('stocktake');
+      return _cvP(v);
+    };
+  } catch (e) {}
+
+  window.fatProdCSV = function () {
+    var rows = [[L('المرجع', 'Ref'), L('التاريخ', 'Date'), L('الصنف', 'Item'),
+      L('الكمية', 'Qty'), L('التكلفة', 'Cost'), L('بواسطة', 'By')]];
+    window.fatProdOrders().forEach(function (o) {
+      rows.push([o.ref, o.date, o.name, o.qty, o.cost, o.user || '']);
+    });
+    downloadCSV('production-' + today() + '.csv', rows);
+  };
+
+  views.production = function () {
+    var orders = window.fatProdOrders().slice().reverse();
+    var makeable = window.fatMakeable();
+
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-primary btn-sm" onclick="fatProdForm()">🏭 ' + L('أمر تصنيع', 'Produce') + '</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="fatProdCSV()">📊 CSV</button>';
+
+    if (!makeable.length) {
+      document.getElementById('content').innerHTML =
+        '<div class="panel" style="max-width:560px"><div class="panel-b pad" style="text-align:center;padding:36px">' +
+        '<div style="font-size:48px">🏭</div><h3 style="margin:12px 0 6px">' +
+        L('مفيش أصناف ليها مكوّنات', 'No items with components') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.8">' +
+        L('افتح كارت الصنف اللي بتصنّعه وحدّد مكوّناته. بعدها تقدر تعمل أمر تصنيع: المكوّنات بتتخصم من المخزن والمنتج النهائي بيتضاف بتكلفته الحقيقية.',
+          'Open the item card and set its components first.') + '</p>' +
+        '<button class="btn btn-primary" style="margin-top:14px" onclick="go(\'products\')">📦 ' +
+        L('الأصناف', 'Items') + '</button></div></div>';
+      return;
+    }
+
+    var thisMonth = today().slice(0, 7);
+    var mCount = 0, mCost = 0;
+    orders.forEach(function (o) {
+      if (String(o.date).slice(0, 7) === thisMonth) { mCount++; mCost = R2(mCost + (+o.cost || 0)); }
+    });
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">🏭</div><div class="lbl">' + L('أصناف بتتصنّع', 'Makeable items') +
+      '</div><div class="val">' + makeable.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">📋</div><div class="lbl">' + L('أوامر الشهر', 'Orders this month') +
+      '</div><div class="val">' + mCount + '</div></div>' +
+      '<div class="card"><div class="ic-bg">💰</div><div class="lbl">' + L('تكلفة التصنيع الشهر', 'Production cost') +
+      '</div><div class="val">' + money(mCost) + '</div></div>' +
+      '</div>';
+
+    var avail = '<div class="panel" style="margin:14px 0"><div class="panel-h"><h3>📊 ' +
+      L('أقصى كمية ممكن تصنيعها دلوقتي', 'Max producible now') + '</h3></div><div class="panel-b">' +
+      '<table><thead><tr><th>' + L('الصنف', 'Item') + '</th><th>' + L('المتاح حاليًا', 'In stock') + '</th>' +
+      '<th>' + L('ممكن تصنّع', 'Can produce') + '</th><th>' + L('تكلفة الوحدة', 'Unit cost') + '</th>' +
+      '<th class="no-print"></th></tr></thead><tbody>' +
+      makeable.map(function (p) {
+        var max = window.fatProdMax(p);
+        return '<tr><td><b>' + esc(p.name) + '</b></td>' +
+          '<td class="t-num">' + fmt(p.qty) + '</td>' +
+          '<td class="t-num"><b style="color:' + (max > 0 ? 'var(--ok)' : 'var(--danger)') + '">' + max + '</b></td>' +
+          '<td class="t-num">' + money(window.fatProdCost(p, 1)) + '</td>' +
+          '<td class="no-print">' + (max > 0
+            ? '<button class="btn btn-ghost btn-sm" onclick="fatProdForm()">🏭</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div></div>';
+
+    var log = orders.length
+      ? '<div class="panel"><div class="panel-h"><h3>📋 ' + L('سجل التصنيع', 'Production log') + '</h3></div><div class="panel-b">' +
+        '<table><thead><tr><th>' + L('المرجع', 'Ref') + '</th><th>' + L('التاريخ', 'Date') + '</th>' +
+        '<th>' + L('الصنف', 'Item') + '</th><th>' + L('الكمية', 'Qty') + '</th>' +
+        '<th>' + L('التكلفة', 'Cost') + '</th><th>' + L('المكوّنات', 'Components') + '</th></tr></thead><tbody>' +
+        orders.slice(0, 200).map(function (o) {
+          return '<tr><td><b>' + esc(o.ref) + '</b></td><td>' + esc(o.date) + '</td>' +
+            '<td>' + esc(o.name) + '</td><td class="t-num">' + fmt(o.qty) + '</td>' +
+            '<td class="t-num">' + money(o.cost) + '</td>' +
+            '<td style="font-size:11.5px;color:var(--muted)">' +
+            (o.components || []).map(function (c) { return esc(c.name) + ' ' + fmt(c.qty); }).join('، ') +
+            (o.note ? '<div>' + esc(o.note) + '</div>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div></div>'
+      : '';
+
+    document.getElementById('content').innerHTML = cards + avail + log +
+      '<div class="hint" style="margin-top:12px">💡 ' +
+      L('أمر التصنيع بيخصم المكوّنات من المخزن ويضيف المنتج النهائي — وكل حركة بتتسجّل في سجل المخزون عادي، فالجرد والتكلفة بيفضلوا صح.',
+        'A production order consumes components and adds the finished item, with full stock movement records.') +
+      '</div>';
+  };
+
+  /* ═══ القائمة ═══ */
+  function injectNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav) return;
+      var hidden = (db.settings && db.settings.hiddenSections) || [];
+
+      if (!nav.querySelector('a[data-view="drivers"]') &&
+          (typeof canView !== 'function' || canView('drivers')) &&
+          hidden.indexOf('drivers') < 0) {
+        var a1 = nav.querySelector('a[data-view="pos"]');
+        if (a1) {
+          var d = document.createElement('a');
+          d.setAttribute('data-view', 'drivers');
+          d.innerHTML = '<span class="ic">🛵</span> ' + L('الطيارين', 'Drivers');
+          d.style.cursor = 'pointer';
+          d.onclick = function (ev) { if (ev) ev.preventDefault(); go('drivers'); };
+          a1.parentNode.insertBefore(d, a1.nextSibling);
+        }
+      }
+      if (!nav.querySelector('a[data-view="production"]') &&
+          (typeof canView !== 'function' || canView('production')) &&
+          hidden.indexOf('production') < 0) {
+        var a2 = nav.querySelector('a[data-view="products"]');
+        if (a2) {
+          var pr = document.createElement('a');
+          pr.setAttribute('data-view', 'production');
+          pr.innerHTML = '<span class="ic">🏭</span> ' + L('أوامر التصنيع', 'Production');
+          pr.style.cursor = 'pointer';
+          pr.onclick = function (ev) { if (ev) ev.preventDefault(); go('production'); };
+          a2.parentNode.insertBefore(pr, a2.nextSibling);
+        }
+      }
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        injectNav();
+        return r;
+      };
+    }
+    setTimeout(injectNav, 3400);
+    setTimeout(injectNav, 6200);
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.6 — استيراد عام (CSV/Excel) + مؤشر صحة الحساب
+
+   استيراد المنافسين الحقيقي (قراءة من دفترة/SkySoft مباشرة) محتاج
+   API مش متاح لينا. البديل العملي: استيراد عام من ملف CSV/Excel —
+   العميل يصدّر بياناته من أي نظام (أو حتى ملف يدوي) ويرفعها هنا.
+
+   مؤشر الصحة: قراءة فقط من subscriptions (نفس الجدول اللي لوحة
+   الأدمن الموجودة بتقراه أصلاً) — مفيش أي RPC جديد ولا تعديل على
+   منطق التفعيل/الإلغاء الموجود.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  /* ══════════════════════════════════════════
+     الجزء الأول: استيراد عام CSV/Excel
+     ══════════════════════════════════════════ */
+
+  // بارسر CSV بسيط بيراعي الفواصل جوه علامات التنصيص
+  window.fatCSVParse = function (text) {
+    text = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    var rows = [], row = [], cell = '', inQ = false;
+    for (var i = 0; i < text.length; i++) {
+      var c = text[i], n = text[i + 1];
+      if (inQ) {
+        if (c === '"' && n === '"') { cell += '"'; i++; }
+        else if (c === '"') { inQ = false; }
+        else cell += c;
+      } else {
+        if (c === '"') inQ = true;
+        else if (c === ',' || c === ';') { row.push(cell); cell = ''; }
+        else if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+        else cell += c;
+      }
+    }
+    if (cell.length || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter(function (r) { return r.some(function (c) { return String(c || '').trim(); }); });
+  };
+
+  window.fatImportGuessCol = function (headers, names) {
+    var norm = function (s) { return String(s || '').trim().toLowerCase().replace(/[_\-\s]+/g, ''); };
+    var H = headers.map(norm);
+    for (var i = 0; i < names.length; i++) {
+      var idx = H.indexOf(norm(names[i]));
+      if (idx > -1) return idx;
+    }
+    return -1;
+  };
+
+  var IMPORT_FIELDS = {
+    products: [
+      { key: 'name', label: 'الاسم', labelEn: 'Name', required: true, names: ['name', 'الاسم', 'اسم الصنف', 'product', 'item'] },
+      { key: 'sku', label: 'الكود / SKU', labelEn: 'SKU', names: ['sku', 'كود', 'الكود', 'barcode', 'باركود'] },
+      { key: 'price', label: 'سعر البيع', labelEn: 'Price', required: true, num: true, names: ['price', 'السعر', 'سعر البيع', 'sale price'] },
+      { key: 'cost', label: 'التكلفة', labelEn: 'Cost', num: true, names: ['cost', 'التكلفة', 'سعر الشراء', 'cost price'] },
+      { key: 'qty', label: 'الكمية', labelEn: 'Quantity', num: true, names: ['qty', 'quantity', 'الكمية', 'المخزون', 'stock'] },
+      { key: 'cat', label: 'التصنيف', labelEn: 'Category', names: ['category', 'التصنيف', 'cat', 'قسم'] }
+    ],
+    customers: [
+      { key: 'name', label: 'الاسم', labelEn: 'Name', required: true, names: ['name', 'الاسم', 'customer', 'العميل'] },
+      { key: 'phone', label: 'الموبايل', labelEn: 'Phone', names: ['phone', 'الهاتف', 'الموبايل', 'mobile', 'tel'] },
+      { key: 'address', label: 'العنوان', labelEn: 'Address', names: ['address', 'العنوان'] },
+      { key: 'balance', label: 'الرصيد الافتتاحي', labelEn: 'Opening balance', num: true, names: ['balance', 'الرصيد', 'opening balance'] }
+    ]
+  };
+
+  window._impState = null;
+
+  window.fatImportOpen = function (kind) {
+    kind = (kind === 'customers') ? 'customers' : 'products';
+    openModal('<div class="modal-h"><h3>📥 ' + L('استيراد', 'Import') + ' — ' +
+      (kind === 'products' ? L('أصناف', 'Products') : L('عملاء', 'Customers')) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('اختار ملف CSV أو Excel', 'Choose a CSV or Excel file') + '</label>' +
+      '<input type="file" id="imp_file" accept=".csv,.txt,.tsv" onchange="fatImportFileRead(\'' + kind + '\')"></div>' +
+      '<div class="hint">💡 ' +
+      L('صدّر بياناتك من أي نظام (دفترة، إكسل، أي حاجة) كـCSV وارفعها هنا. أول صف لازم يكون عناوين الأعمدة.',
+        'Export your data from any system as CSV. The first row must be column headers.') + '</div>' +
+      '<div id="imp_body" style="margin-top:14px"></div>' +
+      '</div><div class="modal-f" id="imp_footer"></div>');
+  };
+
+  window.fatImportFileRead = function (kind) {
+    var inp = document.getElementById('imp_file');
+    var f = inp && inp.files && inp.files[0];
+    if (!f) return;
+    var reader = new FileReader();
+    reader.onload = function (e) {
+      try {
+        var rows = window.fatCSVParse(String(e.target.result || ''));
+        if (rows.length < 2) return toast(L('الملف فاضي أو مفيهوش بيانات', 'File is empty or has no data'), 'err');
+        window._impState = { kind: kind, headers: rows[0], rows: rows.slice(1), map: {} };
+        window.fatImportMapUI();
+      } catch (er) { toast(L('تعذّر قراءة الملف', 'Could not read the file'), 'err'); }
+    };
+    reader.onerror = function () { toast(L('تعذّر قراءة الملف', 'Could not read the file'), 'err'); };
+    reader.readAsText(f, 'utf-8');
+  };
+
+  window.fatImportMapUI = function () {
+    var st = window._impState;
+    if (!st) return;
+    var fields = IMPORT_FIELDS[st.kind];
+    var body = document.getElementById('imp_body');
+    if (!body) return;
+
+    // خمّن الأعمدة تلقائيًا
+    fields.forEach(function (f) {
+      if (st.map[f.key] !== undefined) return;
+      var idx = window.fatImportGuessCol(st.headers, f.names);
+      st.map[f.key] = idx;
+    });
+
+    body.innerHTML =
+      '<div class="hint" style="margin-bottom:10px">' + L('لقينا', 'Found') + ' <b>' + st.rows.length + '</b> ' +
+      L('صف. اتأكد إن الأعمدة اتحطت صح:', 'rows. Confirm the column mapping:') + '</div>' +
+      fields.map(function (f) {
+        return '<div class="field"><label>' + L(f.label, f.labelEn) + (f.required ? ' *' : '') + '</label>' +
+          '<select onchange="fatImportSetCol(\'' + f.key + '\',this.value)">' +
+          '<option value="-1">' + L('— تجاهل —', '— Skip —') + '</option>' +
+          st.headers.map(function (h, i) {
+            return '<option value="' + i + '"' + (st.map[f.key] === i ? ' selected' : '') + '>' + esc(h) + '</option>';
+          }).join('') + '</select></div>';
+      }).join('') +
+      '<div id="imp_preview" style="margin-top:10px"></div>';
+
+    document.getElementById('imp_footer').innerHTML =
+      '<button class="btn btn-primary" onclick="fatImportRun()">📥 ' + L('استيراد', 'Import') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button>';
+
+    window.fatImportPreview();
+  };
+
+  window.fatImportSetCol = function (key, val) {
+    if (!window._impState) return;
+    window._impState.map[key] = +val;
+    window.fatImportPreview();
+  };
+
+  window.fatImportPreview = function () {
+    var st = window._impState;
+    var box = document.getElementById('imp_preview');
+    if (!st || !box) return;
+    var fields = IMPORT_FIELDS[st.kind];
+    var sample = st.rows.slice(0, 3);
+
+    box.innerHTML = '<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">' +
+      L('معاينة أول ٣ صفوف', 'Preview of first 3 rows') + '</div>' +
+      '<table style="font-size:11.5px"><thead><tr>' +
+      fields.map(function (f) { return '<th>' + L(f.label, f.labelEn) + '</th>'; }).join('') +
+      '</tr></thead><tbody>' +
+      sample.map(function (r) {
+        return '<tr>' + fields.map(function (f) {
+          var idx = st.map[f.key];
+          var v = (idx > -1 && idx < r.length) ? r[idx] : '';
+          return '<td>' + esc(v || '—') + '</td>';
+        }).join('') + '</tr>';
+      }).join('') + '</tbody></table>';
+  };
+
+  window.fatImportRun = function () {
+    var st = window._impState;
+    if (!st) return;
+    var fields = IMPORT_FIELDS[st.kind];
+    var req = fields.filter(function (f) { return f.required; });
+    for (var i = 0; i < req.length; i++) {
+      if (st.map[req[i].key] === -1 || st.map[req[i].key] === undefined) {
+        return toast(L('اختار عمود لـ', 'Choose a column for') + ' ' + L(req[i].label, req[i].labelEn), 'err');
+      }
+    }
+
+    var made = 0, skipped = 0, dupes = 0;
+    var existingKey = {};
+    if (st.kind === 'products') {
+      (db.products || []).forEach(function (p) {
+        var k = String(p.sku || p.name || '').trim().toLowerCase();
+        if (k) existingKey[k] = 1;
+      });
+    } else {
+      (db.customers || []).forEach(function (c) {
+        var k = String(c.phone || c.name || '').trim().toLowerCase();
+        if (k) existingKey[k] = 1;
+      });
+    }
+
+    st.rows.forEach(function (r) {
+      var rec = {};
+      fields.forEach(function (f) {
+        var idx = st.map[f.key];
+        var v = (idx > -1 && idx < r.length) ? String(r[idx] || '').trim() : '';
+        if (f.num) v = +String(v).replace(/[^\d.\-]/g, '') || 0;
+        rec[f.key] = v;
+      });
+      if (!rec.name) { skipped++; return; }
+
+      var key = (st.kind === 'products' ? (rec.sku || rec.name) : (rec.phone || rec.name)).toLowerCase();
+      if (key && existingKey[key]) { dupes++; return; }
+      if (key) existingKey[key] = 1;
+
+      rec.id = (typeof uid === 'function' ? uid() : String(Date.now()) + Math.random());
+      if (st.kind === 'products') {
+        db.products = db.products || [];
+        db.products.push({
+          id: rec.id, name: rec.name, sku: rec.sku || '', price: +rec.price || 0,
+          cost: +rec.cost || 0, qty: +rec.qty || 0, cat: rec.cat || ''
+        });
+      } else {
+        db.customers = db.customers || [];
+        db.customers.push({
+          id: rec.id, name: rec.name, phone: rec.phone || '', address: rec.address || '',
+          balance: +rec.balance || 0
+        });
+      }
+      made++;
+    });
+
+    try {
+      logAudit(L('استيراد بيانات', 'Data import'),
+        (st.kind === 'products' ? L('أصناف', 'Products') : L('عملاء', 'Customers')) + ' — ' + made);
+    } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('اتستوردت', 'Imported') + ' ' + made +
+      (dupes ? ' · ' + dupes + ' ' + L('مكرر اتجاهل', 'duplicates skipped') : '') +
+      (skipped ? ' · ' + skipped + ' ' + L('صف ناقص اتجاهل', 'incomplete rows skipped') : ''));
+    window._impState = null;
+    try {
+      if (st.kind === 'products' && current === 'products') views.products();
+      if (st.kind === 'customers' && current === 'customers') views.customers();
+    } catch (e) {}
+  };
+
+  // زرار الاستيراد في شاشات الأصناف والعملاء
+  (function () {
+    var _vp = views.products;
+    if (typeof _vp === 'function') {
+      views.products = function () {
+        var r = _vp.apply(this, arguments);
+        try {
+          var ta = document.getElementById('topActions');
+          if (ta && ta.innerHTML.indexOf('fatImportOpen') < 0) {
+            ta.innerHTML += ' <button class="btn btn-ghost btn-sm no-print" onclick="fatImportOpen(\'products\')">📥 ' +
+              L('استيراد', 'Import') + '</button>';
+          }
+        } catch (e) {}
+        return r;
+      };
+    }
+    var _vc = views.customers;
+    if (typeof _vc === 'function') {
+      views.customers = function () {
+        var r = _vc.apply(this, arguments);
+        try {
+          var ta = document.getElementById('topActions');
+          if (ta && ta.innerHTML.indexOf('fatImportOpen') < 0) {
+            ta.innerHTML += ' <button class="btn btn-ghost btn-sm no-print" onclick="fatImportOpen(\'customers\')">📥 ' +
+              L('استيراد', 'Import') + '</button>';
+          }
+        } catch (e) {}
+        return r;
+      };
+    }
+  })();
+
+  /* ══════════════════════════════════════════
+     الجزء الثاني: مؤشر صحة الحساب (قراءة فقط)
+     ══════════════════════════════════════════ */
+
+  // بيحسب حالة كل محل من نفس بيانات subscriptions اللي لوحة الأدمن بتقراها أصلاً
+  window.fatHealthCompute = function (orgs, subs) {
+    var subMap = {};
+    (subs || []).forEach(function (s) { subMap[s.org_id] = s; });
+    var out = { total: 0, noSub: 0, trial: 0, active: 0, expiringSoon: 0, expired: 0, rows: [] };
+
+    (orgs || []).forEach(function (o) {
+      out.total++;
+      var s = subMap[o.id];
+      var days = (s && s.expires_at) ? Math.ceil((new Date(s.expires_at) - new Date()) / 86400000) : null;
+      var status = 'noSub';
+      if (!s) { status = 'noSub'; out.noSub++; }
+      else if (days !== null && days < 0) { status = 'expired'; out.expired++; }
+      else if (s.status === 'trialing') { status = 'trial'; out.trial++; }
+      else { status = 'active'; out.active++; if (days !== null && days <= 5) out.expiringSoon++; }
+      out.rows.push({ org: o, sub: s, days: days, status: status });
+    });
+    return out;
+  };
+
+  window.fatHealthWidget = function (health) {
+    var pct = health.total ? Math.round(health.active / health.total * 100) : 0;
+    return '<div class="panel" style="max-width:920px;margin-bottom:16px"><div class="panel-h"><h3>🩺 ' +
+      L('صحة الحساب', 'Account Health') + '</h3></div><div class="panel-b pad">' +
+      '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">🏪</div><div class="lbl">' + L('إجمالي المحلات', 'Total shops') +
+      '</div><div class="val">' + health.total + '</div></div>' +
+      '<div class="card"><div class="ic-bg">✅</div><div class="lbl">' + L('مفعّلة', 'Active') +
+      '</div><div class="val" style="color:var(--ok)">' + health.active + '</div>' +
+      '<div class="sub">' + pct + '% ' + L('من الإجمالي', 'of total') + '</div></div>' +
+      '<div class="card"><div class="ic-bg">🎁</div><div class="lbl">' + L('تحت التجربة', 'On trial') +
+      '</div><div class="val">' + health.trial + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⏳</div><div class="lbl">' + L('قربت تنتهي (٥ أيام)', 'Expiring soon') +
+      '</div><div class="val" style="color:#d97706">' + health.expiringSoon + '</div></div>' +
+      '<div class="card"><div class="ic-bg">🔴</div><div class="lbl">' + L('منتهية', 'Expired') +
+      '</div><div class="val" style="color:var(--danger)">' + health.expired + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⚪</div><div class="lbl">' + L('بدون اشتراك', 'No subscription') +
+      '</div><div class="val">' + health.noSub + '</div></div>' +
+      '</div>' +
+      (health.expiringSoon || health.expired
+        ? '<div class="hint" style="margin-top:12px;color:' + (health.expired ? 'var(--danger)' : '#d97706') + '">' +
+          (health.expired ? '🔴 ' + health.expired + ' ' + L('محل منتهي الاشتراك دلوقتي', 'shops currently expired') : '') +
+          (health.expiringSoon ? (health.expired ? ' · ' : '⏳ ') + health.expiringSoon + ' ' +
+            L('هتنتهي خلال ٥ أيام — كلّمهم قبل ما يوقفوا', 'expiring within 5 days — reach out before they lapse') : '') +
+          '</div>'
+        : '<div class="hint" style="margin-top:12px;color:var(--ok)">✅ ' +
+          L('مفيش محلات في خطر دلوقتي', 'No shops at risk right now') + '</div>') +
+      '</div></div>';
+  };
+
+  (function () {
+    var _va = views.admin;
+    if (typeof _va !== 'function' || window._fatHealthWrapped) return;
+    window._fatHealthWrapped = true;
+    views.admin = async function () {
+      var r = await _va.apply(this, arguments);
+      try {
+        if (!window.IS_ADMIN && typeof IS_ADMIN !== 'undefined' && !IS_ADMIN) return r;
+        if (typeof sb === 'undefined' || !sb) return r;
+        var c = document.getElementById('content');
+        if (!c || document.getElementById('fatHealthBox')) return r;
+
+        var box = document.createElement('div');
+        box.id = 'fatHealthBox';
+        box.innerHTML = '<div class="panel" style="max-width:920px;margin-bottom:16px"><div class="panel-b pad">' +
+          L('جارٍ حساب صحة الحساب…', 'Computing account health…') + '</div></div>';
+        c.insertBefore(box, c.firstChild);
+
+        var res = await Promise.all([
+          sb.rpc('admin_list_orgs'),
+          sb.from('subscriptions').select('org_id,plan,status,expires_at')
+        ]);
+        var orgs = (res[0] && res[0].data) || [];
+        var subs = (res[1] && res[1].data) || [];
+        var health = window.fatHealthCompute(orgs, subs);
+        box.innerHTML = window.fatHealthWidget(health);
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+})();
+
 </script>
 </body>
 </html>

@@ -117,13 +117,17 @@ setTimeout(() => {
     ['v9.2 · التقسيط', 'fatInstBuild'],
     ['v9.3 · عمولة المندوبين', 'fatCommStats'],
     ['v9.4 · مستويات الولاء', 'fatCustTier'],
-    ['v9.4 · QR الطاولات', 'fatTableQRLink']
+    ['v9.4 · QR الطاولات', 'fatTableQRLink'],
+    ['v9.5 · الطيارين', 'fatDriverStats'],
+    ['v9.5 · أوامر التصنيع', 'fatProdRun'],
+    ['v9.6 · استيراد CSV', 'fatCSVParse'],
+    ['v9.6 · صحة الحساب', 'fatHealthCompute']
   ];
   checks.forEach(([label, fn]) => ok(label, typeof w[fn] === 'function'));
 
   /* ═══ ٥) الشاشات اتسجّلت ═══ */
   console.log('\n▶ الشاشات الجديدة اتسجّلت');
-  const screens = ['aging', 'branchStock', 'renew', 'etaPrep', 'kds', 'batches', 'promos', 'syncHealth', 'installments', 'commissions', 'loyalty'];
+  const screens = ['aging', 'branchStock', 'renew', 'etaPrep', 'kds', 'batches', 'promos', 'syncHealth', 'installments', 'commissions', 'loyalty', 'drivers', 'production'];
   // views و V2_KINDS معرّفين بـconst فمش على window — نقيّمهم جوه نطاق الصفحة
   const evalIn = expr => { try { return w.eval(expr); } catch (e) { return undefined; } };
   screens.forEach(s => ok('شاشة ' + s, evalIn(`typeof views!=='undefined' && typeof views['${s}']==='function'`) === true));
