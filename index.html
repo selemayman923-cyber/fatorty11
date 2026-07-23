@@ -25127,7 +25127,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     views.admin = async function () {
       var r = await _va.apply(this, arguments);
       try {
-        if (!window.IS_ADMIN && typeof IS_ADMIN !== 'undefined' && !IS_ADMIN) return r;
+        if (typeof IS_ADMIN !== 'undefined' && !IS_ADMIN) return r;
         if (typeof sb === 'undefined' || !sb) return r;
         var c = document.getElementById('content');
         if (!c || document.getElementById('fatHealthBox')) return r;
@@ -25971,6 +25971,1620 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
         if (!allowed) return;
         _dss(did);
       });
+    };
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.14 — إحكام صلاحيات شاشتين حساستين
+
+   الباج: v9.5 (الطيارين) وv8.7 (صحة البيانات) استخدموا 'pos' و
+   'settings' كشرط بديل (OR) للوصول. الكاشير عنده الصلاحيتين دول
+   افتراضيًا لأسباب عادية (يفتح الكاشير، يغيّر إعداداته الشخصية) —
+   بس ده فتح باب جانبي:
+     • شاشة الطيارين فيها تسوية فلوس فعلية (money-moving)
+     • شاشة صحة البيانات فيها زرار "🔧 اظبط" بيعدّل كميات مخزون
+       مباشرة — والكاشير في نظامك ممنوع أصلًا من products/stocktake
+
+   الإصلاح: بدل الشرط البديل الفضفاض، نتأكد إن الدور الحالي مدير
+   أو محاسب أو أمين مخزن — مش أي حد عنده pos أو settings بس.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  // true لو الدور الحالي عنده صلاحية إدارية حقيقية (مش كاشير عادي)
+  window.fatIsPrivilegedRole = function () {
+    try {
+      if (typeof IS_ADMIN !== 'undefined' && IS_ADMIN) return true;
+      var r = (db.settings && db.settings.role) || 'manager';
+      return ['manager', 'accountant', 'stockkeeper'].indexOf(r) > -1;
+    } catch (e) { return true; }   // في حالة الشك، منمنعش — الأمان الافتراضي زي ما كان
+  };
+
+  (function () {
+    var _cv = window.canView;
+    if (typeof _cv !== 'function' || window._fatPermTightened) return;
+    window._fatPermTightened = true;
+    window.canView = function (v) {
+      if (v === 'drivers' || v === 'syncHealth') {
+        // بدل ما نعتمد على 'pos'/'settings' اللي الكاشير عنده أصلًا،
+        // نتأكد إن الدور فعلاً إداري
+        return window.fatIsPrivilegedRole() && _cv(v);
+      }
+      return _cv(v);
+    };
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.15 — تصحيح جدول الأقساط بعد مرتجع جزئي
+
+   الباج: saveReturn بتقلّل s.dueAmount مباشرة، بس s.installments
+   (جدول الأقساط) معرفهاش خالص — فمجموع الأقساط المتبقية يفضل
+   أكبر من المتبقي الفعلي على الفاتورة. العميل هيتطالب بأقساط
+   على بضاعة رجعت المخزن فعلًا.
+
+   الحل: بعد أي مرتجع على فاتورة عليها خطة تقسيط، نقلّل من آخر
+   الأقساط الغير مدفوعة (الأحدث استحقاقًا) لحد ما مجموع المتبقي
+   يطابق s.dueAmount الجديد — مش من الأقساط اللي استحقاقها قرّب،
+   عشان العميل ميتفاجئش بقسط الشهر ده اتغيّر.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  window.fatInstRebalance = function (s) {
+    if (!s || !Array.isArray(s.installments) || !s.installments.length) return;
+    var due = Math.max(0, R2(+s.dueAmount || 0));
+
+    var unpaid = s.installments.filter(function (it) { return !it.paid; });
+    var unpaidTotal = R2(unpaid.reduce(function (a, it) { return a + (+it.amount || 0); }, 0));
+
+    var excess = R2(unpaidTotal - due);
+    if (excess <= 0.009) return;   // متطابقين أصلًا، مفيش حاجة نعملها
+
+    // اقطع من الأقساط الأبعد استحقاقًا للأقرب — العميل ميتفاجئش بقسط الشهر ده
+    var sorted = unpaid.slice().sort(function (a, b) {
+      return String(b.dueDate || '').localeCompare(String(a.dueDate || ''));
+    });
+
+    for (var i = 0; i < sorted.length && excess > 0.009; i++) {
+      var it = sorted[i];
+      var take = Math.min(+it.amount || 0, excess);
+      it.amount = R2((+it.amount || 0) - take);
+      excess = R2(excess - take);
+    }
+
+    // شيل الأقساط اللي بقت صفر (اترجعت بالكامل)
+    s.installments = s.installments.filter(function (it) {
+      return it.paid || Math.abs(+it.amount || 0) > 0.009;
+    });
+
+    // إعادة ترقيم الأقساط الغير مدفوعة عشان الترتيب يفضل متسلسل في العرض
+    var n = 0;
+    s.installments.forEach(function (it) { it.no = ++n; });
+  };
+
+  (function () {
+    var _sr = window.saveReturn;
+    if (typeof _sr !== 'function' || window._fatInstRebalanceWrapped) return;
+    window._fatInstRebalanceWrapped = true;
+    window.saveReturn = function () {
+      var s = null;
+      try { s = (typeof retCtx !== 'undefined' && retCtx && retCtx.kind === 'sale') ? retCtx.s : null; } catch (e) {}
+      var r = _sr.apply(this, arguments);
+      try { if (s) window.fatInstRebalance(s); } catch (e) {}
+      return r;
+    };
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.16 — توضيح حد الصرف + فصل كاش الطيار في تقفيل الشيفت
+
+   ١) حد الصرف الافتراضي (payoutMax) = صفر يعني "بلا حد" — نفس
+      منطق discountMax (افتراضي ١٠٠٪). ده تصميم أصلي سليم، بس
+      صاحب المحل ممكن يفتكر إن الحماية شغّالة تلقائي وهي مش شغّالة
+      لحد ما يظبط الرقم بنفسه. نضيف تنبيه واضح في نفس الشاشة.
+
+   ٢) تقفيل الشيفت كان بيحسب "كاش" = كل فاتورة payMethod=cash،
+      حتى لو كانت طلب توصيل والفلوس لسه مع الطيار ومش في الدرج.
+      نفصل: كاش في الدرج فعليًا، مقابل كاش لسه مع الطيارين.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  /* ═══════════ ١) تنبيه وضوح حد الصرف ═══════════ */
+
+  window.fatPayoutLimitsUnset = function () {
+    try {
+      var pr = (db.settings && db.settings.perm) || {};
+      var pm = pr.payoutMax || {};
+      var roles = ['cashier', 'accountant', 'stockkeeper'];
+      return roles.filter(function (r) { return !(pm[r] > 0); });
+    } catch (e) { return []; }
+  };
+
+  (function () {
+    var _ops = window.opsSettingsPanel;
+    if (typeof _ops !== 'function' || window._fatPayoutHintWrapped) return;
+    window._fatPayoutHintWrapped = true;
+    window.opsSettingsPanel = function () {
+      var html = _ops.apply(this, arguments);
+      try {
+        var unset = window.fatPayoutLimitsUnset();
+        if (!unset.length) return html;
+        var roleNames = { cashier: L('الكاشير', 'Cashier'), accountant: L('المحاسب', 'Accountant'), stockkeeper: L('أمين المخزن', 'Stockkeeper') };
+        var names = unset.map(function (r) { return roleNames[r] || r; }).join('، ');
+        var note = '<div class="hint" style="margin-top:10px;color:#d97706">⚠️ <b>' +
+          L('حد الصرف مش مفعّل فعليًا', 'Payout limit is not actually active') + '</b><br>' +
+          L('صفر معناه «بلا حد» مش «ممنوع» — يعني حاليًا (', 'Zero means "no limit", not "forbidden" — currently (') +
+          esc(names) + L(') يقدروا يصرفوا أي مبلغ (عمولة، تسوية طيار) من غير موافقة مدير. اكتب رقم أكبر من صفر في الجدول فوق عشان الحماية تشتغل فعليًا.',
+          ') can pay out any amount without manager approval. Enter a number above 0 to activate protection.') +
+          '</div>';
+        var marker = '</table>';
+        var idx = html.lastIndexOf(marker);
+        if (idx > -1) {
+          html = html.slice(0, idx + marker.length) + note + html.slice(idx + marker.length);
+        } else {
+          html += note;
+        }
+      } catch (e) {}
+      return html;
+    };
+  })();
+
+  /* ═══════════ ٢) فصل كاش الطيار عن كاش الدرج في تقفيل الشيفت ═══════════ */
+
+  window.fatShiftCashSplit = function (sales) {
+    var drawer = 0, withDrivers = 0;
+    (sales || []).forEach(function (s) {
+      if (!s || s.payMethod !== 'cash') return;
+      var heldByDriver = !!(s.driverId && !s.driverSettled);
+      if (heldByDriver) withDrivers = R2(withDrivers + (+s.total || 0));
+      else drawer = R2(drawer + (+s.total || 0));
+    });
+    return { drawer: drawer, withDrivers: withDrivers, total: R2(drawer + withDrivers) };
+  };
+
+  (function () {
+    var _sc = window.shiftClose;
+    if (typeof _sc !== 'function' || window._fatShiftCashWrapped) return;
+    window._fatShiftCashWrapped = true;
+    window.shiftClose = function () {
+      var r = _sc.apply(this, arguments);
+      try {
+        if (typeof _activeShift === 'undefined' || !_activeShift) return r;
+        var sales = bf(db.sales).filter(function (s) { return s.shiftSessionId === _activeShift.id; });
+        var split = window.fatShiftCashSplit(sales);
+        if (split.withDrivers <= 0.009) return r;   // مفيش طلبات توصيل في الشيفت ده أصلًا
+
+        var tbl = document.querySelector('#modal table');
+        if (!tbl || tbl.querySelector('.fat-cash-split')) return r;
+        var tr = document.createElement('tr');
+        tr.className = 'fat-cash-split';
+        tr.innerHTML = '<td>' + L('منها كاش في الدرج فعليًا', 'Of which, in drawer') + '</td>' +
+          '<td><b style="color:var(--ok)">' + money(split.drawer) + '</b></td>';
+        var tr2 = document.createElement('tr');
+        tr2.className = 'fat-cash-split';
+        tr2.innerHTML = '<td>' + L('لسه مع الطيارين (لحد التسوية)', 'Still with drivers') + '</td>' +
+          '<td><b style="color:#d97706">' + money(split.withDrivers) + '</b></td>';
+        tbl.appendChild(tr); tbl.appendChild(tr2);
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  (function () {
+    var _scc = window.shiftConfirmClose;
+    if (typeof _scc !== 'function' || window._fatShiftConfirmCashWrapped) return;
+    window._fatShiftConfirmCashWrapped = true;
+    window.shiftConfirmClose = function () {
+      var sales = [];
+      try {
+        if (typeof _activeShift !== 'undefined' && _activeShift) {
+          sales = bf(db.sales).filter(function (s) { return s.shiftSessionId === _activeShift.id; });
+        }
+      } catch (e) {}
+      var split = window.fatShiftCashSplit(sales);
+      var r = _scc.apply(this, arguments);
+      try {
+        var last = (db.shiftSessions || [])[db.shiftSessions.length - 1];
+        if (last && split.withDrivers > 0.009) {
+          last.cashDrawer = split.drawer;
+          last.cashWithDrivers = split.withDrivers;
+          save();
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.17 — ربط الموظف بفرع (عزل الفروع للسلاسل)
+
+   ⚠️ صريح ومهم: ده قفل *واجهة* مش حاجز أمني كامل. كل بيانات المحل
+   بتتنزّل على جهاز أي موظف وقت المزامنة (بنية النظام الحالية)،
+   والفلترة بالفرع بتحصل في المتصفح. يعني موظف فاهم تقنيًا (Console)
+   يقدر يتخطى القفل ده. الحماية الحقيقية محتاجة تعديل قواعد الأمان
+   في Supabase نفسها (RLS) — وده قرار أكبر ومحتاج مراجعة منفصلة،
+   مش حاجة تتعمل من غير ما تُرى إعدادات الأمان الحالية بالتفصيل.
+
+   اللي بيعمله ده فعليًا: يمنع الحالة الشائعة (موظف أمين بيشوف
+   فرعه بس بدون قصد أو فضول) — مش يمنع اختراق متعمّد.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  window._fatMyBranch = null;   // الفرع المربوط بالمستخدم الحالي (لو فيه)
+
+  // نقرا فرع المستخدم الحالي من org_members (لو النظام سحابي وعنده صف)
+  window.fatLoadMyBranch = async function () {
+    try {
+      if (typeof sb === 'undefined' || !sb || typeof CURRENT_ORG === 'undefined' || !CURRENT_ORG) return;
+      if (typeof CURRENT_UID === 'undefined' || !CURRENT_UID) return;
+      var res = await sb.from('org_members').select('branch_id,role')
+        .eq('org_id', CURRENT_ORG).eq('user_id', CURRENT_UID).maybeSingle();
+      var row = res && res.data;
+      if (!row) return;
+      // المدير مايتقفلش أبدًا — لازم يشوف كل الفروع دايمًا
+      if (row.role === 'manager') { window._fatMyBranch = null; return; }
+      window._fatMyBranch = row.branch_id || null;
+      if (window._fatMyBranch) {
+        try {
+          var exists = (db.branches || []).some(function (b) { return b.id === window._fatMyBranch; });
+          if (exists) { db.settings.activeBranch = window._fatMyBranch; save(); }
+        } catch (e) {}
+      }
+    } catch (e) {}
+  };
+
+  // قفل القائمة المنسدلة لو المستخدم مربوط بفرع
+  (function () {
+    var _rbs = window.renderBranchSel;
+    if (typeof _rbs !== 'function' || window._fatBranchSelLocked) return;
+    window._fatBranchSelLocked = true;
+    window.renderBranchSel = function () {
+      var r = _rbs.apply(this, arguments);
+      try {
+        var s = document.getElementById('branchSel');
+        if (!s || !window._fatMyBranch) return r;
+        s.disabled = true;
+        s.title = L('انت مربوط بفرع واحد بواسطة المدير', 'You are locked to one branch by the manager');
+        var old = document.getElementById('fatBranchLockBadge');
+        if (!old && s.parentNode) {
+          var b = document.createElement('span');
+          b.id = 'fatBranchLockBadge';
+          b.textContent = '🔒';
+          b.style.cssText = 'margin-inline-start:4px;font-size:12px;cursor:help';
+          b.title = s.title;
+          s.parentNode.insertBefore(b, s.nextSibling);
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  // امنع تغيير الفرع من الكونسول كمان (حماية إضافية بسيطة، مش أمان كامل)
+  (function () {
+    var _sw = window.switchBranch;
+    if (typeof _sw !== 'function' || window._fatSwitchGuarded) return;
+    window._fatSwitchGuarded = true;
+    window.switchBranch = function (id) {
+      if (window._fatMyBranch && id !== window._fatMyBranch) {
+        return toast(L('انت مربوط بفرع واحد — كلّم المدير لو محتاج تتنقل', 'You are locked to one branch — ask your manager'), 'err');
+      }
+      return _sw.apply(this, arguments);
+    };
+  })();
+
+  /* ═══════════ شاشة فريق العمل — ربط كل موظف بفرع ═══════════ */
+
+  (function () {
+    var _rt = window.renderTeam;
+    if (typeof _rt !== 'function' || window._fatTeamBranchWrapped) return;
+    window._fatTeamBranchWrapped = true;
+    window.renderTeam = async function () {
+      var r = await _rt.apply(this, arguments);
+      try {
+        if (typeof sb === 'undefined' || !sb || (db.branches || []).length < 2) return r;
+        var body = document.getElementById('teamBody');
+        if (!body) return r;
+
+        var res = await sb.from('org_members').select('user_id,role,email,branch_id').eq('org_id', CURRENT_ORG);
+        var members = (res && res.data) || [];
+
+        var box = document.getElementById('fatBranchAssignBox');
+        if (!box) {
+          box = document.createElement('div');
+          box.id = 'fatBranchAssignBox';
+          box.style.cssText = 'margin-top:16px;padding-top:14px;border-top:1px solid var(--line)';
+          body.parentNode.appendChild(box);
+        }
+
+        var staffOnly = members.filter(function (m) { return m.role !== 'manager'; });
+        box.innerHTML =
+          '<b style="font-size:13px">🏢 ' + L('ربط كل موظف بفرع', 'Lock staff to a branch') + '</b>' +
+          '<div class="hint" style="margin:6px 0 10px">' +
+          L('لو حددت فرع لموظف، هيشوف بيانات فرعه بس في القائمة والتقارير. سيبه فاضي عشان يشوف كل الفروع.',
+            'If you assign a branch, that member only sees that branch. Leave empty for all branches.') +
+          '<br>⚠️ ' + L('ده قفل واجهة يمنع الفضول العادي — مش حاجز أمني كامل ضد موظف فاهم تقنيًا.',
+            'This is a UI-level lock against casual browsing — not a hard security boundary.') + '</div>' +
+          (staffOnly.length
+            ? staffOnly.map(function (m) {
+                return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">' +
+                  '<span style="flex:1;min-width:150px;font-size:12.5px">' + esc(m.email || '—') + '</span>' +
+                  '<select onchange="fatSetMemberBranch(\'' + m.user_id + '\',this.value)" style="min-width:150px">' +
+                  '<option value="">' + L('كل الفروع', 'All branches') + '</option>' +
+                  (db.branches || []).map(function (b) {
+                    return '<option value="' + b.id + '"' + (m.branch_id === b.id ? ' selected' : '') + '>🏢 ' + esc(b.name) + '</option>';
+                  }).join('') + '</select></div>';
+              }).join('')
+            : '<div class="hint">' + L('مفيش موظفين تانيين لسه', 'No other staff yet') + '</div>');
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  window.fatSetMemberBranch = async function (userId, branchId) {
+    try {
+      var upd = { branch_id: branchId || null };
+      var res = await sb.from('org_members').update(upd).eq('org_id', CURRENT_ORG).eq('user_id', userId);
+      if (res && res.error) throw res.error;
+      try {
+        logAudit(L('ربط موظف بفرع', 'Assign staff to branch'),
+          userId + ' — ' + (branchId ? branchName(branchId) : L('كل الفروع', 'All branches')));
+      } catch (e) {}
+      toast('✅ ' + L('اتحفظ', 'Saved'));
+    } catch (e) {
+      toast((e && e.message) || L('تعذّر الحفظ', 'Save failed'), 'err');
+    }
+  };
+
+  // نقرا فرع المستخدم أول ما النظام يفتح ويستقر
+  setTimeout(function () { try { window.fatLoadMyBranch(); } catch (e) {} }, 3500);
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.18 — الأصول الثابتة والإهلاك
+
+   الفجوة: حساب "أصول ثابتة" (1500) موجود في شجرة الحسابات من
+   الأول، بس من غير سجل حقيقي — مفيش قيمة أصل، عمر افتراضي،
+   ولا إهلاك بيتحسب أو يترحّل تلقائيًا للقيود.
+
+   الحل: سجل أصول كامل + إهلاك بالقسط الثابت (الطريقة الأشهر
+   والأنسب لمنشأة صغيرة/متوسطة) + قيد شهري تلقائي:
+     مدين: مصروف إهلاك (5xxx)
+     دائن: مجمّع إهلاك (تحت 1500 — حساب مقابل contra-asset)
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  /* ═══════════ ١) حسابات الإهلاك في الدليل المحاسبي ═══════════ */
+
+  window.fatEnsureAssetAccounts = function () {
+    try {
+      fatEnsureAccounts();
+      var need = [
+        { code: '1510', name: L('مجمّع الإهلاك', 'Accumulated depreciation'), type: 'asset', parent: '1500' },
+        { code: '5300', name: L('مصروف إهلاك', 'Depreciation expense'), type: 'expense', parent: '5000' }
+      ];
+      need.forEach(function (a) {
+        if (!db.accounts.some(function (x) { return x.code === a.code; })) {
+          db.accounts.push({ id: 'acct_' + a.code, code: a.code, name: a.name, type: a.type, parent: a.parent, builtin: true });
+        }
+      });
+    } catch (e) {}
+  };
+
+  /* ═══════════ ٢) سجل الأصول ═══════════ */
+
+  window.fatAssets = function () {
+    try { db.fixedAssets = db.fixedAssets || []; return db.fixedAssets; } catch (e) { return []; }
+  };
+
+  // إهلاك شهري بالقسط الثابت = (التكلفة − قيمة الخردة) ÷ (العمر بالسنين × ١٢)
+  window.fatAssetMonthlyDep = function (a) {
+    var base = R2((+a.cost || 0) - (+a.salvage || 0));
+    var months = Math.max(1, Math.round((+a.usefulLifeYears || 1) * 12));
+    return R2(base / months);
+  };
+
+  window.fatAssetAccumDep = function (a) {
+    var m = (a.depRuns || []).reduce(function (s, r) { return s + (+r.amount || 0); }, 0);
+    return R2(m);
+  };
+
+  window.fatAssetBookValue = function (a) {
+    if (a.disposedAt) return 0;
+    var bv = R2((+a.cost || 0) - window.fatAssetAccumDep(a));
+    return Math.max(bv, +a.salvage || 0);
+  };
+
+  window.fatAssetFullyDep = function (a) {
+    return window.fatAssetBookValue(a) <= (+a.salvage || 0) + 0.009;
+  };
+
+  window.fatAssetForm = function (id) {
+    var a = id ? window.fatAssets().filter(function (x) { return x.id === id; })[0] : null;
+    a = a || { name: '', cost: 0, salvage: 0, usefulLifeYears: 5, purchaseDate: today(), branch: activeBranch() };
+    var brs = (db.branches || []);
+    openModal('<div class="modal-h"><h3>🏢 ' + (id ? L('تعديل أصل', 'Edit asset') : L('أصل جديد', 'New fixed asset')) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('اسم الأصل', 'Asset name') + '</label>' +
+      '<input id="fa_name" value="' + esc(a.name || '') + '" placeholder="' + L('مثال: سيارة توصيل، ثلاجة عرض', 'e.g. Delivery van, display fridge') + '"></div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('تكلفة الشراء', 'Purchase cost') + '</label>' +
+      '<input id="fa_cost" type="number" step="any" min="0" value="' + (+a.cost || '') + '" oninput="fatAssetPreview()"></div>' +
+      '<div class="field"><label>' + L('تاريخ الشراء', 'Purchase date') + '</label>' +
+      '<input id="fa_date" type="date" value="' + esc(a.purchaseDate || today()) + '" oninput="fatAssetPreview()"></div></div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('العمر الافتراضي (سنين)', 'Useful life (years)') + '</label>' +
+      '<input id="fa_life" type="number" step="0.5" min="0.5" value="' + (+a.usefulLifeYears || 5) + '" oninput="fatAssetPreview()"></div>' +
+      '<div class="field"><label>' + L('قيمة الخردة المتبقية', 'Salvage value') + '</label>' +
+      '<input id="fa_salvage" type="number" step="any" min="0" value="' + (+a.salvage || 0) + '" oninput="fatAssetPreview()"></div></div>' +
+      (brs.length > 1
+        ? '<div class="field"><label>' + L('الفرع', 'Branch') + '</label><select id="fa_branch">' +
+          brs.map(function (b) { return '<option value="' + b.id + '"' + (a.branch === b.id ? ' selected' : '') + '>🏢 ' + esc(b.name) + '</option>'; }).join('') +
+          '</select></div>'
+        : '') +
+      '<div id="fa_prev" style="background:var(--card2);border-radius:12px;padding:12px;margin-top:6px"></div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatAssetSave(' + (id ? "'" + id + "'" : 'null') + ')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+    window.fatAssetPreview();
+  };
+
+  window.fatAssetPreview = function () {
+    var box = document.getElementById('fa_prev');
+    if (!box) return;
+    var g = function (i) { var e = document.getElementById(i); return e ? +e.value || 0 : 0; };
+    var cost = g('fa_cost'), salvage = g('fa_salvage'), life = g('fa_life') || 1;
+    var monthly = R2((cost - salvage) / Math.max(1, life * 12));
+    box.innerHTML =
+      '<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0">' +
+      '<span>' + L('القيمة القابلة للإهلاك', 'Depreciable amount') + '</span><b>' + money(Math.max(0, cost - salvage)) + '</b></div>' +
+      '<div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0;border-top:1px solid var(--line);margin-top:5px">' +
+      '<b>' + L('الإهلاك الشهري', 'Monthly depreciation') + '</b><b style="color:var(--primary)">' + money(monthly) + '</b></div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:4px">' +
+      L('طريقة القسط الثابت — نفس المبلغ كل شهر لحد ما يوصل لقيمة الخردة', 'Straight-line — same amount every month down to salvage value') + '</div>';
+  };
+
+  window.fatAssetSave = function (id) {
+    var g = function (i) { var e = document.getElementById(i); return e; };
+    var name = String((g('fa_name') || {}).value || '').trim();
+    if (!name) return toast(L('اكتب اسم الأصل', 'Enter an asset name'), 'err');
+    var cost = +(g('fa_cost') || {}).value || 0;
+    if (cost <= 0) return toast(L('اكتب تكلفة صحيحة', 'Enter a valid cost'), 'err');
+    var salvage = +(g('fa_salvage') || {}).value || 0;
+    var life = +(g('fa_life') || {}).value || 5;
+    if (salvage >= cost) return toast(L('قيمة الخردة لازم تكون أقل من التكلفة', 'Salvage must be less than cost'), 'err');
+    var date = (g('fa_date') || {}).value || today();
+    var branchEl = g('fa_branch');
+    var branch = branchEl ? branchEl.value : (activeBranch() || '');
+
+    var list = window.fatAssets();
+    var rec;
+    if (id) {
+      rec = list.filter(function (x) { return x.id === id; })[0];
+      if (rec) Object.assign(rec, { name: name, cost: cost, salvage: salvage, usefulLifeYears: life, purchaseDate: date, branch: branch });
+    } else {
+      rec = { id: (typeof uid === 'function' ? uid() : String(Date.now())), name: name, cost: cost, salvage: salvage,
+               usefulLifeYears: life, purchaseDate: date, branch: branch, depRuns: [], createdAt: today() };
+      list.push(rec);
+    }
+    try { logAudit(id ? L('تعديل أصل ثابت', 'Edit fixed asset') : L('أصل ثابت جديد', 'New fixed asset'), name + ' — ' + money(cost)); } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظ', 'Saved'));
+    try { if (current === 'fixedAssets') views.fixedAssets(); } catch (e) {}
+  };
+
+  window.fatAssetDelete = function (id) {
+    var a = window.fatAssets().filter(function (x) { return x.id === id; })[0];
+    if (!a) return;
+    if ((a.depRuns || []).length) {
+      return toast(L('الأصل ده عليه قيود إهلاك مرحّلة — مينفعش يتمسح، استخدم «استبعاد» بدلًا من كده',
+        'This asset has posted depreciation entries — dispose it instead of deleting'), 'err');
+    }
+    Promise.resolve(confirmBox(L('تمسح الأصل ده؟', 'Delete this asset?') + '\n\n' + a.name, { danger: true }))
+      .then(function (okv) {
+        if (!okv) return;
+        db.fixedAssets = window.fatAssets().filter(function (x) { return x.id !== id; });
+        save();
+        toast(L('اتمسح', 'Deleted'));
+        try { if (current === 'fixedAssets') views.fixedAssets(); } catch (e) {}
+      });
+  };
+
+  /* ═══════════ ٣) ترحيل الإهلاك الشهري (قيد فعلي) ═══════════ */
+
+  window.fatPostDepreciation = function (monthStr) {
+    monthStr = monthStr || today().slice(0, 7);
+    window.fatEnsureAssetAccounts();
+    var assets = window.fatAssets().filter(function (a) {
+      if (a.disposedAt) return false;
+      if ((a.depRuns || []).some(function (r) { return r.month === monthStr; })) return false;
+      if (window.fatAssetFullyDep(a)) return false;
+      return a.purchaseDate <= (monthStr + '-31');
+    });
+    if (!assets.length) return { posted: 0, total: 0, alreadyDone: true };
+
+    var lines = [], total = 0;
+    assets.forEach(function (a) {
+      var amt = window.fatAssetMonthlyDep(a);
+      var remaining = R2(window.fatAssetBookValue(a) - (+a.salvage || 0));
+      if (amt > remaining) amt = remaining;
+      if (amt <= 0.009) return;
+      a.depRuns = a.depRuns || [];
+      a.depRuns.push({ month: monthStr, amount: amt, ts: new Date().toISOString() });
+      total = R2(total + amt);
+    });
+
+    if (total <= 0.009) return { posted: 0, total: 0 };
+
+    lines.push({ acct: L('مصروف إهلاك', 'Depreciation expense'), debit: total, credit: 0 });
+    lines.push({ acct: L('مجمّع الإهلاك', 'Accumulated depreciation'), debit: 0, credit: total });
+
+    db.journal = db.journal || [];
+    db.journal.push({
+      id: (typeof uid === 'function' ? uid() : String(Date.now())),
+      date: monthStr + '-28',
+      desc: L('إهلاك شهر', 'Depreciation for') + ' ' + monthStr + ' — ' + assets.length + ' ' + L('أصل', 'assets'),
+      ref: L('إهلاك', 'Depreciation'), lines: lines,
+      ts: new Date().toISOString(), by: (typeof currentUserName === 'function' ? currentUserName() : ''),
+      depreciation: true, month: monthStr
+    });
+
+    try { logAudit(L('ترحيل إهلاك', 'Post depreciation'), monthStr + ' — ' + money(total)); } catch (e) {}
+    save();
+    return { posted: assets.length, total: total };
+  };
+
+  window.fatAssetDispose = function (id) {
+    var a = window.fatAssets().filter(function (x) { return x.id === id; })[0];
+    if (!a) return;
+    var bv = window.fatAssetBookValue(a);
+    Promise.resolve(promptBox(
+      L('استبعاد الأصل', 'Dispose asset') + ' — ' + a.name + '\n' +
+      L('القيمة الدفترية الحالية', 'Current book value') + ': ' + money(bv) + '\n' +
+      L('اكتب قيمة البيع (صفر لو اتكهّن أو اتلف):', 'Sale value (0 if scrapped):'),
+      { value: bv, type: 'number' }
+    )).then(function (v) {
+      if (v === null) return;
+      var saleVal = R2(+v || 0);
+      var gain = R2(saleVal - bv);
+
+      var lines = [];
+      lines.push({ acct: L('مجمّع الإهلاك', 'Accumulated depreciation'), debit: window.fatAssetAccumDep(a), credit: 0 });
+      if (saleVal > 0) lines.push({ acct: L('الخزينة النقدية', 'Cash'), debit: saleVal, credit: 0 });
+      if (gain > 0.009) lines.push({ acct: L('إيرادات أخرى', 'Other income'), debit: 0, credit: gain });
+      lines.push({ acct: L('أصول ثابتة', 'Fixed assets'), debit: 0, credit: +a.cost || 0 });
+      if (gain < -0.009) lines.push({ acct: L('مصروفات تشغيلية', 'Operating expenses'), debit: -gain, credit: 0 });
+
+      db.journal = db.journal || [];
+      db.journal.push({
+        id: (typeof uid === 'function' ? uid() : String(Date.now())),
+        date: today(), desc: L('استبعاد أصل', 'Asset disposal') + ' — ' + a.name,
+        ref: L('استبعاد', 'Disposal'), lines: lines,
+        ts: new Date().toISOString(), by: (typeof currentUserName === 'function' ? currentUserName() : '')
+      });
+
+      a.disposedAt = today();
+      a.disposalValue = saleVal;
+      a.disposalGain = gain;
+      try { addCash(saleVal > 0 ? 'in' : 'out', Math.abs(saleVal), L('استبعاد أصل', 'Asset disposal') + ': ' + a.name, null, 'cash'); } catch (e) {}
+      try { logAudit(L('استبعاد أصل', 'Asset disposal'), a.name + ' — ' + money(saleVal)); } catch (e) {}
+      save(); closeModal();
+      toast('✅ ' + L('اتسجّل الاستبعاد', 'Disposal recorded'));
+      try { if (current === 'fixedAssets') views.fixedAssets(); } catch (e) {}
+    });
+  };
+
+  /* ═══════════ ٤) الشاشة ═══════════ */
+
+  try {
+    PG.fixedAssets = [
+      ['الأصول الثابتة', 'سجل الأصول والإهلاك الشهري'],
+      ['Fixed Assets', 'Asset register and monthly depreciation']
+    ];
+    var _cvF = window.canView;
+    window.canView = function (v) {
+      if (v === 'fixedAssets') return _cvF('treasury') || _cvF('reports') || _cvF('settings');
+      return _cvF(v);
+    };
+  } catch (e) {}
+
+  window.fatAssetCSV = function () {
+    var rows = [[L('الأصل', 'Asset'), L('تاريخ الشراء', 'Purchase date'), L('التكلفة', 'Cost'),
+      L('قيمة الخردة', 'Salvage'), L('العمر (سنين)', 'Life (yrs)'), L('مجمّع الإهلاك', 'Accum. dep.'),
+      L('القيمة الدفترية', 'Book value'), L('الحالة', 'Status')]];
+    window.fatAssets().forEach(function (a) {
+      rows.push([a.name, a.purchaseDate, a.cost, a.salvage, a.usefulLifeYears,
+        window.fatAssetAccumDep(a), window.fatAssetBookValue(a),
+        a.disposedAt ? L('مستبعد', 'Disposed') : (window.fatAssetFullyDep(a) ? L('مُهلَك بالكامل', 'Fully depreciated') : L('نشط', 'Active'))]);
+    });
+    downloadCSV('fixed-assets-' + today() + '.csv', rows);
+  };
+
+  views.fixedAssets = function () {
+    var assets = window.fatAssets();
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-primary btn-sm" onclick="fatAssetForm()">+ ' + L('أصل جديد', 'New asset') + '</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="fatAssetCSV()">📊 CSV</button>';
+
+    var thisMonth = today().slice(0, 7);
+    var doneThisMonth = assets.some(function (a) { return (a.depRuns || []).some(function (r) { return r.month === thisMonth; }); });
+    var pendingCount = assets.filter(function (a) {
+      return !a.disposedAt && !window.fatAssetFullyDep(a) && !(a.depRuns || []).some(function (r) { return r.month === thisMonth; });
+    }).length;
+
+    if (!assets.length) {
+      document.getElementById('content').innerHTML =
+        '<div class="panel" style="max-width:560px"><div class="panel-b pad" style="text-align:center;padding:36px">' +
+        '<div style="font-size:48px">🏢</div><h3 style="margin:12px 0 6px">' +
+        L('مفيش أصول ثابتة مسجّلة', 'No fixed assets registered yet') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.8">' +
+        L('سيارات، معدات، أجهزة، أثاث — أي حاجة اشتريتها وهتستخدمها لأكتر من سنة. النظام هيحسب الإهلاك تلقائيًا كل شهر ويرحّله في القيود.',
+          'Vehicles, equipment, furniture — anything used for more than a year. Depreciation is calculated and posted automatically.') +
+        '</p><button class="btn btn-primary" style="margin-top:14px" onclick="fatAssetForm()">+ ' +
+        L('أول أصل', 'First asset') + '</button></div></div>';
+      return;
+    }
+
+    var totCost = 0, totAccum = 0, totBook = 0;
+    assets.forEach(function (a) {
+      if (a.disposedAt) return;
+      totCost = R2(totCost + (+a.cost || 0));
+      totAccum = R2(totAccum + window.fatAssetAccumDep(a));
+      totBook = R2(totBook + window.fatAssetBookValue(a));
+    });
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">🏢</div><div class="lbl">' + L('إجمالي التكلفة', 'Total cost') +
+      '</div><div class="val">' + money(totCost) + '</div></div>' +
+      '<div class="card"><div class="ic-bg">📉</div><div class="lbl">' + L('مجمّع الإهلاك', 'Accum. depreciation') +
+      '</div><div class="val" style="color:#d97706">' + money(totAccum) + '</div></div>' +
+      '<div class="card"><div class="ic-bg">💰</div><div class="lbl">' + L('صافي القيمة الدفترية', 'Net book value') +
+      '</div><div class="val" style="color:var(--ok)">' + money(totBook) + '</div></div>' +
+      '</div>';
+
+    var depBox = pendingCount
+      ? '<div class="panel" style="margin:14px 0"><div class="panel-b pad" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">' +
+        '<div><b style="font-size:13.5px">📅 ' + L('إهلاك شهر', 'Depreciation for') + ' ' + thisMonth + '</b>' +
+        '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' + pendingCount + ' ' +
+        L('أصل لسه ماترحّلش الشهر ده', 'assets not yet posted this month') + '</div></div>' +
+        '<button class="btn btn-primary btn-sm" onclick="fatPostDepreciationUI()">▶️ ' + L('رحّل الإهلاك دلوقتي', 'Post depreciation now') + '</button>' +
+        '</div></div>'
+      : (doneThisMonth
+        ? '<div class="hint" style="margin:14px 0;color:var(--ok)">✅ ' + L('إهلاك الشهر ده اترحّل بالكامل', 'This month fully posted') + '</div>'
+        : '');
+
+    var table = '<table><thead><tr><th>' + L('الأصل', 'Asset') + '</th><th>' + L('الشراء', 'Purchased') + '</th>' +
+      '<th>' + L('التكلفة', 'Cost') + '</th><th>' + L('إهلاك شهري', 'Monthly dep.') + '</th>' +
+      '<th>' + L('مجمّع الإهلاك', 'Accumulated') + '</th><th>' + L('القيمة الدفترية', 'Book value') + '</th>' +
+      '<th>' + L('الحالة', 'Status') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+      assets.map(function (a) {
+        var full = window.fatAssetFullyDep(a);
+        var status = a.disposedAt
+          ? '<span class="badge">' + L('مستبعد', 'Disposed') + '</span>'
+          : full ? '<span class="badge warn">' + L('مُهلَك بالكامل', 'Fully depreciated') + '</span>'
+                 : '<span class="badge ok">' + L('نشط', 'Active') + '</span>';
+        return '<tr' + (a.disposedAt ? ' style="opacity:.5"' : '') + '>' +
+          '<td><b>' + esc(a.name) + '</b></td><td>' + esc(a.purchaseDate) + '</td>' +
+          '<td class="t-num">' + money(a.cost) + '</td>' +
+          '<td class="t-num">' + money(window.fatAssetMonthlyDep(a)) + '</td>' +
+          '<td class="t-num" style="color:#d97706">' + money(window.fatAssetAccumDep(a)) + '</td>' +
+          '<td class="t-num"><b>' + money(window.fatAssetBookValue(a)) + '</b></td>' +
+          '<td>' + status + '</td>' +
+          '<td class="no-print">' +
+          (!a.disposedAt ? '<button class="iconbtn" onclick="fatAssetForm(\'' + a.id + '\')">✏️</button>' +
+            '<button class="btn btn-ghost btn-sm" onclick="fatAssetDispose(\'' + a.id + '\')">' + L('استبعاد', 'Dispose') + '</button>' : '') +
+          (!(a.depRuns || []).length ? '<button class="iconbtn del" onclick="fatAssetDelete(\'' + a.id + '\')">🗑️</button>' : '') +
+          '</td></tr>';
+      }).join('') + '</tbody></table>';
+
+    document.getElementById('content').innerHTML = cards + depBox +
+      '<div class="panel"><div class="panel-b">' + table + '</div></div>' +
+      '<div class="hint" style="margin-top:12px">💡 ' +
+      L('الإهلاك بيتحسب بالقسط الثابت وبيترحّل كقيد محاسبي فعلي (مصروف إهلاك مقابل مجمّع الإهلاك) — بيظهر في قائمة الدخل وميزان المراجعة.',
+        'Depreciation uses the straight-line method and posts a real journal entry visible in your income statement and trial balance.') +
+      '</div>';
+  };
+
+  window.fatPostDepreciationUI = function () {
+    var r = window.fatPostDepreciation();
+    if (r.alreadyDone || r.posted === 0) {
+      toast(L('مفيش حاجة تترحّل — كل الأصول متسواة الشهر ده', 'Nothing to post — all assets are up to date'), 'err');
+      return;
+    }
+    toast('✅ ' + L('اترحّل إهلاك', 'Posted depreciation for') + ' ' + r.posted + ' ' + L('أصل', 'assets') + ' — ' + money(r.total));
+    try { if (current === 'fixedAssets') views.fixedAssets(); } catch (e) {}
+  };
+
+  /* ═══════════ ٥) القائمة ═══════════ */
+  function injectAssetNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="fixedAssets"]')) return;
+      if (typeof canView === 'function' && !canView('fixedAssets')) return;
+      var anchor = nav.querySelector('a[data-view="ledger"]') || nav.querySelector('a[data-view="treasury"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'fixedAssets');
+      a.innerHTML = '<span class="ic">🏢</span> ' + L('الأصول الثابتة', 'Fixed Assets');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('fixedAssets'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        injectAssetNav();
+        return r;
+      };
+    }
+    setTimeout(injectAssetNav, 3600);
+    setTimeout(injectAssetNav, 6400);
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.19 — مراكز التكلفة
+
+   الفجوة: مصروفاتك كلها في سلة واحدة — مينفعش تفصل "مصروفات
+   التسويق" عن "مصروفات التوصيل" أو "الإدارة"، ومركز التكلفة
+   ممكن يقطع عبر الفروع (مثلًا تسويق شغّال لكل الفروع مع بعض).
+
+   ملاحظة جانبية اتصلحت بالمرة: المصروف اليدوي (saveExpense) مكانش
+   بيتوسم بالفرع خالص — المصروف الدوري بس كان بيتوسم. اتصلحت عشان
+   تقارير الفروع تبقى دقيقة.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  window.fatCostCenters = function () {
+    try { db.costCenters = db.costCenters || []; return db.costCenters; } catch (e) { return []; }
+  };
+
+  window.fatCCActive = function () {
+    return window.fatCostCenters().filter(function (c) { return c.active !== false; });
+  };
+
+  window.fatCCName = function (id) {
+    var c = window.fatCostCenters().filter(function (x) { return x.id === id; })[0];
+    return c ? c.name : '';
+  };
+
+  /* ═══════════ ١) إدارة مراكز التكلفة ═══════════ */
+
+  window.fatCCForm = function (id) {
+    var c = id ? window.fatCostCenters().filter(function (x) { return x.id === id; })[0] : null;
+    c = c || { name: '', active: true };
+    openModal('<div class="modal-h"><h3>🏷️ ' + (id ? L('تعديل مركز تكلفة', 'Edit cost center') : L('مركز تكلفة جديد', 'New cost center')) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('الاسم', 'Name') + '</label>' +
+      '<input id="cc_name" value="' + esc(c.name || '') + '" placeholder="' +
+      L('مثال: التسويق، التوصيل، الإدارة', 'e.g. Marketing, Delivery, Admin') + '"></div>' +
+      '<div class="hint">💡 ' + L('مركز التكلفة بيقطع عبر الفروع — مفيد لما تحب تعرف «التسويق كلّفني كام» بغض النظر عن الفرع.',
+        'Cost centers cut across branches — useful for "how much did marketing cost" regardless of location.') +
+      '</div></div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatCCSave(' + (id ? "'" + id + "'" : 'null') + ')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatCCSave = function (id) {
+    var name = String((document.getElementById('cc_name') || {}).value || '').trim();
+    if (!name) return toast(L('اكتب اسم مركز التكلفة', 'Enter a name'), 'err');
+    var list = window.fatCostCenters();
+    if (id) {
+      var c = list.filter(function (x) { return x.id === id; })[0];
+      if (c) c.name = name;
+    } else {
+      list.push({ id: (typeof uid === 'function' ? uid() : String(Date.now())), name: name, active: true });
+    }
+    try { logAudit(id ? L('تعديل مركز تكلفة', 'Edit cost center') : L('مركز تكلفة جديد', 'New cost center'), name); } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظ', 'Saved'));
+    try { if (current === 'costCenters') views.costCenters(); } catch (e) {}
+  };
+
+  window.fatCCToggle = function (id) {
+    var c = window.fatCostCenters().filter(function (x) { return x.id === id; })[0];
+    if (!c) return;
+    c.active = c.active === false;
+    save();
+    try { if (current === 'costCenters') views.costCenters(); } catch (e) {}
+  };
+
+  window.fatCCDelete = function (id) {
+    var used = (db.expenses || []).some(function (e) { return e.costCenter === id; });
+    if (used) {
+      return toast(L('المركز ده عليه مصروفات مسجّلة — أوقفه بدل ما تمسحه', 'This center has expenses — pause it instead'), 'err');
+    }
+    Promise.resolve(confirmBox(L('تمسح مركز التكلفة ده؟', 'Delete this cost center?')))
+      .then(function (okv) {
+        if (!okv) return;
+        db.costCenters = window.fatCostCenters().filter(function (x) { return x.id !== id; });
+        save();
+        toast(L('اتمسح', 'Deleted'));
+        try { if (current === 'costCenters') views.costCenters(); } catch (e) {}
+      });
+  };
+
+  /* ═══════════ ٢) حقل مركز التكلفة في فورم المصروف ═══════════ */
+
+  (function () {
+    var _ef = window.expenseForm;
+    if (typeof _ef !== 'function' || window._fatExpenseCCWrapped) return;
+    window._fatExpenseCCWrapped = true;
+    window.expenseForm = function () {
+      var r = _ef.apply(this, arguments);
+      try {
+        var ccs = window.fatCCActive();
+        if (!ccs.length || document.getElementById('e_cc')) return r;
+        var modalEl = document.getElementById('modal');
+        var body = modalEl ? modalEl.querySelector('.modal-b') : null;
+        if (!body) return r;
+        var d = document.createElement('div');
+        d.className = 'field';
+        d.innerHTML = '<label>🏷️ ' + L('مركز التكلفة (اختياري)', 'Cost center (optional)') + '</label>' +
+          '<select id="e_cc"><option value="">' + L('بدون تصنيف', 'Unassigned') + '</option>' +
+          ccs.map(function (c) { return '<option value="' + c.id + '">' + esc(c.name) + '</option>'; }).join('') +
+          '</select>';
+        body.appendChild(d);
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  (function () {
+    var _se = window.saveExpense;
+    if (typeof _se !== 'function' || window._fatSaveExpenseCCFixed) return;
+    window._fatSaveExpenseCCFixed = true;
+    window.saveExpense = function () {
+      var ccEl = document.getElementById('e_cc');
+      var cc = ccEl ? ccEl.value : '';
+      var before = (db.expenses || []).length;
+      var r = _se.apply(this, arguments);
+      var finish = function () {
+        try {
+          if ((db.expenses || []).length > before) {
+            var e = db.expenses[db.expenses.length - 1];
+            if (cc) e.costCenter = cc;
+            if (!e.branch) { try { e.branch = activeBranch(); } catch (er) {} }
+            save();
+          }
+        } catch (er) {}
+      };
+      if (r && typeof r.then === 'function') { r.then(finish)['catch'](function () {}); } else { finish(); }
+      return r;
+    };
+  })();
+
+  /* ═══════════ ٣) تقرير مراكز التكلفة ═══════════ */
+
+  try {
+    PG.costCenters = [
+      ['مراكز التكلفة', 'مين كلّفك كام — بغض النظر عن الفرع'],
+      ['Cost Centers', 'What each department costs you']
+    ];
+    var _cvCC = window.canView;
+    window.canView = function (v) {
+      if (v === 'costCenters') return _cvCC('expenses') || _cvCC('reports') || _cvCC('settings');
+      return _cvCC(v);
+    };
+  } catch (e) {}
+
+  window.fatCCReport = function (from, to) {
+    var totals = {}, unassigned = 0, grand = 0;
+    window.fatCostCenters().forEach(function (c) { totals[c.id] = 0; });
+    (db.expenses || []).forEach(function (e) {
+      if (from && e.date < from) return;
+      if (to && e.date > to) return;
+      var amt = +e.amount || 0;
+      grand = R2(grand + amt);
+      if (e.costCenter && totals[e.costCenter] !== undefined) totals[e.costCenter] = R2(totals[e.costCenter] + amt);
+      else unassigned = R2(unassigned + amt);
+    });
+    var rows = window.fatCostCenters().map(function (c) {
+      return { c: c, total: totals[c.id] || 0, pct: grand > 0 ? Math.round((totals[c.id] || 0) / grand * 100) : 0 };
+    }).sort(function (a, b) { return b.total - a.total; });
+    return { rows: rows, unassigned: unassigned, grand: grand };
+  };
+
+  window.fatCCTab = function (t) { window._ccTab = t; views.costCenters(); };
+  window.fatCCRange = function () {
+    window._ccFrom = (document.getElementById('cc_from') || {}).value || '';
+    window._ccTo = (document.getElementById('cc_to') || {}).value || '';
+    views.costCenters();
+  };
+
+  window.fatCCCSV = function () {
+    var rep = window.fatCCReport(window._ccFrom, window._ccTo);
+    var rows = [[L('مركز التكلفة', 'Cost center'), L('الإجمالي', 'Total'), L('النسبة %', '% of total')]];
+    rep.rows.forEach(function (r) { rows.push([r.c.name, r.total, r.pct + '%']); });
+    rows.push([L('بدون تصنيف', 'Unassigned'), rep.unassigned, rep.grand > 0 ? Math.round(rep.unassigned / rep.grand * 100) + '%' : '0%']);
+    downloadCSV('cost-centers-' + today() + '.csv', rows);
+  };
+
+  views.costCenters = function () {
+    var ccs = window.fatCostCenters();
+    var tab = window._ccTab || 'report';
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-primary btn-sm" onclick="fatCCForm()">+ ' + L('مركز تكلفة', 'Cost center') + '</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="fatCCCSV()">📊 CSV</button>';
+
+    if (!ccs.length) {
+      document.getElementById('content').innerHTML =
+        '<div class="panel" style="max-width:560px"><div class="panel-b pad" style="text-align:center;padding:36px">' +
+        '<div style="font-size:48px">🏷️</div><h3 style="margin:12px 0 6px">' +
+        L('مفيش مراكز تكلفة لسه', 'No cost centers yet') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.8">' +
+        L('اعمل مراكز زي «التسويق» و«التوصيل» و«الإدارة»، وبعدين حدّد مركز لكل مصروف — هتعرف كل قسم كلّفك كام.',
+          'Create centers like Marketing, Delivery, Admin, then tag each expense.') +
+        '</p><button class="btn btn-primary" style="margin-top:14px" onclick="fatCCForm()">+ ' +
+        L('أول مركز', 'First center') + '</button></div></div>';
+      return;
+    }
+
+    var tabs = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px" class="no-print">' +
+      [['report', '📊 ' + L('التقرير', 'Report')], ['manage', '⚙️ ' + L('إدارة المراكز', 'Manage centers')]]
+        .map(function (x) {
+          return '<button class="btn ' + (tab === x[0] ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatCCTab(\'' + x[0] + '\')">' + x[1] + '</button>';
+        }).join('') + '</div>';
+
+    if (tab === 'manage') {
+      var body = '<table><thead><tr><th>' + L('الاسم', 'Name') + '</th><th>' + L('الحالة', 'Status') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+        ccs.map(function (c) {
+          return '<tr' + (c.active === false ? ' style="opacity:.5"' : '') + '>' +
+            '<td><b>' + esc(c.name) + '</b></td>' +
+            '<td>' + (c.active === false ? '<span class="badge">' + L('موقوف', 'Paused') + '</span>' : '<span class="badge ok">' + L('نشط', 'Active') + '</span>') + '</td>' +
+            '<td class="no-print"><button class="iconbtn" onclick="fatCCForm(\'' + c.id + '\')">✏️</button>' +
+            '<button class="iconbtn" onclick="fatCCToggle(\'' + c.id + '\')">' + (c.active === false ? '▶️' : '⏸️') + '</button>' +
+            '<button class="iconbtn del" onclick="fatCCDelete(\'' + c.id + '\')">🗑️</button></td></tr>';
+        }).join('') + '</tbody></table>';
+      document.getElementById('content').innerHTML = tabs + '<div class="panel"><div class="panel-b">' + body + '</div></div>';
+      return;
+    }
+
+    var from = window._ccFrom || '', to = window._ccTo || '';
+    var rep = window.fatCCReport(from, to);
+
+    var filter = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:12px" class="no-print">' +
+      '<div class="field" style="margin:0"><label style="font-size:11.5px">' + L('من', 'From') + '</label>' +
+      '<input id="cc_from" type="date" value="' + esc(from) + '" onchange="fatCCRange()"></div>' +
+      '<div class="field" style="margin:0"><label style="font-size:11.5px">' + L('إلى', 'To') + '</label>' +
+      '<input id="cc_to" type="date" value="' + esc(to) + '" onchange="fatCCRange()"></div>' +
+      (from || to ? '<button class="btn btn-ghost btn-sm" onclick="window._ccFrom=\'\';window._ccTo=\'\';views.costCenters()">' + L('كل الفترات', 'All time') + '</button>' : '') +
+      '</div>';
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">💰</div><div class="lbl">' + L('إجمالي المصروفات', 'Total expenses') +
+      '</div><div class="val">' + money(rep.grand) + '</div></div>' +
+      '<div class="card"><div class="ic-bg">🏷️</div><div class="lbl">' + L('مراكز نشطة', 'Active centers') +
+      '</div><div class="val">' + window.fatCCActive().length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">❓</div><div class="lbl">' + L('بدون تصنيف', 'Unassigned') +
+      '</div><div class="val" style="color:#d97706">' + money(rep.unassigned) + '</div></div>' +
+      '</div>';
+
+    var maxVal = Math.max.apply(null, rep.rows.map(function (r) { return r.total; }).concat([rep.unassigned, 1]));
+    var bar = function (v) {
+      return '<div style="height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:5px">' +
+        '<div style="height:100%;width:' + Math.round(v / maxVal * 100) + '%;background:var(--primary)"></div></div>';
+    };
+
+    var table = '<div class="panel"><div class="panel-b">' +
+      rep.rows.map(function (r) {
+        return '<div style="padding:10px 0;border-bottom:1px solid var(--line)">' +
+          '<div style="display:flex;justify-content:space-between"><b style="font-size:13.5px">' + esc(r.c.name) + '</b>' +
+          '<b>' + money(r.total) + ' <span style="color:var(--muted);font-size:11.5px">(' + r.pct + '%)</span></b></div>' +
+          bar(r.total) + '</div>';
+      }).join('') +
+      (rep.unassigned > 0.009
+        ? '<div style="padding:10px 0"><div style="display:flex;justify-content:space-between"><b style="font-size:13.5px;color:#d97706">' +
+          L('بدون تصنيف', 'Unassigned') + '</b><b>' + money(rep.unassigned) + '</b></div>' + bar(rep.unassigned) + '</div>'
+        : '') +
+      '</div></div>';
+
+    document.getElementById('content').innerHTML = tabs + filter + cards + table +
+      '<div class="hint" style="margin-top:12px">💡 ' +
+      L('حدّد مركز تكلفة لكل مصروف من فورم «مصروف جديد» — مركز التكلفة بيقطع عبر الفروع، فمفيد لو عندك فرعين وعايز تعرف إجمالي مصروف التسويق للاتنين مع بعض.',
+        'Assign a cost center when creating an expense — centers cut across branches.') +
+      '</div>';
+  };
+
+  /* ═══════════ ٤) القائمة ═══════════ */
+  function injectCCNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="costCenters"]')) return;
+      if (typeof canView === 'function' && !canView('costCenters')) return;
+      var anchor = nav.querySelector('a[data-view="expenses"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'costCenters');
+      a.innerHTML = '<span class="ic">🏷️</span> ' + L('مراكز التكلفة', 'Cost Centers');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('costCenters'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        injectCCNav();
+        return r;
+      };
+    }
+    setTimeout(injectCCNav, 3800);
+    setTimeout(injectCCNav, 6600);
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.20 — الموازنة التقديرية (Budget vs Actual)
+
+   الفجوة: مفيش طريقة تحط رقم متوقع لمصروف/مركز تكلفة وتقارنه
+   بالفعلي. الميزانية دي شهرية وبتتكرر تلقائيًا (نفس الرقم كل شهر
+   لحد ما تغيّره) — أبسط وأنسب لمنشأة صغيرة/متوسطة من موازنة سنوية
+   معقّدة بأرقام مختلفة لكل شهر.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  window.fatBudgets = function () {
+    try { db.budgets = db.budgets || {}; return db.budgets; } catch (e) { return {}; }
+  };
+
+  window.fatBudgetKey = function (kind, val) { return kind + ':' + val; };
+
+  window.fatBudgetGet = function (kind, val) {
+    var b = window.fatBudgets();
+    return +b[window.fatBudgetKey(kind, val)] || 0;
+  };
+
+  window.fatBudgetSet = function (kind, val, amount) {
+    var b = window.fatBudgets();
+    var key = window.fatBudgetKey(kind, val);
+    if (amount > 0) b[key] = R2(amount);
+    else delete b[key];
+  };
+
+  window.fatActualFor = function (kind, val, month) {
+    var total = 0;
+    (db.expenses || []).forEach(function (e) {
+      if (!e || !e.date || e.date.slice(0, 7) !== month) return;
+      if (kind === 'cat' && e.cat === val) total = R2(total + (+e.amount || 0));
+      if (kind === 'cc' && e.costCenter === val) total = R2(total + (+e.amount || 0));
+    });
+    return total;
+  };
+
+  window.fatBudgetRow = function (kind, val, budget, actual, label) {
+    var variance = R2(budget - actual);
+    var pctUsed = budget > 0 ? Math.round(actual / budget * 100) : (actual > 0 ? 999 : 0);
+    var status = budget <= 0 ? 'none' : (pctUsed > 100 ? 'over' : (pctUsed >= 90 ? 'warn' : 'ok'));
+    return {
+      kind: kind, val: val, label: label || val,
+      budget: budget, actual: actual, variance: variance, pctUsed: pctUsed, status: status
+    };
+  };
+
+  window.fatBudgetReport = function (month) {
+    month = month || today().slice(0, 7);
+    var rows = [];
+
+    (typeof EXP_CATS !== 'undefined' ? EXP_CATS : []).forEach(function (cat) {
+      var budget = window.fatBudgetGet('cat', cat);
+      var actual = window.fatActualFor('cat', cat, month);
+      if (budget <= 0 && actual <= 0) return;
+      rows.push(window.fatBudgetRow('cat', cat, budget, actual));
+    });
+
+    (typeof window.fatCostCenters === 'function' ? window.fatCostCenters() : []).forEach(function (c) {
+      var budget = window.fatBudgetGet('cc', c.id);
+      var actual = window.fatActualFor('cc', c.id, month);
+      if (budget <= 0 && actual <= 0) return;
+      rows.push(window.fatBudgetRow('cc', c.id, budget, actual, c.name));
+    });
+
+    var totBudget = 0, totActual = 0;
+    rows.forEach(function (r) { totBudget = R2(totBudget + r.budget); totActual = R2(totActual + r.actual); });
+
+    return { month: month, rows: rows, totBudget: totBudget, totActual: totActual, totVariance: R2(totBudget - totActual) };
+  };
+
+  /* ═══════════ الشاشة ═══════════ */
+
+  try {
+    PG.budget = [
+      ['الموازنة التقديرية', 'حاسب المتوقع بالفعلي، شهر بشهر'],
+      ['Budget', 'Compare planned vs actual spend']
+    ];
+    var _cvBu = window.canView;
+    window.canView = function (v) {
+      if (v === 'budget') return _cvBu('expenses') || _cvBu('reports') || _cvBu('settings');
+      return _cvBu(v);
+    };
+  } catch (e) {}
+
+  window.fatBudgetMonthShift = function (delta) {
+    var m = window._budgetMonth || today().slice(0, 7);
+    var d = new Date(m + '-15T12:00:00');
+    d.setMonth(d.getMonth() + delta);
+    window._budgetMonth = d.toISOString().slice(0, 7);
+    views.budget();
+  };
+
+  window.fatBudgetEdit = function (kind, val, label) {
+    var curVal = window.fatBudgetGet(kind, val);
+    Promise.resolve(promptBox(
+      L('الميزانية الشهرية لـ', 'Monthly budget for') + ' ' + label + '\n' +
+      L('(نفس الرقم هيتكرر كل شهر لحد ما تغيّره)', '(repeats every month until changed)'),
+      { value: curVal || '', type: 'number' }
+    )).then(function (v) {
+      if (v === null) return;
+      var amt = Math.max(0, +v || 0);
+      window.fatBudgetSet(kind, val, amt);
+      try { logAudit(L('تعديل موازنة', 'Edit budget'), label + ' — ' + money(amt)); } catch (e) {}
+      save();
+      toast('✅ ' + L('اتحفظ', 'Saved'));
+      try { if (current === 'budget') views.budget(); } catch (e) {}
+    });
+  };
+
+  window.fatBudgetCSV = function () {
+    var rep = window.fatBudgetReport(window._budgetMonth);
+    var rows = [[L('البند', 'Item'), L('النوع', 'Type'), L('الميزانية', 'Budget'),
+      L('الفعلي', 'Actual'), L('الفرق', 'Variance'), L('نسبة الاستخدام %', '% used')]];
+    rep.rows.forEach(function (r) {
+      rows.push([r.label, r.kind === 'cat' ? L('تصنيف', 'Category') : L('مركز تكلفة', 'Cost center'),
+        r.budget, r.actual, r.variance, r.pctUsed + '%']);
+    });
+    downloadCSV('budget-' + rep.month + '.csv', rows);
+  };
+
+  views.budget = function () {
+    var month = window._budgetMonth || today().slice(0, 7);
+    window._budgetMonth = month;
+    var rep = window.fatBudgetReport(month);
+
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-ghost btn-sm" onclick="fatBudgetMonthShift(-1)">◀</button> ' +
+      '<span style="font-weight:700;padding:0 8px">' + month + '</span> ' +
+      '<button class="btn btn-ghost btn-sm" onclick="fatBudgetMonthShift(1)">▶</button> ' +
+      '<button class="btn btn-ghost btn-sm no-print" onclick="fatBudgetCSV()">📊 CSV</button>';
+
+    var overCount = rep.rows.filter(function (r) { return r.status === 'over'; }).length;
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">📋</div><div class="lbl">' + L('إجمالي الميزانية', 'Total budget') +
+      '</div><div class="val">' + money(rep.totBudget) + '</div></div>' +
+      '<div class="card"><div class="ic-bg">💸</div><div class="lbl">' + L('الفعلي حتى الآن', 'Actual so far') +
+      '</div><div class="val">' + money(rep.totActual) + '</div></div>' +
+      '<div class="card"><div class="ic-bg">' + (rep.totVariance >= 0 ? '✅' : '⚠️') + '</div><div class="lbl">' +
+      L('الفرق', 'Variance') + '</div><div class="val" style="color:' + (rep.totVariance >= 0 ? 'var(--ok)' : 'var(--danger)') + '">' +
+      (rep.totVariance >= 0 ? '+' : '') + money(rep.totVariance) + '</div></div>' +
+      (overCount ? '<div class="card"><div class="ic-bg">🔴</div><div class="lbl">' + L('تجاوز الميزانية', 'Over budget') +
+        '</div><div class="val" style="color:var(--danger)">' + overCount + '</div></div>' : '') +
+      '</div>';
+
+    var mainBody;
+    if (!rep.rows.length) {
+      mainBody = '<div class="panel" style="max-width:560px;margin-top:14px"><div class="panel-b pad" style="text-align:center;padding:36px">' +
+        '<div style="font-size:48px">📋</div><h3 style="margin:12px 0 6px">' +
+        L('مفيش ميزانيات متحددة لسه', 'No budgets set yet') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.8">' +
+        L('حدّد ميزانية شهرية لأي تصنيف مصروف أو مركز تكلفة من الجدول تحت، وهتتكرر تلقائيًا كل شهر.',
+          'Set a monthly budget for any expense category or cost center below — it repeats automatically.') +
+        '</p></div></div>';
+    } else {
+      var bar = function (r) {
+        var pct = Math.min(100, r.pctUsed);
+        var color = r.status === 'over' ? 'var(--danger)' : (r.status === 'warn' ? '#d97706' : 'var(--ok)');
+        return '<div style="height:7px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:5px">' +
+          '<div style="height:100%;width:' + pct + '%;background:' + color + '"></div></div>';
+      };
+      mainBody = '<div class="panel" style="margin-top:14px"><div class="panel-b">' +
+        rep.rows.map(function (r) {
+          var statusBadge = r.status === 'over' ? '<span class="badge danger">🔴 ' + L('تجاوز', 'Over') + '</span>'
+            : r.status === 'warn' ? '<span class="badge warn">⚠️ ' + L('قريب', 'Near limit') + '</span>'
+            : '<span class="badge ok">✅ ' + L('تمام', 'On track') + '</span>';
+          return '<div style="padding:10px 0;border-bottom:1px solid var(--line)">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">' +
+            '<b style="font-size:13.5px">' + esc(r.label) +
+            (r.kind === 'cc' ? ' <span style="font-size:10.5px;color:var(--muted)">(' + L('مركز تكلفة', 'cost center') + ')</span>' : '') +
+            '</b>' + statusBadge + '</div>' +
+            '<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:4px">' +
+            '<span>' + money(r.actual) + ' / ' + money(r.budget) + '</span>' +
+            '<span style="color:' + (r.variance >= 0 ? 'var(--ok)' : 'var(--danger)') + '">' +
+            (r.variance >= 0 ? '+' : '') + money(r.variance) + '</span></div>' +
+            bar(r) +
+            '<button class="btn btn-ghost btn-sm no-print" style="margin-top:6px" onclick="fatBudgetEdit(\'' + r.kind + '\',\'' + r.val + '\',\'' + esc(r.label).replace(/'/g, "\\'") + '\')">✏️ ' +
+            L('عدّل الميزانية', 'Edit budget') + '</button>' +
+            '</div>';
+        }).join('') + '</div></div>';
+    }
+
+    var addBox = '<div class="panel" style="margin-top:14px"><div class="panel-h"><h3>+ ' +
+      L('إضافة بند للموازنة', 'Add a budget line') + '</h3></div><div class="panel-b pad">' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+      (typeof EXP_CATS !== 'undefined' ? EXP_CATS : []).filter(function (c) { return window.fatBudgetGet('cat', c) <= 0; })
+        .map(function (c) {
+          return '<button class="btn btn-ghost btn-sm" onclick="fatBudgetEdit(\'cat\',\'' + esc(c).replace(/'/g, "\\'") + '\',\'' + esc(c).replace(/'/g, "\\'") + '\')">' + esc(c) + '</button>';
+        }).join('') +
+      (typeof window.fatCostCenters === 'function' ? window.fatCostCenters() : []).filter(function (c) { return window.fatBudgetGet('cc', c.id) <= 0; })
+        .map(function (c) {
+          return '<button class="btn btn-ghost btn-sm" onclick="fatBudgetEdit(\'cc\',\'' + c.id + '\',\'' + esc(c.name).replace(/'/g, "\\'") + '\')">🏷️ ' + esc(c.name) + '</button>';
+        }).join('') +
+      '</div></div></div>';
+
+    document.getElementById('content').innerHTML = cards + mainBody + addBox +
+      '<div class="hint" style="margin-top:12px">💡 ' +
+      L('الميزانية شهرية وبتتكرر تلقائيًا لنفس الرقم كل شهر لحد ما تعدّلها. الأخضر = تمام، الأصفر = قرّب من الحد (٩٠٪+)، الأحمر = تجاوز.',
+        'Budgets are monthly and repeat automatically until changed. Green = on track, amber = near limit, red = over.') +
+      '</div>';
+  };
+
+  /* ═══════════ القائمة ═══════════ */
+  function injectBudgetNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="budget"]')) return;
+      if (typeof canView === 'function' && !canView('budget')) return;
+      var anchor = nav.querySelector('a[data-view="costCenters"]') || nav.querySelector('a[data-view="expenses"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'budget');
+      a.innerHTML = '<span class="ic">📋</span> ' + L('الموازنة التقديرية', 'Budget');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('budget'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        injectBudgetNav();
+        return r;
+      };
+    }
+    setTimeout(injectBudgetNav, 4000);
+    setTimeout(injectBudgetNav, 6800);
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.21 — التسوية البنكية
+
+   الفجوة: مفيش طريقة تقارن كشف حساب البنك الحقيقي بحركاتك
+   المسجّلة في النظام (db.cash) وتلاقي الفرق (شيك لسه ما اتصرفش،
+   رسوم بنكية ما اتسجّلتش، خطأ إدخال).
+
+   الطريقة: لكل حساب بنكي وفترة، تحدد "الرصيد حسب كشف البنك"،
+   والنظام بيوريك رصيدك المسجّل، وبيوريك حركاتك يوم بيوم عشان
+   تعلّم عليها "متطابقة" واحدة واحدة. الفرق النهائي بعد التطابق
+   لازم يوصل صفر — لو مش صفر، فيه حركة ناقصة أو زيادة.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  window.fatReconciliations = function () {
+    try { db.bankRecon = db.bankRecon || {}; return db.bankRecon; } catch (e) { return {}; }
+  };
+
+  window.fatReconState = function (acctId) {
+    var all = window.fatReconciliations();
+    if (!all[acctId]) all[acctId] = { cleared: {}, lastStatementBalance: null, lastStatementDate: '' };
+    return all[acctId];
+  };
+
+  window.fatAcctMoves = function (acctId, from, to) {
+    var moves = (db.cash || []).filter(function (m) {
+      if (m.acct !== acctId) return false;
+      if (from && m.date < from) return false;
+      if (to && m.date > to) return false;
+      return true;
+    });
+    moves.sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
+    return moves;
+  };
+
+  window.fatMoveToggleClear = function (acctId, moveId) {
+    var st = window.fatReconState(acctId);
+    if (st.cleared[moveId]) delete st.cleared[moveId];
+    else st.cleared[moveId] = true;
+    save();
+  };
+
+  window.fatReconSummary = function (acctId, statementBalance, from, to) {
+    var systemBalance = R2(bankBalance(acctId));
+    var moves = window.fatAcctMoves(acctId, from, to);
+    var st = window.fatReconState(acctId);
+
+    var uncleared = [];
+    moves.forEach(function (m) {
+      if (!st.cleared[m.id]) uncleared.push(m);
+    });
+
+    var unclearedTotal = R2(uncleared.reduce(function (s, m) { return s + (m.type === 'in' ? 1 : -1) * (+m.amount || 0); }, 0));
+    var expectedBankBalance = R2(systemBalance - unclearedTotal);
+    var diff = statementBalance != null ? R2(statementBalance - expectedBankBalance) : null;
+
+    return {
+      systemBalance: systemBalance, expectedBankBalance: expectedBankBalance,
+      statementBalance: statementBalance, diff: diff,
+      uncleared: uncleared, clearedCount: moves.length - uncleared.length, totalMoves: moves.length
+    };
+  };
+
+  function bankNameSafe(acctId) {
+    try { var b = (db.banks || []).filter(function (x) { return x.id === acctId; })[0]; return b ? b.name : acctId; } catch (e) { return acctId; }
+  }
+
+  window.fatReconFinish = function (acctId, statementBalance, statementDate) {
+    var st = window.fatReconState(acctId);
+    st.lastStatementBalance = statementBalance;
+    st.lastStatementDate = statementDate || today();
+    st.lastReconciledAt = new Date().toISOString();
+    try { logAudit(L('تسوية بنكية', 'Bank reconciliation'), bankNameSafe(acctId) + ' — ' + money(statementBalance)); } catch (e) {}
+    save();
+  };
+
+  /* ═══════════ الشاشة ═══════════ */
+
+  try {
+    PG.bankRecon = [
+      ['التسوية البنكية', 'قارن كشف البنك بحركاتك المسجّلة'],
+      ['Bank Reconciliation', 'Match your bank statement against recorded movements']
+    ];
+    var _cvR = window.canView;
+    window.canView = function (v) {
+      if (v === 'bankRecon') return _cvR('treasury') || _cvR('reports');
+      return _cvR(v);
+    };
+  } catch (e) {}
+
+  window.fatReconAcctSel = function (id) { window._reconAcct = id; views.bankRecon(); };
+  window.fatReconRange = function () {
+    window._reconFrom = (document.getElementById('rc_from') || {}).value || '';
+    window._reconTo = (document.getElementById('rc_to') || {}).value || '';
+    views.bankRecon();
+  };
+
+  window.fatReconCSV = function () {
+    var acctId = window._reconAcct;
+    if (!acctId) return;
+    var moves = window.fatAcctMoves(acctId, window._reconFrom, window._reconTo);
+    var st = window.fatReconState(acctId);
+    var rows = [[L('التاريخ', 'Date'), L('البيان', 'Note'), L('النوع', 'Type'), L('المبلغ', 'Amount'), L('متطابق', 'Cleared')]];
+    moves.forEach(function (m) {
+      rows.push([m.date, m.note || '', m.type === 'in' ? L('إيداع', 'In') : L('سحب', 'Out'),
+        m.amount, st.cleared[m.id] ? L('آه', 'Yes') : L('لأ', 'No')]);
+    });
+    downloadCSV('bank-recon-' + acctId + '-' + today() + '.csv', rows);
+  };
+
+  views.bankRecon = function () {
+    var banks = db.banks || [];
+    document.getElementById('topActions').innerHTML =
+      (window._reconAcct ? '<button class="btn btn-ghost btn-sm no-print" onclick="fatReconCSV()">📊 CSV</button>' : '');
+
+    if (!banks.length) {
+      document.getElementById('content').innerHTML =
+        '<div class="panel" style="max-width:520px"><div class="panel-b pad" style="text-align:center;padding:36px">' +
+        '<div style="font-size:48px">🏦</div><h3 style="margin:12px 0 6px">' +
+        L('مفيش حسابات بنكية مسجّلة', 'No bank accounts yet') + '</h3>' +
+        '<p style="color:var(--muted);font-size:13.5px;line-height:1.8">' +
+        L('ضيف حساب بنكي من شاشة الخزينة الأول.', 'Add a bank account from the Treasury screen first.') +
+        '</p><button class="btn btn-primary" style="margin-top:14px" onclick="go(\'treasury\')">🏦 ' +
+        L('الخزينة', 'Treasury') + '</button></div></div>';
+      return;
+    }
+
+    var acctId = window._reconAcct || banks[0].id;
+    window._reconAcct = acctId;
+
+    var tabs = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px" class="no-print">' +
+      banks.map(function (b) {
+        return '<button class="btn ' + (acctId === b.id ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="fatReconAcctSel(\'' + b.id + '\')">🏦 ' + esc(b.name) + '</button>';
+      }).join('') + '</div>';
+
+    var from = window._reconFrom || '', to = window._reconTo || today();
+    var filter = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:12px" class="no-print">' +
+      '<div class="field" style="margin:0"><label style="font-size:11.5px">' + L('من', 'From') + '</label>' +
+      '<input id="rc_from" type="date" value="' + esc(from) + '" onchange="fatReconRange()"></div>' +
+      '<div class="field" style="margin:0"><label style="font-size:11.5px">' + L('إلى', 'To') + '</label>' +
+      '<input id="rc_to" type="date" value="' + esc(to) + '" onchange="fatReconRange()"></div>' +
+      '<div class="field" style="margin:0"><label style="font-size:11.5px">' + L('رصيد كشف البنك', 'Bank statement balance') + '</label>' +
+      '<input id="rc_stmt" type="number" step="any" value="' + (window._reconStmt != null ? window._reconStmt : '') +
+      '" oninput="window._reconStmt=+this.value||0;fatReconRefresh()" placeholder="' + L('اكتب الرصيد من كشف البنك', 'Enter from your bank statement') + '"></div>' +
+      '</div>';
+
+    var stmt = (window._reconStmt != null) ? window._reconStmt : null;
+    var rep = window.fatReconSummary(acctId, stmt, from, to);
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">💻</div><div class="lbl">' + L('رصيد النظام', 'System balance') +
+      '</div><div class="val">' + money(rep.systemBalance) + '</div></div>' +
+      '<div class="card"><div class="ic-bg">📋</div><div class="lbl">' + L('المتوقع حسب البنك', 'Expected bank balance') +
+      '</div><div class="val">' + money(rep.expectedBankBalance) + '</div>' +
+      '<div class="sub">' + L('بعد استبعاد', 'excluding') + ' ' + rep.uncleared.length + ' ' + L('حركة لسه ما تطابقتش', 'unmatched') + '</div></div>' +
+      (rep.diff !== null
+        ? '<div class="card"><div class="ic-bg">' + (Math.abs(rep.diff) < 0.01 ? '✅' : '⚠️') + '</div><div class="lbl">' +
+          L('الفرق', 'Difference') + '</div><div class="val" style="color:' + (Math.abs(rep.diff) < 0.01 ? 'var(--ok)' : 'var(--danger)') + '">' +
+          money(rep.diff) + '</div></div>'
+        : '') + '</div>';
+
+    var moves = window.fatAcctMoves(acctId, from, to);
+    var st = window.fatReconState(acctId);
+    var table = moves.length
+      ? '<table><thead><tr><th style="width:36px"></th><th>' + L('التاريخ', 'Date') + '</th><th>' +
+        L('البيان', 'Note') + '</th><th>' + L('المبلغ', 'Amount') + '</th></tr></thead><tbody>' +
+        moves.map(function (m) {
+          var cleared = !!st.cleared[m.id];
+          return '<tr style="' + (cleared ? 'background:rgba(46,158,107,.06)' : '') + '">' +
+            '<td><input type="checkbox"' + (cleared ? ' checked' : '') + ' onchange="fatMoveToggleClear(\'' + acctId + '\',\'' + m.id + '\');fatReconRefresh()"></td>' +
+            '<td style="font-size:11.5px">' + esc(m.date) + '</td>' +
+            '<td style="font-size:12.5px">' + esc(m.note || '—') + '</td>' +
+            '<td class="t-num" style="color:' + (m.type === 'in' ? 'var(--ok)' : 'var(--danger)') + '">' +
+            (m.type === 'in' ? '+' : '−') + money(m.amount) + '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty"><span class="big">🏦</span>' + L('مفيش حركات في الفترة دي', 'No movements in this period') + '</div>';
+
+    var finishBtn = (stmt !== null && Math.abs(rep.diff || 0) < 0.01 && rep.uncleared.length < moves.length)
+      ? '<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:10px" onclick="fatReconFinishUI()">✅ ' +
+        L('اعتماد التسوية', 'Confirm reconciliation') + '</button>'
+      : '';
+
+    document.getElementById('content').innerHTML = tabs + filter + cards +
+      '<div class="panel"><div class="panel-h"><h3>' + L('علّم على الحركات اللي ظهرت في كشف البنك', 'Check off movements that appear on your bank statement') + '</h3></div>' +
+      '<div class="panel-b">' + table + '</div></div>' + finishBtn +
+      '<div class="hint" style="margin-top:12px">💡 ' +
+      L('علّم كل حركة ظهرت فعليًا في كشف البنك. لما «الفرق» يوصل صفر، يبقى كل حاجة متطابقة وتقدر تعتمد التسوية.',
+        'Check each movement that actually appears on your bank statement. When Difference reaches zero, everything matches.') +
+      '</div>';
+  };
+
+  window.fatReconRefresh = function () { try { views.bankRecon(); } catch (e) {} };
+
+  window.fatReconFinishUI = function () {
+    var acctId = window._reconAcct;
+    var stmt = window._reconStmt;
+    if (!acctId || stmt == null) return;
+    window.fatReconFinish(acctId, stmt, window._reconTo || today());
+    toast('✅ ' + L('اتعمدت التسوية', 'Reconciliation confirmed'));
+    views.bankRecon();
+  };
+
+  /* ═══════════ القائمة ═══════════ */
+  function injectReconNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="bankRecon"]')) return;
+      if (typeof canView === 'function' && !canView('bankRecon')) return;
+      var anchor = nav.querySelector('a[data-view="treasury"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'bankRecon');
+      a.innerHTML = '<span class="ic">🏦</span> ' + L('التسوية البنكية', 'Bank Reconciliation');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('bankRecon'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        injectReconNav();
+        return r;
+      };
+    }
+    setTimeout(injectReconNav, 4200);
+    setTimeout(injectReconNav, 7000);
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.22 — تسجيل بيانات اليوم للمزامنة السحابية
+
+   الاكتشاف: أربع مجموعات بيانات اتعملت النهاردة كانت *arrays*
+   منفصلة (fixedAssets, costCenters, drivers, prodOrders) بس
+   محدش سجّلها في V2_KINDS — يعني كانت موجودة على الجهاز اللي
+   اتعملت عليه بس، ومش بتتزامن مع أي جهاز تاني، ومش بترجع لو
+   عملت استعادة نسخة احتياطية على جهاز مختلف.
+
+   كمان budgets وbankRecon كانوا *objects* مش arrays، فمش بيتسجلوا
+   في V2_KINDS أصلًا (اللي بيتعامل مع arrays بس) ولا في
+   V2_SETTINGS_KEYS (المقصورة على settings/seq).
+
+   الإصلاح: نفس النمط الموجود من قبل (شوف db.tables) — تسجيل
+   ديناميكي بـ push، آمن تمامًا ومبيلمسش أي منطق مزامنة حساس.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  try {
+    // أربع مجموعات (arrays) — تتزامن زي أي مجموعة تانية
+    ['fixedAssets', 'costCenters', 'drivers', 'prodOrders'].forEach(function (k) {
+      if (typeof V2_KINDS !== 'undefined' && V2_KINDS.indexOf(k) < 0) V2_KINDS.push(k);
+      db[k] = db[k] || [];
+    });
+
+    // budgets وbankRecon (objects) — تتزامن كجزء من كتلة الإعدادات
+    ['budgets', 'bankRecon'].forEach(function (k) {
+      if (typeof V2_SETTINGS_KEYS !== 'undefined' && V2_SETTINGS_KEYS.indexOf(k) < 0) V2_SETTINGS_KEYS.push(k);
+      db[k] = db[k] || {};
+    });
+  } catch (e) {}
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.23 — إحكام صلاحيات ثلاث شاشات مالية جديدة
+
+   الباج: نفس نمط v9.14 بالظبط — الأصول الثابتة ومراكز التكلفة
+   والموازنة التقديرية استخدموا 'settings' كشرط بديل للوصول،
+   والكاشير عنده 'settings' افتراضيًا (لأسباب عادية زي تغيير PIN
+   بتاعه) — فبقى يقدر يفتح شاشات مالية حساسة (استبعاد أصول،
+   تعديل موازنات) رغم إنه ممنوع من treasury/expenses/reports أصلًا.
+
+   الإصلاح: نفس الحارس (fatIsPrivilegedRole) من v9.14 — بس موسّع
+   ليشمل الشاشات التلاتة دول كمان.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  (function () {
+    var _cv = window.canView;
+    if (typeof _cv !== 'function' || window._fatPermTightened2) return;
+    window._fatPermTightened2 = true;
+    window.canView = function (v) {
+      if (v === 'fixedAssets' || v === 'costCenters' || v === 'budget' || v === 'etaPrep') {
+        var privileged = (typeof window.fatIsPrivilegedRole === 'function') ? window.fatIsPrivilegedRole() : true;
+        return privileged && _cv(v);
+      }
+      return _cv(v);
     };
   })();
 

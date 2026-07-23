@@ -128,7 +128,15 @@ setTimeout(() => {
     ['v9.10 · ربط المرتجعات', 'fatNetOfReturns'],
     ['v9.11 · تسوية طيار بالمرتجع', 'fatDriverStats'],
     ['v9.12 · فرع الفاتورة عند التعديل', 'fatWithSaleBranch'],
-    ['v9.13 · حماية الصرف بحد الصلاحية', 'fatGuardPayout']
+    ['v9.13 · حماية الصرف بحد الصلاحية', 'fatGuardPayout'],
+    ['v9.14 · إحكام صلاحيات الطيار/الصحة', 'fatIsPrivilegedRole'],
+    ['v9.15 · تصحيح الأقساط بعد المرتجع', 'fatInstRebalance'],
+    ['v9.16 · وضوح حد الصرف وفصل كاش الطيار', 'fatShiftCashSplit'],
+    ['v9.17 · ربط الموظف بفرع', 'fatLoadMyBranch'],
+    ['v9.18 · الأصول الثابتة', 'fatAssetMonthlyDep'],
+    ['v9.19 · مراكز التكلفة', 'fatCCReport'],
+    ['v9.20 · الموازنة التقديرية', 'fatBudgetReport'],
+    ['v9.21 · التسوية البنكية', 'fatReconSummary']
   ];
   checks.forEach(([label, fn]) => ok(label, typeof w[fn] === 'function'));
 
