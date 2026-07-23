@@ -25153,6 +25153,829 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
 })();
 
+
+/* ============================================================
+   FATORTY v9.7 — إصلاح تسمية مقاس الورق + معاينة إيصال حقيقية
+
+   الباج: في "إعدادات التشغيل" فيه حقل مكتوب عليه "مقاس ورق الإيصال"
+   (st.printPaper) — بس ده بيتحكم في مقاس *أمر المطبخ* بس (printKitchen).
+   إيصال العميل الفعلي (printThermal) بيقرا إعداد تاني خالص (st.receiptWidth)
+   من شاشة مختلفة. يعني حد يغيّر "مقاس الإيصال" من الشاشة الغلط
+   ويفتكر إنه ظبط الإيصال، وهو فعليًا غيّر ورقة المطبخ بس.
+
+   الإصلاح: توحيد الاسم + جعل الحقلين يتبعان نفس القيمة، مع تسمية
+   واضحة لكل واحد. وإضافة معاينة إيصال حقيقية (نفس الـHTML والـCSS
+   اللي هيتطبع بالظبط) عشان تتأكد من الشكل من غير طابعة حرارية.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  /* ═══════════ ١) توحيد الإعداد ═══════════ */
+
+  // من دلوقتي: receiptWidth = مقاس إيصال العميل (الأصل)
+  //            printPaper   = مقاس أمر المطبخ — لو المستخدم مغيّرهوش، يتبع نفس مقاس الإيصال
+  window.fatReceiptWidth = function () {
+    try { return (db.settings && db.settings.receiptWidth) || '80'; } catch (e) { return '80'; }
+  };
+  window.fatKitchenWidth = function () {
+    try {
+      var st = db.settings || {};
+      // لو المستخدم غيّر مقاس المطبخ بنفسه، سيبه زي ما هو
+      if (st.kitchenPaperCustom) return st.printPaper || '80';
+      return st.receiptWidth || '80';
+    } catch (e) { return '80'; }
+  };
+
+  // إصلاح دالة المطبخ عشان تقرا الإعداد الموحّد (مش printPaper القديم بس)
+  (function () {
+    var _pk = window.printKitchen;
+    if (typeof _pk !== 'function' || window._fatKitchenFixed) return;
+    window._fatKitchenFixed = true;
+    window.printKitchen = function () {
+      var orig = db.settings.printPaper;
+      try {
+        db.settings.printPaper = window.fatKitchenWidth();
+        return _pk.apply(this, arguments);
+      } finally {
+        db.settings.printPaper = orig;
+      }
+    };
+  })();
+
+  /* ═══════════ ٢) تسمية واضحة في شاشة الإعدادات ═══════════ */
+
+  (function () {
+    var _vs = views.settings;
+    if (typeof _vs !== 'function') return;
+    views.settings = function () {
+      var r = _vs.apply(this, arguments);
+      try {
+        // دوّر على الحقل القديم المُضلِّل وأصلّح تسميته وسلوكه
+        var sel = document.getElementById('pp_paper');
+        if (!sel || sel.dataset.fatFixed) return r;
+        sel.dataset.fatFixed = '1';
+
+        var field = sel.closest('.field');
+        var label = field ? field.querySelector('label') : null;
+        if (label) {
+          label.innerHTML = '🍳 ' + L('مقاس ورق أمر المطبخ', 'Kitchen ticket paper size');
+        }
+
+        var st = db.settings || {};
+        var custom = !!st.kitchenPaperCustom;
+        sel.value = custom ? (st.printPaper || '80') : window.fatKitchenWidth();
+        sel.disabled = !custom;
+        sel.onchange = function () {
+          st.kitchenPaperCustom = true;
+          st.printPaper = sel.value;
+          save();
+          toast('✅ ' + L('اتحفظ', 'Saved'));
+        };
+
+        if (field && !field.querySelector('.fat-link-note')) {
+          var note = document.createElement('div');
+          note.className = 'hint fat-link-note';
+          note.style.cssText = 'margin-top:6px;font-size:11px';
+          note.innerHTML =
+            (custom
+              ? L('مقاس مستقل عن إيصال العميل. ', 'Independent from the customer receipt. ') +
+                '<a href="#" onclick="fatKitchenUnlink();return false" style="color:var(--primary)">' +
+                L('اربطه بمقاس الإيصال تاني', 're-link to receipt size') + '</a>'
+              : L('تابع لمقاس إيصال العميل تلقائيًا (', 'Follows the customer receipt size automatically (') +
+                window.fatReceiptWidth() + 'mm). ' +
+                '<a href="#" onclick="fatKitchenCustomize();return false" style="color:var(--primary)">' +
+                L('اجعله مستقل', 'make it independent') + '</a>');
+          field.appendChild(note);
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  window.fatKitchenCustomize = function () {
+    db.settings.kitchenPaperCustom = true;
+    save();
+    try { views.settings(); } catch (e) {}
+  };
+  window.fatKitchenUnlink = function () {
+    db.settings.kitchenPaperCustom = false;
+    save();
+    toast('✅ ' + L('اترجع يتبع مقاس الإيصال', 'Now follows the receipt size'));
+    try { views.settings(); } catch (e) {}
+  };
+
+  /* ═══════════ ٣) معاينة إيصال حقيقية ═══════════ */
+
+  // بيبني نفس الـHTML بالظبط اللي printThermal هيطبعه، من غير فتح نافذة طباعة
+  window.fatReceiptPreviewHTML = function () {
+    var st = db.settings || {};
+    var w = window.fatReceiptWidth();
+    var narrow = (w === '58');
+
+    var sampleItems = [
+      { name: L('أسمنت أبيض', 'White cement'), qty: 2, price: 120 },
+      { name: L('مسمار ٥ سم', 'Nail 5cm'), qty: 10, price: 3 },
+      { name: L('شاكوش', 'Hammer'), qty: 1, price: 85 }
+    ];
+    var sub = sampleItems.reduce(function (a, it) { return a + it.qty * it.price; }, 0);
+
+    var rows = sampleItems.map(function (it) {
+      return '<tr><td style="width:58%;word-break:break-word">' + esc(it.name) + '</td>' +
+        '<td style="text-align:center;width:16%">' + it.qty + '</td>' +
+        '<td style="text-align:left;width:26%">' + fmt(it.qty * it.price) + '</td></tr>';
+    }).join('');
+
+    return '<div style="width:' + w + 'mm;margin:0 auto;padding:6px ' + (narrow ? '4' : '8') +
+      'px;font-family:\'Courier New\',monospace;font-size:' + (narrow ? '11' : '12') +
+      'px;color:#000;background:#fff;border:1px solid #ccc;box-shadow:0 2px 10px rgba(0,0,0,.08)">' +
+      (st.logo ? '<div style="text-align:center;margin-bottom:4px"><img src="' + esc(st.logo) +
+        '" style="max-width:' + (narrow ? '88px' : '128px') + ';max-height:56px;object-fit:contain"></div>' : '') +
+      '<h2 style="text-align:center;margin:2px 0;font-size:15px">' + esc(st.company || 'فاتورتي') + '</h2>' +
+      (st.address ? '<div class="c muted" style="text-align:center;color:#444;font-size:10px">' + esc(st.address) + '</div>' : '') +
+      '<div style="border-top:1px dashed #000;margin:5px 0"></div>' +
+      '<div style="display:flex;justify-content:space-between;font-size:11px">' +
+      '<span>' + L('فاتورة', 'Invoice') + ' #1024</span><span>' + (typeof today === 'function' ? today() : '') + '</span></div>' +
+      '<table style="width:100%;border-collapse:collapse;margin:6px 0">' + rows + '</table>' +
+      '<div style="border-top:1px dashed #000;margin:5px 0"></div>' +
+      '<div style="display:flex;justify-content:space-between;font-weight:bold;font-size:17px;' +
+      'padding:6px 4px;margin:4px 0;border-top:2px solid #000;border-bottom:2px solid #000;background:#f5f5f5">' +
+      '<span>' + L('الإجمالي', 'Total') + '</span><span>' + fmt(sub) + ' ' + esc((typeof cur === 'function' ? cur() : 'ج.م')) + '</span></div>' +
+      '<div style="text-align:center;color:#444;font-size:10px;margin-top:10px">' +
+      L('شكرًا لتعاملكم معنا 🌿', 'Thank you for your business 🌿') + '</div>' +
+      '</div>';
+  };
+
+  window.fatReceiptPreview = function () {
+    openModal('<div class="modal-h"><h3>🧾 ' + L('معاينة الإيصال', 'Receipt preview') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="hint" style="margin-bottom:12px">💡 ' +
+      L('ده بالظبط الشكل اللي هيتطبع على الطابعة الحرارية — بنفس المقاس والتنسيق. مفيش طابعة متوصلة؟ الشكل هيفضل صحيح برضو.',
+        'This is exactly what prints on the thermal printer — same size and layout. No printer connected yet? The layout is still accurate.') +
+      '</div>' +
+      '<div style="background:var(--card2);padding:20px;border-radius:12px;display:flex;justify-content:center;overflow-x:auto">' +
+      window.fatReceiptPreviewHTML() + '</div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-ghost" onclick="fatReceiptPreview()">🔄 ' + L('تحديث', 'Refresh') + '</button>' +
+      '<button class="btn btn-primary" onclick="closeModal()">' + L('إغلاق', 'Close') + '</button></div>');
+  };
+
+  // زرار المعاينة جنب اختيار مقاس الإيصال في الإعدادات
+  (function () {
+    var _vs2 = views.settings;
+    if (typeof _vs2 !== 'function') return;
+    views.settings = function () {
+      var r = _vs2.apply(this, arguments);
+      try {
+        var sel = document.getElementById('s_rcptw');
+        if (!sel || sel.dataset.fatPrevAdded) return r;
+        sel.dataset.fatPrevAdded = '1';
+        var field = sel.closest('.field');
+        if (field && !field.querySelector('.fat-preview-btn')) {
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn btn-ghost btn-sm fat-preview-btn';
+          btn.style.cssText = 'margin-top:6px';
+          btn.innerHTML = '👁️ ' + L('معاينة شكل الإيصال', 'Preview receipt');
+          btn.onclick = function () { window.fatReceiptPreview(); };
+          field.appendChild(btn);
+        }
+        // تحديث المعاينة تلقائيًا لو الشاشة مفتوحة وقت تغيير المقاس
+        var origOnchange = sel.onchange;
+        sel.onchange = function (ev) {
+          if (origOnchange) origOnchange.call(sel, ev);
+          if (document.getElementById('modal') && document.querySelector('#modal .fat-preview-btn')) {
+            try { window.fatReceiptPreview(); } catch (e) {}
+          }
+        };
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.8 — التشغيلة والصلاحية على فاتورة الشراء مباشرة
+
+   الفجوة: v8.5 عملت تتبع تشغيلات، بس البضاعة الداخلة من فاتورة
+   الشراء العادية (saveInvoice) كانت بتروح كلها لـ«غير محدّد» —
+   والعميل لازم يفتح شاشة منفصلة (📥 استلام تشغيلة) ويسجّل كل صنف
+   لوحده تاني. ده احتكاك حقيقي لصيدلية أو مطعم بيشتري ٢٠ صنف
+   في فاتورة واحدة.
+
+   الحل: حقلين اختياريين (تشغيلة + صلاحية) بيظهروا بس تحت صنف
+   متتبَّع في سطر فاتورة الشراء، وبيتحطوا صح وقت moveStock نفسها —
+   من غير خطوة تانية.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  window._invBatchInfo = {};   // { lineIndex: {code, expiry} }
+
+  /* ═══════════ ١) حقول التشغيلة تحت سطر الفاتورة ═══════════ */
+
+  function batchRowHTML(i, ln) {
+    var p = ln.pid ? findProduct(ln.pid) : null;
+    if (!p || typeof fatBatchOn !== 'function' || !fatBatchOn(p)) return '';
+    var info = window._invBatchInfo[i] || {};
+    return '<tr class="fat-batch-row" data-li="' + i + '"><td colspan="5" style="padding:4px 6px 8px">' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--card2);' +
+      'border-radius:9px;padding:7px 10px">' +
+      '<span style="font-size:11px;color:var(--muted)">📅 ' + L('تشغيلة', 'Batch') + ':</span>' +
+      '<input placeholder="' + L('رقم التشغيلة (اختياري)', 'Batch no. (optional)') +
+      '" value="' + esc(info.code || '') + '" oninput="fatInvBatchSet(' + i + ',\'code\',this.value)" ' +
+      'style="flex:1;min-width:120px;font-size:12px;padding:5px 8px">' +
+      '<input type="date" value="' + esc(info.expiry || '') + '" oninput="fatInvBatchSet(' + i + ',\'expiry\',this.value)" ' +
+      'style="font-size:12px;padding:5px 8px" title="' + L('تاريخ الانتهاء', 'Expiry date') + '">' +
+      '</div></td></tr>';
+  }
+
+  window.fatInvBatchSet = function (i, key, val) {
+    window._invBatchInfo[i] = window._invBatchInfo[i] || {};
+    window._invBatchInfo[i][key] = val;
+  };
+
+  // بعد كل رسم لسطور الفاتورة، ضيف صف التشغيلة لو الصنف متتبَّع
+  (function () {
+    var _ril = window.renderInvLines;
+    if (typeof _ril !== 'function') return;
+    window.renderInvLines = function () {
+      var r = _ril.apply(this, arguments);
+      try {
+        if (typeof invKind === 'undefined' || invKind !== 'purchase') return r;
+        if (typeof invLines === 'undefined') return r;
+        var body = document.getElementById('invBody');
+        if (!body) return r;
+        var trs = body.querySelectorAll('tr:not(.fat-batch-row)');
+        // امسح صفوف تشغيلة قديمة، وأعد بنائها بعد كل سطر منتج
+        body.querySelectorAll('tr.fat-batch-row').forEach(function (x) { x.remove(); });
+        for (var i = trs.length - 1; i >= 0; i--) {
+          var ln = invLines[i];
+          if (!ln) continue;
+          var html = batchRowHTML(i, ln);
+          if (!html) continue;
+          var wrap = document.createElement('tbody');
+          wrap.innerHTML = html;
+          var newRow = wrap.firstElementChild;
+          if (trs[i] && trs[i].parentNode) trs[i].parentNode.insertBefore(newRow, trs[i].nextSibling);
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  // لما تختار صنف في سطر، أعد الرسم عشان صف التشغيلة يظهر/يختفي فورًا
+  (function () {
+    var _slp = window.setLineProduct;
+    if (typeof _slp === 'function') {
+      window.setLineProduct = function () {
+        var r = _slp.apply(this, arguments);
+        try { if (typeof renderInvLines === 'function') renderInvLines(); } catch (e) {}
+        return r;
+      };
+    }
+  })();
+
+  /* ═══════════ ٢) الربط وقت الحفظ ═══════════ */
+
+  (function () {
+    var _ms = window.moveStock;
+    if (typeof _ms !== 'function') return;
+    // نلف moveStock مرة واحدة بس لو مش ملفوفة قبل كده من v8.5 (fatBatchHint موجودة هناك أصلًا)
+    // هنا بنحط الـhint قبل الاستدعاء فقط — الالتقاط نفسه في v8.5
+  })();
+
+  (function () {
+    var _si = window.saveInvoice;
+    if (typeof _si !== 'function' || window._fatInvBatchWrapped) return;
+    window._fatInvBatchWrapped = true;
+    window.saveInvoice = function () {
+      var isPurchase = (typeof invKind !== 'undefined' && invKind === 'purchase');
+      var infoSnapshot = isPurchase ? Object.assign({}, window._invBatchInfo) : null;
+      var linesSnapshot = isPurchase && typeof invLines !== 'undefined' ? invLines.slice() : null;
+
+      if (isPurchase && typeof window._fatBatchHint !== 'undefined') {
+        // اربط كل pid بمعلومات التشغيلة بتاعته، عشان الالتقاط في fatBatchAdd (v8.5) ياخدها صح
+        window._fatInvBatchByPid = {};
+        (linesSnapshot || []).forEach(function (ln, i) {
+          var info = infoSnapshot[i];
+          if (ln && ln.pid && info && (info.code || info.expiry)) {
+            window._fatInvBatchByPid[ln.pid] = info;
+          }
+        });
+      }
+
+      var r = _si.apply(this, arguments);
+      window._invBatchInfo = {};
+      window._fatInvBatchByPid = null;
+      return r;
+    };
+  })();
+
+  // اعتراض moveStock وقت الشراء بس — نحط الـhint الصحيح لكل صنف قبل نداء moveStock الأصلية
+  (function () {
+    var _ms2 = window.moveStock;
+    if (typeof _ms2 !== 'function' || window._fatInvMoveWrapped) return;
+    window._fatInvMoveWrapped = true;
+    window.moveStock = function (pid, delta, kind, note, ref) {
+      var hadHint = false, prevHint = null;
+      try {
+        if (window._fatInvBatchByPid && window._fatInvBatchByPid[pid] && delta > 0) {
+          prevHint = window._fatBatchHint;
+          window._fatBatchHint = {
+            code: window._fatInvBatchByPid[pid].code || '',
+            expiry: window._fatInvBatchByPid[pid].expiry || ''
+          };
+          hadHint = true;
+        }
+      } catch (e) {}
+      var r = _ms2.apply(this, arguments);
+      if (hadHint) window._fatBatchHint = prevHint;
+      return r;
+    };
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.9 — إصلاح فقدان بيانات عند دمج الأصناف المكررة
+
+   الباج: أداة دمج المكرر (dupMergeApply) كانت بتجمع p.qty وتنقل
+   مراجع البيع والحركات — بس متجاهلة تمامًا p.bq (توزيع الفروع
+   من v8.1) و p.batches (التشغيلات من v8.5). النتيجة: دمج صنفين
+   كان بيخلي الكمية الكلية صح بس توزيع الفروع يتلخبط فورًا،
+   والتشغيلات (وأثرها للاستدعاء) تضيع تمامًا مع الصنف المحذوف.
+
+   الإصلاح: ندمج bq (نجمع رصيد كل فرع) و batches (ننقلهم كلهم
+   للصنف الباقي) قبل ما نحذف الصنف المكرر — نفس لحظة الدمج بالظبط.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R3 = function (n) { return Math.round((+n || 0) * 1000) / 1000; };
+
+  window.fatMergeBranchBatch = function (keep, p) {
+    try {
+      // ── ١) دمج أرصدة الفروع ──
+      if (p.bq && typeof p.bq === 'object') {
+        keep.bq = keep.bq || {};
+        for (var bid in p.bq) {
+          if (!Object.prototype.hasOwnProperty.call(p.bq, bid)) continue;
+          keep.bq[bid] = R3((+keep.bq[bid] || 0) + (+p.bq[bid] || 0));
+        }
+      }
+
+      // ── ٢) دمج التشغيلات ──
+      if (Array.isArray(p.batches) && p.batches.length) {
+        keep.batches = keep.batches || [];
+        // لو الصنف الباقي مش متتبَّع بالتشغيلة، فعّلها عشان الأثر ميضيعش
+        if (!keep.trackBatch) keep.trackBatch = true;
+        p.batches.forEach(function (b) {
+          if (!b || Math.abs(+b.qty || 0) < 1e-9) return;
+          // ادمج مع تشغيلة موجودة لو نفس الرقم/التاريخ/الفرع بالظبط
+          var hit = keep.batches.filter(function (x) {
+            return x.branch === b.branch &&
+                   String(x.code || '') === String(b.code || '') &&
+                   String(x.expiry || '') === String(b.expiry || '');
+          })[0];
+          if (hit) { hit.qty = R3(hit.qty + b.qty); }
+          else {
+            keep.batches.push({
+              id: (typeof uid === 'function' ? uid() : 'b' + Math.random()),
+              code: b.code || '', expiry: b.expiry || '', qty: R3(b.qty),
+              branch: b.branch, cost: b.cost != null ? b.cost : (keep.cost || 0),
+              received: b.received || (typeof today === 'function' ? today() : '')
+            });
+          }
+        });
+      }
+    } catch (e) {}
+  };
+
+  (function () {
+    var _dma = window.dupMergeApply;
+    if (typeof _dma !== 'function' || window._fatDupMergeFixed) return;
+    window._fatDupMergeFixed = true;
+
+    window.dupMergeApply = async function () {
+      if (!(await confirmBox(L('متأكد إنك عايز تدمج؟ ده نهائي.', 'Merge permanently?')))) return;
+      var groups = fatFindDupes();
+      var removed = 0;
+
+      groups.forEach(function (g, gi) {
+        var sel = document.querySelector('input[name="dup_' + gi + '"]:checked');
+        var keepId = sel ? sel.value : g[0].id;
+        var keep = g.find(function (p) { return p.id === keepId; });
+        if (!keep) return;
+
+        g.forEach(function (p) {
+          if (p.id === keepId) return;
+
+          // الإصلاح: انقل توزيع الفروع والتشغيلات *قبل* ما نجمع الكمية ونحذف الصنف
+          window.fatMergeBranchBatch(keep, p);
+
+          keep.qty = (+keep.qty || 0) + (+p.qty || 0);
+          (db.sales || []).forEach(function (sl) { (sl.items || []).forEach(function (it) { if (it.pid === p.id) it.pid = keepId; }); });
+          (db.stockMoves || []).forEach(function (mv) { if (mv.pid === p.id) mv.pid = keepId; });
+          (db.purchases || []).forEach(function (po) { (po.items || po.lines || []).forEach(function (it) { if (it.pid === p.id) it.pid = keepId; }); });
+          db.products = db.products.filter(function (x) { return x.id !== p.id; });
+          removed++;
+        });
+      });
+
+      save(); closeModal();
+      try { logAudit(L('دمج مكرر', 'Merge duplicates'), removed + ' ' + L('صنف اتحذف', 'removed')); } catch (e) {}
+      toast('✅ ' + L('تم الدمج', 'Merged') + ': ' + removed + ' ' + L('صنف اتدمج', 'items merged'));
+      if (current === 'stocktake' && typeof views.stocktake === 'function') views.stocktake();
+      else if (current === 'products') go('products');
+    };
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.10 — ربط المرتجعات بالعمولة ومستويات الولاء
+
+   الفجوة: saveReturn بترجّع المخزون وتعدّل رصيد العميل وتعكس نقاط
+   الولاء — بس مش بتلمس s.total أو s.profit على الفاتورة الأصلية.
+   النتيجة: مندوب بياخد عمولة على بضاعة رجعت المخزن، وعميل بيترقّى
+   لمستوى ولاء أعلى بناءً على مبيعات جزء كبير منها راجع فعليًا.
+
+   الحل: دالة واحدة (fatNetOfReturns) بتحسب صافي كل فاتورة بعد
+   خصم مرتجعاتها المسجّلة في db.returns، وربطها بمكانين:
+   عمولة المندوبين (v9.3) ومستويات الولاء (v9.4).
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  // إجمالي المرتجعات المسجّلة على فاتورة بيع معيّنة
+  window.fatSaleReturned = function (saleId) {
+    var t = 0;
+    try {
+      (db.returns || []).forEach(function (r) {
+        if (r && r.type === 'sale' && r.refId === saleId) t = R2(t + (+r.total || 0));
+      });
+    } catch (e) {}
+    return t;
+  };
+
+  // صافي الفاتورة بعد خصم مرتجعاتها — الأساس الصح لأي حساب عمولة أو ولاء
+  window.fatNetOfReturns = function (s) {
+    if (!s) return 0;
+    var ret = window.fatSaleReturned(s.id);
+    return Math.max(0, R2((+s.total || 0) - ret));
+  };
+
+  /* ═══════════ ١) عمولة المندوبين — تستبعد المرتجع ═══════════ */
+
+  (function () {
+    var _cos = window.fatCommOfSale;
+    if (typeof _cos !== 'function' || window._fatCommReturnsFixed) return;
+    window._fatCommReturnsFixed = true;
+
+    window.fatCommOfSale = function (s, emp) {
+      if (!s || !emp) return 0;
+      var ret = window.fatSaleReturned(s.id);
+      if (ret <= 0.009) return _cos(s, emp);   // مفيش مرتجع → نفس السلوك الأصلي بالظبط
+
+      // فيه مرتجع: نحسب العمولة على نسخة من الفاتورة بأرقام صافية
+      var netTotal = window.fatNetOfReturns(s);
+      var scale = (+s.total || 0) > 0 ? netTotal / (+s.total || 1) : 0;
+      var sNet = Object.assign({}, s, {
+        total: netTotal,
+        vat: R2((+s.vat || 0) * scale),
+        profit: R2((+s.profit || 0) * scale)
+      });
+      return _cos(sNet, emp);
+    };
+  })();
+
+  /* ═══════════ ٢) مستويات الولاء — تستبعد المرتجع ═══════════ */
+
+  (function () {
+    var _cs = window.fatCustSpend;
+    if (typeof _cs !== 'function' || window._fatLoyReturnsFixed) return;
+    window._fatLoyReturnsFixed = true;
+
+    window.fatCustSpend = function (cid, months) {
+      var total = 0;
+      try {
+        months = months || (window.fatLoyCfg ? window.fatLoyCfg().months : 12) || 12;
+        var cutoff = '';
+        try {
+          var d = new Date((typeof today === 'function' ? today() : '') + 'T12:00:00');
+          d.setMonth(d.getMonth() - months);
+          cutoff = d.toISOString().slice(0, 10);
+        } catch (e) {}
+        var sales = db.sales || [];
+        try { if (typeof bf === 'function') sales = bf(sales); } catch (e) {}
+        sales.forEach(function (s) {
+          if (!s || s.customerId !== cid) return;
+          if (s.voided || s.canceled) return;
+          if (cutoff && s.date < cutoff) return;
+          // الفرق عن الأصل: نستخدم الصافي بعد المرتجع مش s.total الخام
+          total = R2(total + window.fatNetOfReturns(s));
+        });
+      } catch (e) {}
+      return total;
+    };
+  })();
+
+  /* ═══════════ ٣) شارة "فيه مرتجع" في كشوف الحساب ═══════════ */
+
+  (function () {
+    var _cst = window.fatCommStatement;
+    if (typeof _cst !== 'function') return;
+    window.fatCommStatement = function (empId) {
+      window._fatCommHasReturns = true;   // علامة داخلية، مفيدة لو حبينا نوسّع العرض لاحقًا
+      return _cst.apply(this, arguments);
+    };
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.11 — تسوية الطيار تستبعد المرتجع كمان
+
+   نفس فجوة v9.10 بالظبط، في مكان تالت: fatDriverStats كانت بتحسب
+   الفلوس اللي الطيار "محصّلها" من s.total الخام. لو طلب توصيل
+   اترجع منه صنف (العميل رفضه عند الاستلام)، الطيار كان هيتطالب
+   يسلّم فلوس أكتر من اللي فعليًا معاه في جيبه.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
+
+  (function () {
+    var _ds = window.fatDriverStats;
+    if (typeof _ds !== 'function' || window._fatDriverReturnsFixed) return;
+    window._fatDriverReturnsFixed = true;
+
+    window.fatDriverStats = function (did) {
+      var d = window.fatDrivers().filter(function (x) { return x.id === did; })[0];
+      var st = { d: d, open: 0, cash: 0, fees: 0, net: 0, delivered: 0, returned: 0 };
+      if (!d) return st;
+
+      window.fatDriverOrders(did, true).forEach(function (s) {
+        st.open++;
+        var netTotal = (typeof window.fatNetOfReturns === 'function') ? window.fatNetOfReturns(s) : (+s.total || 0);
+        var ret = (typeof window.fatSaleReturned === 'function') ? window.fatSaleReturned(s.id) : 0;
+        if (ret > 0.009) st.returned = R2(st.returned + ret);
+
+        // الفلوس اللي الطيار محصّلها فعليًا (الدفع عند الاستلام) — بعد أي مرتجع
+        var collected = (s.payMethod === 'credit') ? 0 : R2(netTotal);
+        st.cash = R2(st.cash + collected);
+        st.fees = R2(st.fees + (+s.driverFee || +d.fee || 0));
+      });
+      window.fatDriverOrders(did, false).forEach(function (s) {
+        if (s.driverDelivered) st.delivered++;
+      });
+      st.net = R2(st.cash - st.fees);
+      return st;
+    };
+  })();
+
+  // إشارة صغيرة في شاشة التسوية لو فيه مرتجع أثّر على الحساب
+  (function () {
+    var _dset = window.fatDriverSettle;
+    if (typeof _dset !== 'function') return;
+    window.fatDriverSettle = function (did) {
+      var r = _dset.apply(this, arguments);
+      try {
+        var st = window.fatDriverStats(did);
+        if (st.returned > 0.009) {
+          setTimeout(function () {
+            var box = document.getElementById('ds_diff');
+            var modalB = document.querySelector('#modal .modal-b');
+            if (modalB && !modalB.querySelector('.fat-ret-note')) {
+              var note = document.createElement('div');
+              note.className = 'hint fat-ret-note';
+              note.style.cssText = 'margin-top:8px;color:#d97706';
+              note.innerHTML = '↩️ ' + L('فيه مرتجعات بقيمة', 'Includes returns worth') + ' ' +
+                money(st.returned) + ' ' + L('اتخصمت من المطلوب تلقائيًا.', 'already deducted from what he owes.');
+              modalB.appendChild(note);
+            }
+          }, 0);
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.12 — تعديل/إلغاء/مرتجع الفاتورة يرجّع المخزون للفرع الصح
+
+   الباج: reverseSaleEffects (تعديل فاتورة) و delSale (إلغاء) و
+   saveReturn (مرتجع) بيستدعوا saleStockIn اللي بينادي moveStock
+   من غير تحديد فرع — فـmoveStock (v8.1) بيستخدم *الفرع النشط دلوقتي*
+   مش s.branch بتاعة الفاتورة الأصلية.
+
+   السيناريو: مدير قاعد في فرع المعادي، بيعدّل أو يلغي فاتورة
+   اتباعت من فرع طنطا → المخزون بيرجع لرصيد المعادي بالغلط،
+   ورصيد طنطا يفضل ناقص من غير ما حد ياخد باله.
+
+   الحل: أي عملية بترجّع مخزون فاتورة، بنستخدم _fatBranchOverride
+   (نفس آلية v8.5) عشان نوجّه moveStock لفرع الفاتورة الأصلية —
+   بغض النظر عن الفرع النشط دلوقتي.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  // شغّل fn والمخزون كله اللي هيتحرك جواها يروح لفرع الفاتورة، مش الفرع النشط
+  window.fatWithSaleBranch = function (s, fn) {
+    var b = (s && s.branch) || '';
+    if (!b || typeof window._fatBranchOverride === 'undefined') { return fn(); }
+    var prev = window._fatBranchOverride;
+    window._fatBranchOverride = b;
+    try { return fn(); }
+    finally { window._fatBranchOverride = prev; }
+  };
+
+  /* ═══════════ ١) تعديل فاتورة ═══════════ */
+  (function () {
+    var _rse = window.reverseSaleEffects;
+    if (typeof _rse !== 'function' || window._fatRevBranchFixed) return;
+    window._fatRevBranchFixed = true;
+    window.reverseSaleEffects = function (s) {
+      return window.fatWithSaleBranch(s, function () { return _rse(s); });
+    };
+  })();
+
+  /* ═══════════ ٢) إلغاء/حذف فاتورة ═══════════ */
+  (function () {
+    var _ds = window.delSale;
+    if (typeof _ds !== 'function' || window._fatDelSaleBranchFixed) return;
+    window._fatDelSaleBranchFixed = true;
+    window.delSale = async function (id) {
+      var s = null;
+      try { s = (db.sales || []).filter(function (x) { return x.id === id; })[0]; } catch (e) {}
+      if (!s) return _ds.apply(this, arguments);
+      // بنلف نداء stock-restoring بس (saleStockIn) مش الدالة كلها، عشان الـconfirm/delete يفضلوا زي ما هما
+      var _ssi = window.saleStockIn;
+      var wrapped = false;
+      if (typeof _ssi === 'function' && !window._fatSSIWrappedForDel) {
+        window.saleStockIn = function (items, note, ref) {
+          return window.fatWithSaleBranch(s, function () { return _ssi(items, note, ref); });
+        };
+        wrapped = true;
+      }
+      try {
+        return await _ds.apply(this, arguments);
+      } finally {
+        if (wrapped) window.saleStockIn = _ssi;
+      }
+    };
+  })();
+
+  /* ═══════════ ٣) مرتجع بيع ═══════════ */
+  (function () {
+    var _sr = window.saveReturn;
+    if (typeof _sr !== 'function' || window._fatSaveReturnBranchFixed) return;
+    window._fatSaveReturnBranchFixed = true;
+    window.saveReturn = function () {
+      // retCtx معرّفة بـ let في أول الملف — نقراها كمتغيّر محلي عادي، مش window.retCtx
+      var s = null;
+      try { s = (typeof retCtx !== 'undefined' && retCtx && retCtx.kind === 'sale') ? retCtx.s : null; } catch (e) {}
+      if (!s) return _sr();
+      return window.fatWithSaleBranch(s, function () { return _sr(); });
+    };
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v9.13 — حماية صرف العمولة وتسوية الطيار بحد الصلاحية
+
+   اكتشاف: عندك نظام حد أقصى لصرف الكاشير (needsPayoutApproval +
+   permGet('payoutMax', role)) في الإعدادات — بس مش مربوط بأي
+   عملية صرف في النظام كله، حتى قبل شغلنا. يعني فيتشرز جديدة زي
+   صرف العمولة وتسوية الطيار (اللي بتصرف فلوس فعلية) ورثت نفس
+   الفجوة: أي حد يقدر يصرف أي مبلغ من غير موافقة مدير.
+
+   الحل: بوابة صغيرة قبل أي صرف فيتشرز جديدة — لو المبلغ أكبر من
+   حد دور المستخدم الحالي، تطلب رقم سري المدير. مبنية على promptBox
+   (دالة موجودة ومستخدمة في ٣٩ مكان) عشان ميبقاش فيه تخمين في شكل
+   نافذة مش شايفها.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  // بترجع true لو العملية اتسمحلها تكمل، false لو اتلغت
+  window.fatGuardPayout = function (amt) {
+    try {
+      if (typeof needsPayoutApproval !== 'function' || !needsPayoutApproval(amt)) {
+        return Promise.resolve(true);
+      }
+    } catch (e) { return Promise.resolve(true); }
+
+    return Promise.resolve(promptBox(
+      L('المبلغ ده أكبر من حد صلاحيتك — اكتب الرقم السري للمدير:',
+        'This amount exceeds your role limit — enter the manager PIN:'),
+      { type: 'password' }
+    )).then(function (v) {
+      if (v === null) return false;
+      var ok = String(v) === String((db.settings && db.settings.pin) || '');
+      if (!ok) { toast(L('رقم سري غير صحيح', 'Wrong PIN'), 'err'); return false; }
+      try { logAudit(L('موافقة مدير', 'Manager approval'), L('تجاوز حد صرف', 'payout limit override') + ' — ' + money(amt)); } catch (e) {}
+      return true;
+    });
+  };
+
+  /* ═══════════ ١) صرف عمولة المندوب ═══════════ */
+  (function () {
+    var _cp = window.fatCommPay;
+    if (typeof _cp !== 'function' || window._fatCommGuardAdded) return;
+    window._fatCommGuardAdded = true;
+    window.fatCommPay = function (empId) {
+      var e = (db.employees || []).filter(function (x) { return x.id === empId; })[0];
+      if (!e) return;
+      var st = window.fatCommStats(empId, window._cmFrom, window._cmTo);
+      if (st.due <= 0.009) return toast(L('مفيش عمولة مستحقة', 'No commission due'), 'err');
+
+      Promise.resolve(promptBox(
+        L('صرف عمولة', 'Pay commission') + ' — ' + e.name + '\n' +
+        L('المستحق', 'Due') + ': ' + money(st.due) + '\n' +
+        L('اكتب المبلغ المصروف:', 'Amount to pay:'),
+        { value: st.due, type: 'number' }
+      )).then(function (v) {
+        if (v === null) return;
+        var amt = Math.round((+v || 0) * 100) / 100;
+        if (amt <= 0) return;
+        if (amt > st.due + 0.009) return toast(L('أكبر من المستحق', 'More than due'), 'err');
+
+        window.fatGuardPayout(amt).then(function (allowed) {
+          if (!allowed) return;
+          window._fatCommApprovedAmt = amt;
+          window.fatCommPayInner(empId, amt);
+        });
+      });
+    };
+
+    // نسخة داخلية من منطق الصرف الأصلي، بس بتاخد المبلغ جاهز بدل ما تسأل تاني
+    window.fatCommPayInner = function (empId, amt) {
+      var e = (db.employees || []).filter(function (x) { return x.id === empId; })[0];
+      if (!e) return;
+      var doPay = function (acct) {
+        try {
+          e.commPayments = e.commPayments || [];
+          e.commPayments.push({
+            id: (typeof uid === 'function' ? uid() : String(Date.now())),
+            date: today(), ts: new Date().toISOString(),
+            amount: amt, from: window._cmFrom || '', to: window._cmTo || '',
+            user: (typeof currentUserName === 'function' ? currentUserName() : '')
+          });
+          try { addCash('out', amt, L('عمولة مندوب', 'Sales commission') + ': ' + e.name, null, acct); } catch (er) {}
+          try { logAudit(L('صرف عمولة', 'Commission paid'), e.name + ' — ' + money(amt)); } catch (er) {}
+          save();
+          toast('💸 ' + L('اتصرفت', 'Paid') + ' ' + money(amt));
+          try { if (current === 'commissions') views.commissions(); } catch (er) {}
+        } catch (er) {}
+      };
+      try {
+        if (typeof fatAskAccount === 'function') {
+          Promise.resolve(fatAskAccount(L('العمولة تتصرف من', 'Pay from'), 'cash')).then(function (a) {
+            if (a === null) return;
+            doPay(a);
+          });
+          return;
+        }
+      } catch (er) {}
+      doPay('cash');
+    };
+  })();
+
+  /* ═══════════ ٢) تسوية الطيار ═══════════ */
+  (function () {
+    var _dss = window.fatDriverSettleSave;
+    if (typeof _dss !== 'function' || window._fatDriverGuardAdded) return;
+    window._fatDriverGuardAdded = true;
+    window.fatDriverSettleSave = function (did) {
+      var el = document.getElementById('ds_amt');
+      var st = window.fatDriverStats(did);
+      var amt = el ? Math.round((+el.value || 0) * 100) / 100 : st.net;
+
+      if (amt <= 0.009) return _dss(did);   // مفيش صرف فعلي (أو حتى عجز) → عادي
+
+      window.fatGuardPayout(amt).then(function (allowed) {
+        if (!allowed) return;
+        _dss(did);
+      });
+    };
+  })();
+
+})();
+
 </script>
 </body>
 </html>

@@ -121,7 +121,14 @@ setTimeout(() => {
     ['v9.5 · الطيارين', 'fatDriverStats'],
     ['v9.5 · أوامر التصنيع', 'fatProdRun'],
     ['v9.6 · استيراد CSV', 'fatCSVParse'],
-    ['v9.6 · صحة الحساب', 'fatHealthCompute']
+    ['v9.6 · صحة الحساب', 'fatHealthCompute'],
+    ['v9.7 · معاينة الإيصال', 'fatReceiptPreviewHTML'],
+    ['v9.8 · تشغيلة فاتورة الشراء', 'fatInvBatchSet'],
+    ['v9.9 · إصلاح دمج المكرر', 'fatMergeBranchBatch'],
+    ['v9.10 · ربط المرتجعات', 'fatNetOfReturns'],
+    ['v9.11 · تسوية طيار بالمرتجع', 'fatDriverStats'],
+    ['v9.12 · فرع الفاتورة عند التعديل', 'fatWithSaleBranch'],
+    ['v9.13 · حماية الصرف بحد الصلاحية', 'fatGuardPayout']
   ];
   checks.forEach(([label, fn]) => ok(label, typeof w[fn] === 'function'));
 
