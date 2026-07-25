@@ -27590,6 +27590,844 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
 })();
 
+
+/* ============================================================
+   FATORTY v9.24 — كل حركة خزينة بتتوسم بالفرع
+
+   الفجوة: addCash — الدالة اللي كل حركة كاش في النظام كله بتعدّي
+   منها (بيع، شراء، مصروف، عمولة، تسوية طيار...) — مكانتش بتسجّل
+   فرع خالص. النتيجة الفعلية: ١٧٦ حركة خزينة من غير فرع في قاعدة
+   بيانات حقيقية، يعني عزل الفروع (RLS) الجديد مش بيفلتر تقارير
+   الخزينة أبدًا.
+
+   الحل: بنستخدم فرع الفاتورة/العملية المرتبطة لو موجودة (نفس فكرة
+   v9.12 — فرع السجل الأصلي، مش الفرع النشط دلوقتي بالضرورة)،
+   وإلا الفرع النشط كـfallback.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  (function () {
+    var _ac = window.addCash;
+    if (typeof _ac !== 'function' || window._fatAddCashBranchFixed) return;
+    window._fatAddCashBranchFixed = true;
+
+    window.addCash = function (type, amount, note, ref, acct) {
+      var branch = '';
+      try {
+        // لو فيه مرجع (ref) بيربط الحركة بفاتورة/عملية، ناخد فرعها هي
+        if (ref) {
+          var owner =
+            (db.sales || []).filter(function (s) { return s.id === ref; })[0] ||
+            (db.purchases || []).filter(function (p) { return p.id === ref; })[0] ||
+            (db.expenses || []).filter(function (e) { return e.id === ref; })[0] ||
+            (db.returns || []).filter(function (r) { return r.id === ref; })[0];
+          if (owner && owner.branch) branch = owner.branch;
+        }
+        // مفيش مرجع أو مالوش فرع → الفرع النشط دلوقتي (نفس منطق كل حركة تُنشأ الآن)
+        if (!branch && typeof activeBranch === 'function') branch = activeBranch() || '';
+        // لو إحنا جوه تجاوز فرع مؤقت (v8.5/v9.12) نديله الأولوية
+        if (window._fatBranchOverride) branch = window._fatBranchOverride;
+      } catch (e) {}
+
+      var before = (db.cash || []).length;
+      var r = _ac.apply(this, arguments);
+      try {
+        if ((db.cash || []).length > before) {
+          var mv = db.cash[db.cash.length - 1];
+          if (!mv.branch) mv.branch = branch;
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v10.0 — ملف المريض الطبي وسجل الزيارات
+   (أول لبنة من نظام العيادات — كل حاجة بعد كده هتتبني عليها)
+
+   القرار المعماري: المريض هو "عميل" بحقول إضافية، مش كيان منفصل.
+   كده الفوترة والمحاسبة والمخزون الموجودين يفضلوا شغّالين زي ما
+   هما تمامًا — احنا بس بنضيف "وجه طبي" فوق نفس السجل.
+
+   ⚠️ حدود الأمان: النظام ده سجل بيانات بس. مش بيقترح تشخيص ولا
+   جرعة دواء ولا أي محتوى طبي — كل الحقول بيكتبها الدكتور بنفسه،
+   والنظام بيحفظها وبس.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  /* ═══════════ ١) البيانات الأساسية ═══════════ */
+
+  window.fatPatients = function () {
+    try { return (db.customers || []).filter(function (c) { return c && c.isPatient; }); }
+    catch (e) { return []; }
+  };
+
+  window.fatMedOf = function (c) {
+    c.medical = c.medical || { bloodType: '', allergies: '', chronic: '', meds: '', emName: '', emPhone: '', notes: '' };
+    return c.medical;
+  };
+
+  window.fatVisitsOf = function (c) {
+    c.visits = c.visits || [];
+    return c.visits;
+  };
+
+  window.fatHasAlerts = function (c) {
+    var m = window.fatMedOf(c);
+    return !!(m.allergies && m.allergies.trim()) || !!(m.chronic && m.chronic.trim());
+  };
+
+  /* ═══════════ ٢) تفعيل "مريض" على كارت عميل موجود ═══════════ */
+
+  window.fatPatientToggle = function (id) {
+    var c = findCustomer(id);
+    if (!c) return;
+    c.isPatient = !c.isPatient;
+    save();
+    try { logAudit(c.isPatient ? L('تفعيل ملف مريض', 'Enable patient file') : L('إلغاء ملف مريض', 'Disable patient file'), c.name); } catch (e) {}
+    toast(c.isPatient ? '🏥 ' + L('اتفعّل كمريض', 'Marked as patient') : L('اتشال من المرضى', 'Removed from patients'));
+    try { if (current === 'patients') views.patients(); else if (current === 'customers') views.customers(); } catch (e) {}
+  };
+
+  // زرار "خلّيه مريض" في فورم إضافة/تعديل عميل
+  (function () {
+    var _pf = window.partyForm;
+    if (typeof _pf !== 'function' || window._fatPatientFormWrapped) return;
+    window._fatPatientFormWrapped = true;
+    window.partyForm = function (kind, id) {
+      var r = _pf.apply(this, arguments);
+      try {
+        if (kind !== 'customer') return r;
+        var c = id ? findCustomer(id) : null;
+        var body = document.querySelector('#modal .modal-b');
+        if (!body || document.getElementById('p_ispatient')) return r;
+        var box = document.createElement('label');
+        box.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:11px;background:var(--card2);border-radius:10px;cursor:pointer;margin-top:6px';
+        box.innerHTML = '<span>🏥 <b>' + L('ده مريض (ملف طبي)', 'This is a patient (medical file)') + '</b></span>' +
+          '<input type="checkbox" id="p_ispatient"' + (c && c.isPatient ? ' checked' : '') + ' style="width:20px;height:20px">';
+        body.appendChild(box);
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  (function () {
+    var _sp = window.saveParty;
+    if (typeof _sp !== 'function' || window._fatSavePartyPatientWrapped) return;
+    window._fatSavePartyPatientWrapped = true;
+    window.saveParty = function (kind, id) {
+      var chk = document.getElementById('p_ispatient');
+      var wantPatient = chk ? !!chk.checked : null;
+      var before = kind === 'customer' ? (db.customers || []).length : 0;
+      var r = _sp.apply(this, arguments);
+      try {
+        if (kind === 'customer' && wantPatient !== null) {
+          var c = id ? findCustomer(id) : db.customers[db.customers.length - 1];
+          if (c && (db.customers.length > before || id)) { c.isPatient = wantPatient; save(); }
+        }
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+  /* ═══════════ ٣) الملف الطبي — عرض وتعديل ═══════════ */
+
+  window.fatMedicalForm = function (id) {
+    var c = findCustomer(id);
+    if (!c) return;
+    var m = window.fatMedOf(c);
+    openModal('<div class="modal-h"><h3>🏥 ' + L('الملف الطبي', 'Medical File') + ' — ' + esc(c.name) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('فصيلة الدم', 'Blood type') + '</label>' +
+      '<select id="m_blood"><option value="">—</option>' +
+      ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map(function (b) {
+        return '<option value="' + b + '"' + (m.bloodType === b ? ' selected' : '') + '>' + b + '</option>';
+      }).join('') + '</select></div>' +
+      '<div class="field"><label>' + L('تاريخ الميلاد', 'Birthday') + '</label>' +
+      '<input id="m_bday" type="date" value="' + esc(c.bday || '') + '"></div></div>' +
+      '<div class="field"><label style="color:var(--danger)">⚠️ ' + L('الحساسية (أدوية/مواد)', 'Allergies (drugs/materials)') + '</label>' +
+      '<textarea id="m_allergy" rows="2" placeholder="' + L('مثال: حساسية من البنسلين', 'e.g. Penicillin allergy') + '">' + esc(m.allergies || '') + '</textarea></div>' +
+      '<div class="field"><label>' + L('أمراض مزمنة', 'Chronic conditions') + '</label>' +
+      '<textarea id="m_chronic" rows="2" placeholder="' + L('مثال: سكر، ضغط', 'e.g. Diabetes, hypertension') + '">' + esc(m.chronic || '') + '</textarea></div>' +
+      '<div class="field"><label>' + L('أدوية حالية', 'Current medications') + '</label>' +
+      '<textarea id="m_meds" rows="2">' + esc(m.meds || '') + '</textarea></div>' +
+      '<div class="grid2"><div class="field"><label>' + L('جهة الاتصال في الطوارئ', 'Emergency contact') + '</label>' +
+      '<input id="m_emname" value="' + esc(m.emName || '') + '"></div>' +
+      '<div class="field"><label>' + L('رقمها', 'Their phone') + '</label>' +
+      '<input id="m_emphone" value="' + esc(m.emPhone || '') + '"></div></div>' +
+      '<div class="field"><label>' + L('ملاحظات عامة', 'General notes') + '</label>' +
+      '<textarea id="m_notes" rows="2">' + esc(m.notes || '') + '</textarea></div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatMedicalSave(\'' + id + '\')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatMedicalSave = function (id) {
+    var c = findCustomer(id);
+    if (!c) return;
+    var m = window.fatMedOf(c);
+    var g = function (i) { var e = document.getElementById(i); return e ? e.value : ''; };
+    m.bloodType = g('m_blood');
+    m.allergies = g('m_allergy').trim();
+    m.chronic = g('m_chronic').trim();
+    m.meds = g('m_meds').trim();
+    m.emName = g('m_emname').trim();
+    m.emPhone = g('m_emphone').trim();
+    m.notes = g('m_notes').trim();
+    c.bday = g('m_bday');
+    try { logAudit(L('تحديث ملف طبي', 'Update medical file'), c.name); } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظ الملف الطبي', 'Medical file saved'));
+    try { if (current === 'patients') views.patients(); } catch (e) {}
+  };
+
+  /* ═══════════ ٤) سجل الزيارات ═══════════ */
+
+  window.fatVisitForm = function (custId, visitId) {
+    var c = findCustomer(custId);
+    if (!c) return;
+    var v = visitId ? window.fatVisitsOf(c).filter(function (x) { return x.id === visitId; })[0] : null;
+    v = v || { date: today(), complaint: '', diagnosis: '', procedure: '', notes: '', nextVisit: '' };
+    openModal('<div class="modal-h"><h3>📝 ' + (visitId ? L('تعديل زيارة', 'Edit visit') : L('زيارة جديدة', 'New visit')) +
+      ' — ' + esc(c.name) + '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('التاريخ', 'Date') + '</label>' +
+      '<input id="v_date" type="date" value="' + esc(v.date) + '"></div>' +
+      '<div class="field"><label>' + L('الشكوى', 'Complaint') + '</label>' +
+      '<input id="v_complaint" value="' + esc(v.complaint) + '" placeholder="' + L('مثال: ألم في الضرس السفلي', 'e.g. Pain in lower molar') + '"></div>' +
+      '<div class="field"><label>' + L('التشخيص', 'Diagnosis') + '</label>' +
+      '<input id="v_diagnosis" value="' + esc(v.diagnosis) + '"></div>' +
+      '<div class="field"><label>' + L('الإجراء اللي اتعمل', 'Procedure performed') + '</label>' +
+      '<input id="v_procedure" value="' + esc(v.procedure) + '"></div>' +
+      '<div class="field"><label>' + L('ملاحظات', 'Notes') + '</label>' +
+      '<textarea id="v_notes" rows="3">' + esc(v.notes) + '</textarea></div>' +
+      '<div class="field"><label>' + L('الزيارة الجاية (لو محدّدة)', 'Next visit (if scheduled)') + '</label>' +
+      '<input id="v_next" value="' + esc(v.nextVisit) + '" placeholder="' + L('مثال: بعد أسبوعين لمتابعة الحشو', 'e.g. In 2 weeks for filling follow-up') + '"></div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatVisitSave(\'' + custId + '\'' + (visitId ? ",'" + visitId + "'" : '') + ')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatVisitSave = function (custId, visitId) {
+    var c = findCustomer(custId);
+    if (!c) return;
+    var g = function (i) { var e = document.getElementById(i); return e ? e.value.trim() : ''; };
+    var date = g('v_date') || today();
+    var rec = {
+      date: date, complaint: g('v_complaint'), diagnosis: g('v_diagnosis'),
+      procedure: g('v_procedure'), notes: g('v_notes'), nextVisit: g('v_next'),
+      by: (typeof currentUserName === 'function' ? currentUserName() : '')
+    };
+    var visits = window.fatVisitsOf(c);
+    if (visitId) {
+      var v = visits.filter(function (x) { return x.id === visitId; })[0];
+      if (v) Object.assign(v, rec);
+    } else {
+      rec.id = (typeof uid === 'function' ? uid() : String(Date.now()));
+      rec.ts = new Date().toISOString();
+      visits.push(rec);
+    }
+    try { logAudit(visitId ? L('تعديل زيارة', 'Edit visit') : L('زيارة جديدة', 'New visit'), c.name + ' — ' + date); } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظت الزيارة', 'Visit saved'));
+    try { window.fatPatientProfile(custId); } catch (e) {}
+  };
+
+  window.fatVisitDelete = function (custId, visitId) {
+    var c = findCustomer(custId);
+    if (!c) return;
+    Promise.resolve(confirmBox(L('تمسح الزيارة دي؟', 'Delete this visit?'), { danger: true }))
+      .then(function (okv) {
+        if (!okv) return;
+        c.visits = window.fatVisitsOf(c).filter(function (x) { return x.id !== visitId; });
+        save();
+        toast(L('اتمسحت', 'Deleted'));
+        try { window.fatPatientProfile(custId); } catch (e) {}
+      });
+  };
+
+  /* ═══════════ ٥) ملف المريض الكامل (شاشة مفصّلة) ═══════════ */
+
+  window.fatPatientProfile = function (custId) {
+    var c = findCustomer(custId);
+    if (!c) return;
+    var m = window.fatMedOf(c);
+    var visits = window.fatVisitsOf(c).slice().sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
+    var hasAlerts = window.fatHasAlerts(c);
+
+    var alertBox = hasAlerts
+      ? '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:11px;padding:11px 13px;margin-bottom:12px">' +
+        (m.allergies ? '<div style="color:var(--danger);font-weight:700;font-size:13px">⚠️ ' + L('حساسية', 'Allergy') + ': ' + esc(m.allergies) + '</div>' : '') +
+        (m.chronic ? '<div style="color:#b45309;font-size:12.5px;margin-top:3px">🩺 ' + L('مزمن', 'Chronic') + ': ' + esc(m.chronic) + '</div>' : '') +
+        '</div>'
+      : '';
+
+    var medSummary = '<div class="panel" style="margin-bottom:12px"><div class="panel-h"><h3>🏥 ' +
+      L('البيانات الطبية', 'Medical info') + '</h3><button class="btn btn-ghost btn-sm no-print" onclick="fatMedicalForm(\'' + custId + '\')">✏️ ' +
+      L('تعديل', 'Edit') + '</button></div><div class="panel-b pad" style="font-size:12.5px;line-height:2">' +
+      '<b>' + L('فصيلة الدم', 'Blood') + ':</b> ' + (m.bloodType || '—') + '<br>' +
+      '<b>' + L('أدوية حالية', 'Current meds') + ':</b> ' + (esc(m.meds) || '—') + '<br>' +
+      '<b>' + L('جهة الطوارئ', 'Emergency') + ':</b> ' + (esc(m.emName) || '—') + (m.emPhone ? ' (' + esc(m.emPhone) + ')' : '') + '<br>' +
+      (m.notes ? '<b>' + L('ملاحظات', 'Notes') + ':</b> ' + esc(m.notes) : '') +
+      '</div></div>';
+
+    var visitsHtml = visits.length
+      ? visits.map(function (v) {
+          return '<div style="padding:11px 0;border-bottom:1px solid var(--line)">' +
+            '<div style="display:flex;justify-content:space-between;align-items:start">' +
+            '<b style="font-size:13px">' + esc(v.date) + '</b>' +
+            '<div class="no-print"><button class="iconbtn" onclick="fatVisitForm(\'' + custId + '\',\'' + v.id + '\')">✏️</button>' +
+            '<button class="iconbtn del" onclick="fatVisitDelete(\'' + custId + '\',\'' + v.id + '\')">🗑️</button></div></div>' +
+            (v.complaint ? '<div style="font-size:12.5px;margin-top:4px"><b>' + L('الشكوى', 'Complaint') + ':</b> ' + esc(v.complaint) + '</div>' : '') +
+            (v.diagnosis ? '<div style="font-size:12.5px"><b>' + L('التشخيص', 'Diagnosis') + ':</b> ' + esc(v.diagnosis) + '</div>' : '') +
+            (v.procedure ? '<div style="font-size:12.5px"><b>' + L('الإجراء', 'Procedure') + ':</b> ' + esc(v.procedure) + '</div>' : '') +
+            (v.notes ? '<div style="font-size:12px;color:var(--muted);margin-top:3px">' + esc(v.notes) + '</div>' : '') +
+            (v.nextVisit ? '<div style="font-size:11.5px;color:var(--primary);margin-top:3px">📅 ' + L('الزيارة الجاية', 'Next') + ': ' + esc(v.nextVisit) + '</div>' : '') +
+            '</div>';
+        }).join('')
+      : '<div class="empty"><span class="big">📝</span>' + L('مفيش زيارات مسجّلة لسه', 'No visits recorded yet') + '</div>';
+
+    openModal('<div class="modal-h"><h3>🏥 ' + esc(c.name) + (c.phone ? ' · ' + esc(c.phone) : '') +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      alertBox + medSummary +
+      '<div class="panel"><div class="panel-h"><h3>📝 ' + L('سجل الزيارات', 'Visit log') + '</h3>' +
+      '<button class="btn btn-primary btn-sm no-print" onclick="fatVisitForm(\'' + custId + '\')">+ ' + L('زيارة', 'Visit') + '</button></div>' +
+      '<div class="panel-b">' + visitsHtml + '</div></div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-ghost" onclick="window.print()">🖨️ ' + L('طباعة', 'Print') + '</button>' +
+      '<button class="btn btn-primary" onclick="closeModal()">' + L('إغلاق', 'Close') + '</button></div>', true);
+  };
+
+  /* ═══════════ ٦) شاشة المرضى المخصّصة ═══════════ */
+
+  try {
+    PG.patients = [
+      ['المرضى', 'ملفات المرضى وسجل الزيارات'],
+      ['Patients', 'Patient files and visit logs']
+    ];
+    var _cvPt = window.canView;
+    window.canView = function (v) {
+      if (v === 'patients') return _cvPt('customers');
+      return _cvPt(v);
+    };
+  } catch (e) {}
+
+  window.fatPatientSearch = function () {
+    window._patQuery = (document.getElementById('pat_q') || {}).value || '';
+    views.patients();
+  };
+
+  views.patients = function () {
+    var patients = window.fatPatients();
+    var q = (window._patQuery || '').trim().toLowerCase();
+    if (q) {
+      patients = patients.filter(function (c) {
+        return (c.name || '').toLowerCase().indexOf(q) > -1 || (c.phone || '').indexOf(q) > -1;
+      });
+    }
+
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-primary btn-sm" onclick="partyForm(\'customer\')">+ ' + L('مريض جديد', 'New patient') + '</button>';
+
+    var alertCount = window.fatPatients().filter(function (c) { return window.fatHasAlerts(c); }).length;
+
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">🏥</div><div class="lbl">' + L('إجمالي المرضى', 'Total patients') +
+      '</div><div class="val">' + window.fatPatients().length + '</div></div>' +
+      (alertCount
+        ? '<div class="card"><div class="ic-bg">⚠️</div><div class="lbl">' + L('عندهم حساسية/مزمن', 'Have allergies/chronic') +
+          '</div><div class="val" style="color:var(--danger)">' + alertCount + '</div></div>'
+        : '') + '</div>';
+
+    var search = '<div class="field no-print" style="margin:12px 0"><input id="pat_q" placeholder="🔍 ' +
+      L('دوّر بالاسم أو الموبايل', 'Search by name or phone') + '" value="' + esc(q) + '" oninput="fatPatientSearch()"></div>';
+
+    var table = patients.length
+      ? '<table><thead><tr><th>' + L('الاسم', 'Name') + '</th><th>' + L('الموبايل', 'Phone') + '</th>' +
+        '<th>' + L('آخر زيارة', 'Last visit') + '</th><th>' + L('تنبيهات', 'Alerts') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+        patients.map(function (c) {
+          var visits = window.fatVisitsOf(c).slice().sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
+          var last = visits[0];
+          var alerts = window.fatHasAlerts(c);
+          return '<tr>' +
+            '<td><b>' + esc(c.name) + '</b></td>' +
+            '<td>' + esc(c.phone || '—') + '</td>' +
+            '<td style="font-size:11.5px">' + (last ? esc(last.date) + '<div style="color:var(--muted)">' + esc(last.complaint || '') + '</div>' : '—') + '</td>' +
+            '<td>' + (alerts ? '<span class="badge danger">⚠️ ' + L('انتبه', 'Alert') + '</span>' : '—') + '</td>' +
+            '<td class="no-print"><button class="btn btn-primary btn-sm" onclick="fatPatientProfile(\'' + c.id + '\')">📋 ' +
+            L('الملف', 'File') + '</button> ' +
+            (c.phone ? '<button class="iconbtn" title="واتساب" onclick="waCustomer(\'' + c.id + '\')" style="color:#25D366">📱</button>' : '') +
+            '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty"><span class="big">🏥</span>' +
+        (q ? L('مفيش نتايج', 'No results') : L('مفيش مرضى مسجّلين لسه', 'No patients registered yet')) + '</div>';
+
+    document.getElementById('content').innerHTML = cards + search +
+      '<div class="panel"><div class="panel-b">' + table + '</div></div>' +
+      '<div class="hint" style="margin-top:12px">💡 ' +
+      L('عشان عميل يظهر هنا، افتحه من شاشة العملاء وفعّل «ده مريض» — أو دوس + مريض جديد فوق.',
+        'To appear here, open a customer and enable "This is a patient" — or press + New patient above.') +
+      '</div>';
+  };
+
+  /* ═══════════ ٧) القائمة ═══════════ */
+  function injectPatientNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="patients"]')) return;
+      if (typeof canView === 'function' && !canView('patients')) return;
+      var anchor = nav.querySelector('a[data-view="customers"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'patients');
+      a.innerHTML = '<span class="ic">🏥</span> ' + L('المرضى', 'Patients');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('patients'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        injectPatientNav();
+        return r;
+      };
+    }
+    setTimeout(injectPatientNav, 4400);
+    setTimeout(injectPatientNav, 7200);
+  })();
+
+})();
+
+
+/* ============================================================
+   FATORTY v10.1 — حجز المواعيد
+
+   كيان منفصل عن نظام حجوزات المطاعم (partySize/table) لأن عيادة
+   محتاجة: وقت + مدة + دكتور + مريض — مش "عدد أفراد على ترابيزة".
+   ============================================================ */
+(function () {
+  'use strict';
+
+  window.fatAppts = function () {
+    try { db.appointments = db.appointments || []; return db.appointments; } catch (e) { return []; }
+  };
+
+  window.fatApptsForDate = function (date) {
+    return window.fatAppts().filter(function (a) { return a.date === date; })
+      .sort(function (a, b) { return String(a.time || '').localeCompare(String(b.time || '')); });
+  };
+
+  window.fatApptsUpcoming = function (patientId) {
+    var today0 = today();
+    return window.fatAppts().filter(function (a) {
+      return a.patientId === patientId && a.date >= today0 && a.status !== 'cancelled' && a.status !== 'done';
+    }).sort(function (a, b) { return (a.date + a.time).localeCompare(b.date + b.time); });
+  };
+
+  /* ═══════════ حجز/تعديل ميعاد ═══════════ */
+
+  window.fatApptForm = function (id, presetDate) {
+    var a = id ? window.fatAppts().filter(function (x) { return x.id === id; })[0] : null;
+    a = a || { patientId: '', date: presetDate || window._apptDate || today(), time: '10:00', duration: 30, doctor: '', reason: '', notes: '', status: 'scheduled' };
+    var patients = window.fatPatients ? window.fatPatients() : (db.customers || []);
+    openModal('<div class="modal-h"><h3>📅 ' + (id ? L('تعديل ميعاد', 'Edit appointment') : L('حجز ميعاد', 'Book appointment')) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('المريض', 'Patient') + '</label>' +
+      '<select id="ap_patient">' +
+      '<option value="">' + L('— اختار —', '— Select —') + '</option>' +
+      patients.map(function (c) { return '<option value="' + c.id + '"' + (a.patientId === c.id ? ' selected' : '') + '>' + esc(c.name) + (c.phone ? ' — ' + esc(c.phone) : '') + '</option>'; }).join('') +
+      '</select></div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('التاريخ', 'Date') + '</label>' +
+      '<input id="ap_date" type="date" value="' + esc(a.date) + '"></div>' +
+      '<div class="field"><label>' + L('الوقت', 'Time') + '</label>' +
+      '<input id="ap_time" type="time" value="' + esc(a.time) + '"></div></div>' +
+      '<div class="grid2">' +
+      '<div class="field"><label>' + L('المدة (دقيقة)', 'Duration (min)') + '</label>' +
+      '<input id="ap_duration" type="number" min="5" step="5" value="' + (+a.duration || 30) + '"></div>' +
+      '<div class="field"><label>' + L('الدكتور', 'Doctor') + '</label>' +
+      '<input id="ap_doctor" value="' + esc(a.doctor || '') + '" placeholder="' + L('اختياري لو دكتور واحد', 'optional if single doctor') + '"></div></div>' +
+      '<div class="field"><label>' + L('سبب الزيارة', 'Reason') + '</label>' +
+      '<input id="ap_reason" value="' + esc(a.reason || '') + '" placeholder="' + L('مثال: كشف، متابعة حشو', 'e.g. Checkup, filling follow-up') + '"></div>' +
+      '<div class="field"><label>' + L('ملاحظات', 'Notes') + '</label>' +
+      '<textarea id="ap_notes" rows="2">' + esc(a.notes || '') + '</textarea></div>' +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatApptSave(' + (id ? "'" + id + "'" : 'null') + ')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatApptSave = function (id) {
+    var g = function (i) { var e = document.getElementById(i); return e ? e.value : ''; };
+    var patientId = g('ap_patient');
+    if (!patientId) return toast(L('اختار المريض', 'Select a patient'), 'err');
+    var date = g('ap_date'), time = g('ap_time');
+    if (!date || !time) return toast(L('اختار التاريخ والوقت', 'Pick date and time'), 'err');
+    var c = findCustomer(patientId);
+
+    var rec = {
+      patientId: patientId, patientName: c ? c.name : '', patientPhone: c ? c.phone : '',
+      date: date, time: time, duration: +g('ap_duration') || 30, doctor: g('ap_doctor').trim(),
+      reason: g('ap_reason').trim(), notes: g('ap_notes').trim()
+    };
+
+    var list = window.fatAppts();
+    if (id) {
+      var a = list.filter(function (x) { return x.id === id; })[0];
+      if (a) Object.assign(a, rec);
+    } else {
+      rec.id = (typeof uid === 'function' ? uid() : String(Date.now()));
+      rec.status = 'scheduled';
+      rec.createdAt = new Date().toISOString();
+      list.push(rec);
+    }
+    try { logAudit(id ? L('تعديل ميعاد', 'Edit appointment') : L('حجز ميعاد', 'Book appointment'), rec.patientName + ' — ' + date + ' ' + time); } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظ الميعاد', 'Appointment saved'));
+    try { views.appointments(); } catch (e) {}
+  };
+
+  window.fatApptStatus = function (id, status) {
+    var a = window.fatAppts().filter(function (x) { return x.id === id; })[0];
+    if (!a) return;
+    a.status = status;
+    save();
+    try { logAudit(L('حالة ميعاد', 'Appointment status'), a.patientName + ' — ' + status); } catch (e) {}
+    toast('✅ ' + L('اتحدّثت الحالة', 'Status updated'));
+    try { views.appointments(); } catch (e) {}
+  };
+
+  window.fatApptDelete = function (id) {
+    Promise.resolve(confirmBox(L('تمسح الميعاد ده؟', 'Delete this appointment?'), { danger: true }))
+      .then(function (okv) {
+        if (!okv) return;
+        db.appointments = window.fatAppts().filter(function (x) { return x.id !== id; });
+        save();
+        toast(L('اتمسح', 'Deleted'));
+        try { views.appointments(); } catch (e) {}
+      });
+  };
+
+  window.fatApptRemind = function (id) {
+    var a = window.fatAppts().filter(function (x) { return x.id === id; })[0];
+    if (!a || !a.patientPhone) return toast(L('المريض مالوش رقم موبايل', 'No phone number'), 'err');
+    var shop = '';
+    try { shop = (db.settings && db.settings.company) || ''; } catch (e) {}
+    var msg = L('تذكير بميعادك', 'Appointment reminder') + '\n' +
+      a.patientName + '\n' + L('التاريخ', 'Date') + ': ' + a.date + ' — ' + a.time + '\n' +
+      (a.reason ? L('السبب', 'Reason') + ': ' + a.reason + '\n' : '') +
+      (shop ? shop : '');
+    var num = String(a.patientPhone).replace(/\D/g, '');
+    if (num.charAt(0) === '0') num = '2' + num;
+    try {
+      if (typeof fatWaSend === 'function') return fatWaSend(num, msg);
+      window.open('https://wa.me/' + num + '?text=' + encodeURIComponent(msg), '_blank');
+    } catch (e) {}
+  };
+
+  /* ═══════════ الشاشة (عرض يوم بيوم) ═══════════ */
+
+  try {
+    PG.appointments = [
+      ['المواعيد', 'حجز ومتابعة مواعيد المرضى'],
+      ['Appointments', 'Book and track patient appointments']
+    ];
+    var _cvAp = window.canView;
+    window.canView = function (v) {
+      if (v === 'appointments') return _cvAp('customers');
+      return _cvAp(v);
+    };
+  } catch (e) {}
+
+  window.fatApptDateShift = function (delta) {
+    var d = new Date((window._apptDate || today()) + 'T12:00:00');
+    d.setDate(d.getDate() + delta);
+    window._apptDate = d.toISOString().slice(0, 10);
+    views.appointments();
+  };
+  window.fatApptDateSet = function () {
+    window._apptDate = (document.getElementById('ap_date_nav') || {}).value || today();
+    views.appointments();
+  };
+  window.fatApptToday = function () { window._apptDate = today(); views.appointments(); };
+
+  var STATUS_LABEL = {
+    scheduled: ['محجوز', 'Scheduled', ''],
+    confirmed: ['مؤكّد', 'Confirmed', 'ok'],
+    done: ['تم', 'Done', 'ok'],
+    cancelled: ['ملغي', 'Cancelled', 'danger'],
+    noshow: ['لم يحضر', 'No-show', 'warn']
+  };
+
+  views.appointments = function () {
+    var date = window._apptDate || today();
+    window._apptDate = date;
+    var list = window.fatApptsForDate(date);
+
+    document.getElementById('topActions').innerHTML =
+      '<button class="btn btn-primary btn-sm" onclick="fatApptForm(null,\'' + date + '\')">+ ' + L('ميعاد جديد', 'New appointment') + '</button>';
+
+    var isToday = date === today();
+    var nav = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px" class="no-print">' +
+      '<button class="btn btn-ghost btn-sm" onclick="fatApptDateShift(-1)">◀</button>' +
+      '<input id="ap_date_nav" type="date" value="' + esc(date) + '" onchange="fatApptDateSet()" style="width:160px">' +
+      '<button class="btn btn-ghost btn-sm" onclick="fatApptDateShift(1)">▶</button>' +
+      (!isToday ? '<button class="btn btn-ghost btn-sm" onclick="fatApptToday()">' + L('النهاردة', 'Today') + '</button>' : '') +
+      '</div>';
+
+    var confirmedCount = list.filter(function (a) { return a.status === 'confirmed' || a.status === 'done'; }).length;
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">📅</div><div class="lbl">' + L('مواعيد اليوم', "Today's appointments") +
+      '</div><div class="val">' + list.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">✅</div><div class="lbl">' + L('مؤكّدة/تمت', 'Confirmed/done') +
+      '</div><div class="val" style="color:var(--ok)">' + confirmedCount + '</div></div>' +
+      '</div>';
+
+    var table = list.length
+      ? '<div class="panel"><div class="panel-b">' +
+        list.map(function (a) {
+          var st = STATUS_LABEL[a.status] || STATUS_LABEL.scheduled;
+          return '<div style="padding:11px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:start;gap:8px;flex-wrap:wrap">' +
+            '<div><b style="font-size:14px">' + esc(a.time) + '</b> — <b>' + esc(a.patientName) + '</b>' +
+            (a.doctor ? ' <span style="font-size:11px;color:var(--muted)">(' + esc(a.doctor) + ')</span>' : '') +
+            '<div style="font-size:12px;color:var(--muted);margin-top:2px">' +
+            (a.reason ? esc(a.reason) : '') + (a.duration ? ' · ' + a.duration + L(' دقيقة', ' min') : '') + '</div>' +
+            '<span class="badge ' + (st[2] || '') + '" style="margin-top:4px;display:inline-block">' + L(st[0], st[1]) + '</span></div>' +
+            '<div class="no-print" style="display:flex;gap:4px;flex-wrap:wrap">' +
+            (a.status !== 'done' && a.status !== 'cancelled'
+              ? '<button class="btn btn-ghost btn-sm" onclick="fatApptStatus(\'' + a.id + '\',\'confirmed\')">✅ ' + L('تأكيد', 'Confirm') + '</button>' +
+                '<button class="btn btn-ghost btn-sm" onclick="fatApptStatus(\'' + a.id + '\',\'done\')">' + L('تم', 'Done') + '</button>' +
+                '<button class="btn btn-ghost btn-sm" onclick="fatApptStatus(\'' + a.id + '\',\'noshow\')">' + L('لم يحضر', 'No-show') + '</button>'
+              : '') +
+            (a.patientPhone ? '<button class="iconbtn" title="واتساب" onclick="fatApptRemind(\'' + a.id + '\')">📱</button>' : '') +
+            '<button class="iconbtn" onclick="fatApptForm(\'' + a.id + '\')">✏️</button>' +
+            '<button class="iconbtn del" onclick="fatApptDelete(\'' + a.id + '\')">🗑️</button>' +
+            '</div></div>';
+        }).join('') + '</div></div>'
+      : '<div class="empty"><span class="big">📅</span>' + L('مفيش مواعيد في اليوم ده', 'No appointments this day') + '</div>';
+
+    document.getElementById('content').innerHTML = nav + cards + table;
+  };
+
+  /* ═══════════ تنبيه مواعيد النهاردة في الجرس ═══════════ */
+  (function () {
+    var _ga = window.getAlerts;
+    if (typeof _ga !== 'function') return;
+    window.getAlerts = function () {
+      var list = [];
+      try { list = _ga.apply(this, arguments) || []; } catch (e) { list = []; }
+      try {
+        var todays = window.fatApptsForDate(today()).filter(function (a) { return a.status !== 'cancelled' && a.status !== 'done'; });
+        if (todays.length) {
+          list.push({ type: 'other', msg: '📅 ' + todays.length + ' ' + L('ميعاد النهاردة', "appointments today"), action: "go('appointments')" });
+        }
+      } catch (e) {}
+      return list;
+    };
+  })();
+
+  /* ═══════════ القائمة ═══════════ */
+  function injectApptNav() {
+    try {
+      var nav = document.getElementById('nav');
+      if (!nav || nav.querySelector('a[data-view="appointments"]')) return;
+      if (typeof canView === 'function' && !canView('appointments')) return;
+      var anchor = nav.querySelector('a[data-view="patients"]') || nav.querySelector('a[data-view="customers"]');
+      if (!anchor) return;
+      var a = document.createElement('a');
+      a.setAttribute('data-view', 'appointments');
+      a.innerHTML = '<span class="ic">📅</span> ' + L('المواعيد', 'Appointments');
+      a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('appointments'); };
+      anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        injectApptNav();
+        return r;
+      };
+    }
+    setTimeout(injectApptNav, 4600);
+    setTimeout(injectApptNav, 7400);
+  })();
+
+  // تسجيل للمزامنة السحابية (نفس نمط v9.22)
+  try {
+    if (typeof V2_KINDS !== 'undefined' && V2_KINDS.indexOf('appointments') < 0) V2_KINDS.push('appointments');
+  } catch (e) {}
+
+})();
+
+
+/* ============================================================
+   FATORTY v10.2 — خطة العلاج متعددة الجلسات
+
+   مثال: حشو عصب = ٣ جلسات. الدكتور محتاج يتابع مين خلّص جلسته
+   ومين لسه، من غير ما يفتكر من دماغه.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  window.fatPlansOf = function (c) {
+    c.treatmentPlans = c.treatmentPlans || [];
+    return c.treatmentPlans;
+  };
+
+  window.fatPlanProgress = function (p) {
+    var total = (p.sessions || []).length;
+    var done = (p.sessions || []).filter(function (s) { return s.status === 'done'; }).length;
+    return { total: total, done: done, pct: total ? Math.round(done / total * 100) : 0 };
+  };
+
+  /* ═══════════ إنشاء/تعديل خطة ═══════════ */
+
+  window.fatPlanForm = function (custId, planId) {
+    var c = findCustomer(custId);
+    if (!c) return;
+    var p = planId ? window.fatPlansOf(c).filter(function (x) { return x.id === planId; })[0] : null;
+    p = p || { title: '', sessionsCount: 3 };
+    openModal('<div class="modal-h"><h3>🗂️ ' + (planId ? L('تعديل خطة علاج', 'Edit treatment plan') : L('خطة علاج جديدة', 'New treatment plan')) +
+      '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('اسم الخطة', 'Plan title') + '</label>' +
+      '<input id="tp_title" value="' + esc(p.title || '') + '" placeholder="' + L('مثال: علاج عصب الضرس السفلي', 'e.g. Lower molar root canal') + '"></div>' +
+      (planId ? ''
+        : '<div class="field"><label>' + L('عدد الجلسات', 'Number of sessions') + '</label>' +
+          '<input id="tp_count" type="number" min="1" max="20" value="' + (+p.sessionsCount || 3) + '"></div>') +
+      '</div><div class="modal-f">' +
+      '<button class="btn btn-primary" onclick="fatPlanSave(\'' + custId + '\'' + (planId ? ",'" + planId + "'" : '') + ')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+
+  window.fatPlanSave = function (custId, planId) {
+    var c = findCustomer(custId);
+    if (!c) return;
+    var title = String((document.getElementById('tp_title') || {}).value || '').trim();
+    if (!title) return toast(L('اكتب اسم الخطة', 'Enter a plan title'), 'err');
+
+    var plans = window.fatPlansOf(c);
+    if (planId) {
+      var p = plans.filter(function (x) { return x.id === planId; })[0];
+      if (p) p.title = title;
+    } else {
+      var count = Math.max(1, Math.min(20, +((document.getElementById('tp_count') || {}).value) || 3));
+      var sessions = [];
+      for (var i = 1; i <= count; i++) {
+        sessions.push({ id: (typeof uid === 'function' ? uid() : String(Date.now()) + i), no: i, title: L('الجلسة', 'Session') + ' ' + i, status: 'pending' });
+      }
+      plans.push({ id: (typeof uid === 'function' ? uid() : String(Date.now())), title: title, sessions: sessions, status: 'active', createdAt: today() });
+    }
+    try { logAudit(planId ? L('تعديل خطة علاج', 'Edit treatment plan') : L('خطة علاج جديدة', 'New treatment plan'), c.name + ' — ' + title); } catch (e) {}
+    save(); closeModal();
+    toast('✅ ' + L('اتحفظت الخطة', 'Plan saved'));
+    try { window.fatPatientProfile(custId); } catch (e) {}
+  };
+
+  window.fatSessionToggle = function (custId, planId, sessionId) {
+    var c = findCustomer(custId);
+    if (!c) return;
+    var p = window.fatPlansOf(c).filter(function (x) { return x.id === planId; })[0];
+    if (!p) return;
+    var s = (p.sessions || []).filter(function (x) { return x.id === sessionId; })[0];
+    if (!s) return;
+    if (s.status === 'done') { s.status = 'pending'; delete s.completedDate; }
+    else { s.status = 'done'; s.completedDate = today(); }
+
+    var prog = window.fatPlanProgress(p);
+    p.status = (prog.done === prog.total && prog.total > 0) ? 'completed' : 'active';
+
+    save();
+    try { logAudit(L('تحديث جلسة', 'Session update'), c.name + ' — ' + s.title + ' — ' + s.status); } catch (e) {}
+    try { window.fatPatientProfile(custId); } catch (e) {}
+  };
+
+  window.fatPlanDelete = function (custId, planId) {
+    var c = findCustomer(custId);
+    if (!c) return;
+    Promise.resolve(confirmBox(L('تمسح خطة العلاج دي؟', 'Delete this treatment plan?'), { danger: true }))
+      .then(function (okv) {
+        if (!okv) return;
+        c.treatmentPlans = window.fatPlansOf(c).filter(function (x) { return x.id !== planId; });
+        save();
+        toast(L('اتمسحت', 'Deleted'));
+        try { window.fatPatientProfile(custId); } catch (e) {}
+      });
+  };
+
+  /* ═══════════ عرضها جوه ملف المريض ═══════════ */
+
+  (function () {
+    var _pp = window.fatPatientProfile;
+    if (typeof _pp !== 'function' || window._fatPlanProfileWrapped) return;
+    window._fatPlanProfileWrapped = true;
+    window.fatPatientProfile = function (custId) {
+      var r = _pp.apply(this, arguments);
+      try {
+        var c = findCustomer(custId);
+        if (!c) return r;
+        var plans = window.fatPlansOf(c);
+        var modalEl = document.getElementById('modal');
+        var modalBody = modalEl ? modalEl.querySelector('.modal-b') : null;
+        if (!modalBody || document.getElementById('fatPlansBox')) return r;
+
+        var html = '<div class="panel" id="fatPlansBox" style="margin-bottom:12px"><div class="panel-h"><h3>🗂️ ' +
+          L('خطط العلاج', 'Treatment plans') + '</h3><button class="btn btn-primary btn-sm no-print" onclick="fatPlanForm(\'' +
+          custId + '\')">+ ' + L('خطة', 'Plan') + '</button></div><div class="panel-b">' +
+          (plans.length
+            ? plans.map(function (p) {
+                var prog = window.fatPlanProgress(p);
+                return '<div style="padding:10px 0;border-bottom:1px solid var(--line)">' +
+                  '<div style="display:flex;justify-content:space-between;align-items:center">' +
+                  '<b style="font-size:13px">' + esc(p.title) + '</b>' +
+                  '<span class="badge ' + (p.status === 'completed' ? 'ok' : '') + '">' +
+                  (p.status === 'completed' ? L('اكتملت', 'Completed') : prog.done + '/' + prog.total) + '</span></div>' +
+                  '<div style="height:7px;background:var(--line);border-radius:4px;overflow:hidden;margin:6px 0 8px">' +
+                  '<div style="height:100%;width:' + prog.pct + '%;background:var(--ok)"></div></div>' +
+                  '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+                  (p.sessions || []).map(function (s) {
+                    var done = s.status === 'done';
+                    return '<label class="no-print" style="display:flex;align-items:center;gap:4px;font-size:11.5px;' +
+                      'background:' + (done ? 'rgba(46,158,107,.1)' : 'var(--card2)') + ';padding:5px 8px;border-radius:8px;cursor:pointer">' +
+                      '<input type="checkbox"' + (done ? ' checked' : '') + ' onchange="fatSessionToggle(\'' + custId + '\',\'' + p.id + '\',\'' + s.id + '\')">' +
+                      esc(s.title) + '</label>';
+                  }).join('') + '</div>' +
+                  '<button class="iconbtn del no-print" style="margin-top:4px" onclick="fatPlanDelete(\'' + custId + '\',\'' + p.id + '\')">🗑️ ' +
+                  L('حذف الخطة', 'Delete plan') + '</button>' +
+                  '</div>';
+              }).join('')
+            : '<div class="hint">' + L('مفيش خطط علاج لسه — دوس + خطة', 'No treatment plans yet') + '</div>') +
+          '</div></div>';
+
+        // نلاقي بانل "البيانات الطبية" (بيتحط دايمًا فوق) وندخل خطط العلاج بعده مباشرة —
+        // كده التحذير الطبي (لو موجود) يفضل أول حاجة، وبعده الملف الطبي، وبعده الخطط
+        var mkNode = document.createElement('div');
+        mkNode.innerHTML = html;
+        var plansNode = mkNode.firstElementChild;
+
+        var panels = modalBody.querySelectorAll('.panel');
+        var medPanel = null;
+        for (var i = 0; i < panels.length; i++) {
+          if (/البيانات الطبية|Medical info/.test(panels[i].textContent)) { medPanel = panels[i]; break; }
+        }
+        if (medPanel && medPanel.parentNode) medPanel.parentNode.insertBefore(plansNode, medPanel.nextSibling);
+        else modalBody.insertBefore(plansNode, modalBody.firstElementChild);
+      } catch (e) {}
+      return r;
+    };
+  })();
+
+})();
+
 </script>
 </body>
 </html>
