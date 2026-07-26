@@ -1,0 +1,30 @@
+const fs=require('fs');const {JSDOM,VirtualConsole}=require('jsdom');
+const file=process.argv[2]||'index.html';const html=fs.readFileSync(file,'utf8');const vc=new VirtualConsole();const errs=[];vc.on('jsdomError',e=>errs.push(String(e.message||e)));
+const dom=new JSDOM(html,{runScripts:'dangerously',pretendToBeVisual:true,url:'https://x.vercel.app/',virtualConsole:vc,beforeParse(w){
+ w.fetch=()=>Promise.resolve({ok:true,json:()=>Promise.resolve({}),text:()=>Promise.resolve('')});
+ w.matchMedia=()=>({matches:false,addEventListener(){},removeEventListener(){},addListener(){},removeListener(){}});
+ w.scrollTo=()=>{};w.print=()=>{};w.open=()=>({document:{write(){},close(){}},print(){},close(){}});
+ w.navigator.serviceWorker={register:()=>Promise.resolve({addEventListener(){},update(){}}),addEventListener(){},controller:null,ready:Promise.resolve({})};
+ w.indexedDB={open:()=>({addEventListener(){}})};
+ w.AudioContext=function(){return{state:'running',resume(){},createOscillator:()=>({connect(){},start(){},stop(){},frequency:{},type:''}),createGain:()=>({connect(){},gain:{setValueAtTime(){},exponentialRampToValueAtTime(){}}}),destination:{},currentTime:0};};
+ w.supabase={createClient:()=>({auth:{getSession:()=>Promise.resolve({data:{session:null}}),onAuthStateChange:()=>({data:{subscription:{unsubscribe(){}}}})},from:()=>({select:()=>({eq:()=>({range:()=>Promise.resolve({data:[],error:null})})})}),rpc:()=>Promise.resolve({data:[],error:null})})};
+}});
+const w=dom.window;const ev=e=>{try{return w.eval(e);}catch(x){return 'ERR:'+x.message;}};
+let pass=0,fail=0;const ok=(n,c,ex)=>{c?(pass++,console.log('  ✅ '+n)):(fail++,console.log('  ❌ '+n+(ex?' '+ex:'')));};
+setTimeout(()=>{
+ ok('نضيف من غير أخطاء', errs.length===0, errs.slice(0,2).join(' | '));
+ ok('fatCashierStats موجودة', typeof w.fatCashierStats==='function');
+ ok('views.cashierperf', ev("typeof views.cashierperf==='function'")===true);
+ ev("db.sales=[{id:'a',date:today(),total:1000,cashier:'أحمد',items:[{qty:3}]},{id:'b',date:today(),total:500,cashier:'أحمد',items:[{qty:1}]},{id:'c',date:today(),total:2000,cashier:'سارة',items:[{qty:5}]}];");
+ var st=ev("JSON.stringify(fatCashierStats('all'))");
+ ok('بيجمّع حسب الكاشير', st.indexOf('أحمد')>-1 && st.indexOf('سارة')>-1);
+ ok('سارة الأعلى إيراد (مرتّب)', ev("fatCashierStats('all')[0].name")==='سارة', ev("fatCashierStats('all')[0].name"));
+ ok('أحمد: فاتورتين + إيراد 1500', ev("(function(){var a=fatCashierStats('all').find(x=>x.name==='أحمد');return a.count===2 && a.revenue===1500;})()")===true);
+ ok('متوسط فاتورة أحمد = 750', ev("fatCashierStats('all').find(x=>x.name==='أحمد').avg")===750);
+ let err=ev("(function(){try{views.cashierperf();return '';}catch(e){return e.message;}})()");
+ ok('الشاشة بترسم', err==='', err);
+ ok('بتعرض الكاشير والإيراد', (w.document.getElementById('content')||{}).innerHTML.indexOf('سارة')>-1);
+ const inline=(html.match(/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/gi)||[]).length;
+ ok('بلوكين سكربت', inline===2);
+ console.log('النتيجة: '+pass+' نجحت · '+fail+' فشلت');dom.window.close();process.exit(fail?1:0);
+},2500);

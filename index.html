@@ -5877,7 +5877,7 @@ function showAbout(){openModal('<div class="modal-h"><h3>ℹ️ '+L('عن فات
     '<h2 style="margin:0 0 4px;color:var(--primary-d)">فاتورتي</h2>'+
     '<div style="font-size:13px;color:var(--muted);margin-bottom:18px">'+L('نظام كاشير وإدارة أعمال متكامل','Complete POS & Business Management')+'</div>'+
     '<div style="background:var(--bg);border-radius:12px;padding:14px;text-align:right;font-size:13px;line-height:2">'+
-      '<div><b>'+L('الإصدار','Version')+':</b> 10.39 Enterprise</div>'+
+      '<div><b>'+L('الإصدار','Version')+':</b> 10.53 Enterprise</div>'+
       '<div><b>'+L('وحدة العيادات','Clinic module')+':</b> '+L('لوحة العيادة · المواعيد · التذكيرات · خطة العلاج · تسعير الجلسات · حسابات · تقارير · مخطط الأسنان (دائمة+لبنية) · الأشعة · الروشتة · المتابعة · تصدير PDF · صلاحيات','Clinic board · Appointments · Reminders · Treatment plans · Session pricing · Billing · Reports · Dental chart (adult+primary) · X-rays · Prescriptions · Recall · PDF export · Roles')+'</div>'+
       '<div><b>'+L('نوع النشاط','Business')+':</b> '+esc(db.settings.company||L('غير محدد','Not set'))+'</div>'+
       '<div><b>'+L('البيانات منذ','Data since')+':</b> '+(db.sales.length?[...db.sales].sort((a,b)=>a.date<b.date?-1:1)[0].date:L('لا توجد فواتير','No invoices'))+'</div>'+
@@ -32516,6 +32516,1403 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     wrapped._fatCalcWrapped = true;
     window.fatCmdSearch = wrapped;
   })();
+})();
+
+
+
+
+/* ============================================================
+   FATORTY v10.40 — استبيان رضا العملاء (Satisfaction / NPS)
+   سجّل تقييم العميل (0–10)، واحسب مؤشّر NPS + المتوسط، وابعت
+   طلب تقييم بواتساب بضغطة. بيتخزن في db.settings.surveys.
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof views === 'undefined' || typeof db === 'undefined') return;
+
+  window.fatSurveys = function () { db.settings = db.settings || {}; db.settings.surveys = db.settings.surveys || []; return db.settings.surveys; };
+  function waNum(p) { var n = String(p || '').replace(/\D/g, ''); if (n.charAt(0) === '0') n = '2' + n; return n; }
+
+  window.fatSurveyNps = function () {
+    var s = window.fatSurveys(); if (!s.length) return { nps: 0, avg: 0, prom: 0, pass: 0, det: 0, n: 0 };
+    var prom = 0, det = 0, sum = 0;
+    s.forEach(function (x) { var v = +x.score || 0; sum += v; if (v >= 9) prom++; else if (v <= 6) det++; });
+    var n = s.length, pass = n - prom - det;
+    return { nps: Math.round((prom / n - det / n) * 100), avg: Math.round(sum / n * 10) / 10, prom: prom, pass: pass, det: det, n: n };
+  };
+
+  window.fatSurveyAdd = function (custId) {
+    var custs = (db.customers || []);
+    openModal('<div class="modal-h"><h3>⭐ ' + L('تسجيل تقييم', 'Record rating') + '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('العميل (اختياري)', 'Customer (optional)') + '</label><select id="sv_c"><option value="">' + L('— بدون —', '— none —') + '</option>' +
+      custs.map(function (c) { return '<option value="' + c.id + '"' + (custId === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field"><label>' + L('التقييم (0–10)', 'Score (0–10)') + '</label>' +
+      '<div id="sv_stars" style="display:flex;gap:3px;flex-wrap:wrap">' +
+      Array.apply(null, { length: 11 }).map(function (_, i) { return '<button type="button" class="btn btn-ghost btn-sm" data-v="' + i + '" onclick="fatSurveyPick(' + i + ')" style="width:34px">' + i + '</button>'; }).join('') + '</div>' +
+      '<input type="hidden" id="sv_score" value=""></div>' +
+      '<div class="field"><label>' + L('ملاحظة (اختياري)', 'Comment (optional)') + '</label><input id="sv_note"></div>' +
+      '</div><div class="modal-f"><button class="btn btn-primary" onclick="fatSurveySave()">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+  window.fatSurveyPick = function (v) {
+    var h = document.getElementById('sv_score'); if (h) h.value = v;
+    var box = document.getElementById('sv_stars'); if (box) Array.prototype.forEach.call(box.children, function (b) {
+      var on = +b.getAttribute('data-v') <= v; b.style.background = on ? (v >= 9 ? 'var(--ok)' : v <= 6 ? 'var(--danger)' : 'var(--gold,#b8923a)') : ''; b.style.color = on ? '#fff' : '';
+    });
+  };
+  window.fatSurveySave = function () {
+    var sc = (document.getElementById('sv_score') || {}).value;
+    if (sc === '' || sc == null) return toast(L('اختار تقييم', 'Pick a score'), 'err');
+    var cid = (document.getElementById('sv_c') || {}).value || '';
+    var c = cid ? findCustomer(cid) : null;
+    window.fatSurveys().push({ id: uid(), custId: cid, custName: c ? c.name : '', score: +sc, comment: ((document.getElementById('sv_note') || {}).value || '').trim(), date: today() });
+    try { logAudit(L('تقييم رضا', 'Satisfaction'), (c ? c.name : '') + ' — ' + sc); } catch (e) {}
+    save(); closeModal(); toast('✅ ' + L('اتسجّل', 'Saved')); views.satisfaction();
+  };
+  window.fatSurveyDelete = function (id) { db.settings.surveys = window.fatSurveys().filter(function (x) { return x.id !== id; }); save(); views.satisfaction(); };
+  window.fatSurveyRequest = function (custId) {
+    var c = findCustomer(custId); if (!c || !c.phone) return toast(L('مفيش رقم', 'No phone'), 'err');
+    var shop = ''; try { shop = (db.settings && db.settings.company) || ''; } catch (e) {}
+    var msg = L('قيّم تجربتك معانا من 0 لـ 10 🙏', 'Rate your experience 0–10 🙏') + (shop ? '\n' + shop : '');
+    try { if (typeof fatWaSend === 'function') fatWaSend(waNum(c.phone), msg); else window.open('https://wa.me/' + waNum(c.phone) + '?text=' + encodeURIComponent(msg), '_blank'); } catch (e) {}
+  };
+
+  try {
+    PG.satisfaction = [['رضا العملاء', 'استبيان ومؤشّر NPS'], ['Satisfaction', 'NPS & ratings']];
+    var _cv = window.canView; window.canView = function (v) { if (v === 'satisfaction') return _cv('customers'); return _cv(v); };
+  } catch (e) {}
+
+  views.satisfaction = function () {
+    try { document.getElementById('topActions').innerHTML = '<button class="btn btn-primary btn-sm" onclick="fatSurveyAdd()">+ ' + L('تقييم', 'Rating') + '</button>'; } catch (e) {}
+    var m = window.fatSurveyNps(); var s = window.fatSurveys().slice().reverse();
+    var npsCol = m.nps >= 50 ? 'var(--ok)' : m.nps >= 0 ? 'var(--gold,#b8923a)' : 'var(--danger)';
+    var cards = '<div class="cards"><div class="card"><div class="ic-bg">📊</div><div class="lbl">NPS</div><div class="val" style="color:' + npsCol + '">' + (m.n ? m.nps : '—') + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⭐</div><div class="lbl">' + L('المتوسط', 'Average') + '</div><div class="val">' + (m.n ? m.avg : '—') + '</div></div>' +
+      '<div class="card"><div class="ic-bg">🙂</div><div class="lbl">' + L('مبسوطين / محايد / زعلان', 'Prom / Pass / Det') + '</div><div class="val" style="font-size:15px">' + m.prom + ' / ' + m.pass + ' / ' + m.det + '</div></div></div>';
+    var table = s.length
+      ? '<table><thead><tr><th>' + L('التقييم', 'Score') + '</th><th>' + L('العميل', 'Customer') + '</th><th>' + L('ملاحظة', 'Comment') + '</th><th>' + L('التاريخ', 'Date') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+        s.slice(0, 200).map(function (x) {
+          var col = x.score >= 9 ? 'var(--ok)' : x.score <= 6 ? 'var(--danger)' : 'var(--gold,#b8923a)';
+          return '<tr><td><b style="color:' + col + '">' + x.score + '</b>/10</td><td>' + esc(x.custName || '—') + '</td><td style="font-size:12px">' + esc(x.comment || '') + '</td><td style="font-size:12px">' + esc(x.date) + '</td>' +
+            '<td class="no-print"><button class="iconbtn del" onclick="fatSurveyDelete(\'' + x.id + '\')">🗑️</button></td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty"><span class="big">⭐</span>' + L('مفيش تقييمات — سجّل أو ابعت طلب تقييم', 'No ratings yet') + '</div>';
+    document.getElementById('content').innerHTML = cards + '<div class="panel"><div class="panel-b">' + table + '</div></div>' +
+      '<div class="hint" style="margin-top:8px">💡 NPS = ' + L('نسبة المبسوطين (9–10) ناقص الزعلانين (0–6). فوق 50 ممتاز.', '% promoters (9–10) minus % detractors (0–6). Above 50 is great.') + '</div>';
+  };
+
+  function injectSvNav() {
+    try { var nav = document.getElementById('nav'); if (!nav || nav.querySelector('a[data-view="satisfaction"]')) return;
+      if (typeof canView === 'function' && !canView('satisfaction')) return;
+      var anchor = nav.querySelector('a[data-view="customers"]') || nav.querySelector('a[data-view="rfm"]'); if (!anchor) return;
+      var a = document.createElement('a'); a.setAttribute('data-view', 'satisfaction'); a.innerHTML = '<span class="ic">⭐</span> ' + L('رضا العملاء', 'Satisfaction'); a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('satisfaction'); }; anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () { var _rn = window.renderNav; if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); injectSvNav(); return r; }; setTimeout(injectSvNav, 6400); setTimeout(injectSvNav, 9200); })();
+})();
+
+
+/* ============================================================
+   FATORTY v10.41 — تتبّع الضمانات (Warranty tracking)
+   سجّل ضمان لكل منتج مباع (تاريخ الشراء + المدة)، واحسب تاريخ
+   الانتهاء، ونبّه قبلها بـ30 يوم في الجرس. db.settings.warranties.
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof views === 'undefined' || typeof db === 'undefined') return;
+
+  window.fatWarranties = function () { db.settings = db.settings || {}; db.settings.warranties = db.settings.warranties || []; return db.settings.warranties; };
+  function addMonths(d, m) { try { if (typeof fatAddMonths === 'function') return fatAddMonths(d, m); var dt = new Date(d + 'T12:00:00'); dt.setMonth(dt.getMonth() + (+m || 0)); return dt.toISOString().slice(0, 10); } catch (e) { return d; } }
+  function daysTo(d) { try { return Math.round((new Date(d) - new Date(today())) / 86400000); } catch (e) { return 9999; } }
+  window.fatWarrantyExpiry = function (w) { return addMonths(w.purchaseDate, w.months); };
+
+  window.fatWarrantyAdd = function () {
+    var custs = (db.customers || []), prods = (db.products || []);
+    openModal('<div class="modal-h"><h3>🛡️ ' + L('تسجيل ضمان', 'Add warranty') + '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="field"><label>' + L('المنتج', 'Product') + '</label><input id="w_prod" list="w_prod_list"><datalist id="w_prod_list">' + prods.map(function (p) { return '<option value="' + esc(p.name) + '">'; }).join('') + '</datalist></div>' +
+      '<div class="field"><label>' + L('العميل (اختياري)', 'Customer (optional)') + '</label><select id="w_cust"><option value="">' + L('— بدون —', '— none —') + '</option>' + custs.map(function (c) { return '<option value="' + c.id + '">' + esc(c.name) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="grid2"><div class="field"><label>' + L('تاريخ الشراء', 'Purchase date') + '</label><input id="w_date" type="date" value="' + today() + '"></div>' +
+      '<div class="field"><label>' + L('مدة الضمان (شهور)', 'Months') + '</label><input id="w_months" type="number" min="1" value="12"></div></div>' +
+      '<div class="grid2"><div class="field"><label>' + L('الرقم التسلسلي (اختياري)', 'Serial (optional)') + '</label><input id="w_serial"></div>' +
+      '<div class="field"><label>' + L('ملاحظة', 'Note') + '</label><input id="w_note"></div></div>' +
+      '</div><div class="modal-f"><button class="btn btn-primary" onclick="fatWarrantySave()">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+  window.fatWarrantySave = function () {
+    var g = function (i) { return (document.getElementById(i) || {}).value || ''; };
+    var prod = g('w_prod').trim(); if (!prod) return toast(L('اكتب المنتج', 'Enter product'), 'err');
+    var cid = g('w_cust'); var c = cid ? findCustomer(cid) : null;
+    window.fatWarranties().push({ id: uid(), productName: prod, custId: cid, custName: c ? c.name : '', phone: c ? c.phone : '', purchaseDate: g('w_date') || today(), months: +g('w_months') || 12, serial: g('w_serial').trim(), note: g('w_note').trim() });
+    try { logAudit(L('ضمان', 'Warranty'), prod); } catch (e) {}
+    save(); closeModal(); toast('✅ ' + L('اتسجّل', 'Saved')); views.warranties();
+  };
+  window.fatWarrantyDelete = function (id) { db.settings.warranties = window.fatWarranties().filter(function (x) { return x.id !== id; }); save(); views.warranties(); };
+
+  try {
+    PG.warranties = [['الضمانات', 'تتبّع ضمانات المنتجات'], ['Warranties', 'Product warranty tracking']];
+    var _cv = window.canView; window.canView = function (v) { if (v === 'warranties') return _cv('products'); return _cv(v); };
+  } catch (e) {}
+
+  views.warranties = function () {
+    try { document.getElementById('topActions').innerHTML = '<button class="btn btn-primary btn-sm" onclick="fatWarrantyAdd()">+ ' + L('ضمان', 'Warranty') + '</button>'; } catch (e) {}
+    var list = window.fatWarranties().map(function (w) { var exp = window.fatWarrantyExpiry(w); return { w: w, exp: exp, days: daysTo(exp) }; }).sort(function (a, b) { return a.days - b.days; });
+    var active = list.filter(function (x) { return x.days >= 0; }), expired = list.filter(function (x) { return x.days < 0; }), soon = list.filter(function (x) { return x.days >= 0 && x.days <= 30; });
+    var cards = '<div class="cards"><div class="card"><div class="ic-bg">🛡️</div><div class="lbl">' + L('ضمانات سارية', 'Active') + '</div><div class="val" style="color:var(--ok)">' + active.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⏳</div><div class="lbl">' + L('قربت تنتهي (30 يوم)', 'Expiring ≤30d') + '</div><div class="val" style="color:#b45309">' + soon.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⌛</div><div class="lbl">' + L('منتهية', 'Expired') + '</div><div class="val" style="color:var(--muted)">' + expired.length + '</div></div></div>';
+    var table = list.length
+      ? '<table><thead><tr><th>' + L('المنتج', 'Product') + '</th><th>' + L('العميل', 'Customer') + '</th><th>' + L('الشراء', 'Purchase') + '</th><th>' + L('ينتهي', 'Expires') + '</th><th>' + L('الحالة', 'Status') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+        list.slice(0, 300).map(function (x) {
+          var badge = x.days < 0 ? '<span class="badge" style="background:#6b728022;color:#6b7280">' + L('منتهي', 'Expired') + '</span>' : x.days <= 30 ? '<span class="badge warn">' + x.days + L(' يوم', 'd') + '</span>' : '<span class="badge ok">' + L('ساري', 'Active') + '</span>';
+          return '<tr><td><b>' + esc(x.w.productName) + '</b>' + (x.w.serial ? '<div style="font-size:10px;color:var(--muted)">' + esc(x.w.serial) + '</div>' : '') + '</td>' +
+            '<td>' + esc(x.w.custName || '—') + '</td><td style="font-size:12px">' + esc(x.w.purchaseDate) + '</td><td style="font-size:12px">' + esc(x.exp) + '</td><td>' + badge + '</td>' +
+            '<td class="no-print"><button class="iconbtn del" onclick="fatWarrantyDelete(\'' + x.w.id + '\')">🗑️</button></td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty"><span class="big">🛡️</span>' + L('مفيش ضمانات مسجّلة', 'No warranties') + '</div>';
+    document.getElementById('content').innerHTML = cards + '<div class="panel"><div class="panel-b">' + table + '</div></div>';
+  };
+
+  // تنبيه في الجرس للضمانات اللي قربت تنتهي
+  (function () {
+    var _ga = window.getAlerts; if (typeof _ga !== 'function') return;
+    window.getAlerts = function () {
+      var list = []; try { list = _ga.apply(this, arguments) || []; } catch (e) { list = []; }
+      try {
+        var soon = window.fatWarranties().filter(function (w) { var d = daysTo(window.fatWarrantyExpiry(w)); return d >= 0 && d <= 30; });
+        if (soon.length) list.push({ type: 'warn', msg: '🛡️ ' + soon.length + ' ' + L('ضمان قرب ينتهي', 'warranties expiring'), action: "go('warranties')" });
+      } catch (e) {}
+      return list;
+    };
+  })();
+
+  function injectWNav() {
+    try { var nav = document.getElementById('nav'); if (!nav || nav.querySelector('a[data-view="warranties"]')) return;
+      if (typeof canView === 'function' && !canView('warranties')) return;
+      var anchor = nav.querySelector('a[data-view="products"]') || nav.querySelector('a[data-view="sales"]'); if (!anchor) return;
+      var a = document.createElement('a'); a.setAttribute('data-view', 'warranties'); a.innerHTML = '<span class="ic">🛡️</span> ' + L('الضمانات', 'Warranties'); a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('warranties'); }; anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () { var _rn = window.renderNav; if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); injectWNav(); return r; }; setTimeout(injectWNav, 6500); setTimeout(injectWNav, 9300); })();
+})();
+
+
+
+
+/* ============================================================
+   FATORTY v10.42 — بحث صوتي (Voice search)
+   زرار مايك في البحث السريع (Ctrl+K) بيسمع كلامك بالعربي ويحطّه
+   في خانة البحث. بيستخدم خاصية المتصفح (Web Speech API) — من غير
+   أي خدمة خارجية. لو المتصفح مش بيدعمها، الزرار مايظهرش.
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof document === 'undefined') return;
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  window.fatVoiceSupported = function () { return !!SR; };
+
+  var _rec = null;
+  window.fatCmdVoiceApply = function (text) {
+    var inp = document.getElementById('fatCmdInput');
+    if (inp) { inp.value = text; if (typeof window.fatCmdSearch === 'function') window.fatCmdSearch(text); }
+  };
+  window.fatCmdVoiceStart = function () {
+    if (!SR) return;
+    try {
+      if (_rec) { try { _rec.stop(); } catch (e) {} _rec = null; }
+      _rec = new SR();
+      _rec.lang = (typeof LANG !== 'undefined' && LANG === 'en') ? 'en-US' : 'ar-EG';
+      _rec.interimResults = false; _rec.maxAlternatives = 1;
+      var mic = document.getElementById('fatCmdMic'); if (mic) mic.textContent = '🔴';
+      _rec.onresult = function (ev) { try { var t = ev.results[0][0].transcript; window.fatCmdVoiceApply(t); } catch (e) {} };
+      _rec.onerror = function () { var m = document.getElementById('fatCmdMic'); if (m) m.textContent = '🎤'; };
+      _rec.onend = function () { var m = document.getElementById('fatCmdMic'); if (m) m.textContent = '🎤'; _rec = null; };
+      _rec.start();
+    } catch (e) { var m = document.getElementById('fatCmdMic'); if (m) m.textContent = '🎤'; }
+  };
+
+  // نلفّ فتح البحث السريع عشان نضيف زرار المايك
+  (function () {
+    var _open = window.fatCmdOpen;
+    if (typeof _open !== 'function' || _open._fatVoiceWrapped) return;
+    var wrapped = function () {
+      _open.apply(this, arguments);
+      try {
+        if (!SR) return; // مايظهرش لو مش مدعوم
+        var wrap = document.getElementById('fatCmdWrap'); if (!wrap || document.getElementById('fatCmdMic')) return;
+        var kbd = wrap.querySelector('kbd');
+        var mic = document.createElement('button');
+        mic.id = 'fatCmdMic'; mic.type = 'button'; mic.textContent = '🎤';
+        mic.title = (typeof L === 'function' ? L('بحث صوتي', 'Voice search') : 'Voice');
+        mic.setAttribute('style', 'border:none;background:transparent;font-size:16px;cursor:pointer;padding:0 4px');
+        mic.onclick = function (e) { e.stopPropagation(); window.fatCmdVoiceStart(); };
+        if (kbd && kbd.parentNode) kbd.parentNode.insertBefore(mic, kbd);
+      } catch (e) {}
+    };
+    wrapped._fatVoiceWrapped = true;
+    window.fatCmdOpen = wrapped;
+  })();
+})();
+
+
+/* ============================================================
+   FATORTY v10.43 — ثيمات ألوان العلامة التجارية (Brand themes)
+   اختار لون أساسي لعلامتك (أخضر/أزرق/بنفسجي/تركوازي/عنابي).
+   بيغيّر متغيّرات CSS بأمان، بيتحفظ، وبيشتغل مع الوضع الليلي.
+   خيار في قائمة Aa. مش بيلمس الوضع الليلي ولا أي كود أساسي.
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof document === 'undefined') return;
+  var KEY = 'fat_theme';
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  var THEMES = {
+    default: { ar: 'أخضر (افتراضي)', en: 'Green', p: '#0f6b5c', d: '#0a5044', soft: '#e3f0ec', accent: '#c9783b' },
+    blue: { ar: 'أزرق', en: 'Blue', p: '#2563eb', d: '#1e40af', soft: '#e4edff', accent: '#f59e0b' },
+    purple: { ar: 'بنفسجي', en: 'Purple', p: '#7c3aed', d: '#5b21b6', soft: '#efe7fd', accent: '#ec4899' },
+    teal: { ar: 'تركوازي', en: 'Teal', p: '#0d9488', d: '#0f766e', soft: '#d6f5f0', accent: '#f97316' },
+    rose: { ar: 'عنابي', en: 'Rose', p: '#e11d48', d: '#9f1239', soft: '#ffe4ea', accent: '#0ea5e9' }
+  };
+  window.fatThemes = THEMES;
+  window.fatSetTheme = function (name) {
+    var t = THEMES[name] || THEMES.default;
+    try {
+      var r = document.documentElement.style;
+      r.setProperty('--primary', t.p); r.setProperty('--primary-d', t.d);
+      r.setProperty('--primary-soft', t.soft); r.setProperty('--accent', t.accent);
+      lsSet(KEY, name);
+    } catch (e) {}
+    var box = document.getElementById('fatThemeRow');
+    if (box) Array.prototype.forEach.call(box.children, function (b) { b.style.outline = (b.getAttribute('data-t') === name) ? '3px solid var(--fg,#111)' : 'none'; });
+  };
+
+  // نضيف صف الثيمات في قائمة Aa
+  (function () {
+    var _dm = window.fatDisplayMenu;
+    if (typeof _dm !== 'function' || _dm._fatThemeWrapped) return;
+    var wrapped = function () {
+      _dm.apply(this, arguments);
+      try {
+        var pop = document.getElementById('fatDispPop'); if (!pop || document.getElementById('fatThemeRow')) return;
+        var cur = lsGet(KEY) || 'default';
+        var lbl = document.createElement('div');
+        lbl.style.cssText = 'font-size:12px;font-weight:700;color:var(--ink,#111);margin:10px 0 6px';
+        lbl.textContent = (typeof L === 'function' ? L('لون العلامة', 'Brand color') : 'Brand color');
+        var row = document.createElement('div'); row.id = 'fatThemeRow';
+        row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap';
+        Object.keys(THEMES).forEach(function (k) {
+          var t = THEMES[k];
+          var b = document.createElement('button'); b.type = 'button'; b.setAttribute('data-t', k);
+          b.title = (typeof L === 'function' ? L(t.ar, t.en) : t.en);
+          b.style.cssText = 'width:26px;height:26px;border-radius:50%;border:1px solid var(--line,#ddd);cursor:pointer;background:' + t.p + ';outline:' + (k === cur ? '3px solid var(--fg,#111)' : 'none');
+          b.onclick = function () { window.fatSetTheme(k); };
+          row.appendChild(b);
+        });
+        pop.appendChild(lbl); pop.appendChild(row);
+      } catch (e) {}
+    };
+    wrapped._fatThemeWrapped = true;
+    window.fatDisplayMenu = wrapped;
+  })();
+
+  function boot() { var n = lsGet(KEY); if (n && n !== 'default' && THEMES[n]) window.fatSetTheme(n); }
+  if (document.body) boot(); else document.addEventListener('DOMContentLoaded', boot);
+  setTimeout(boot, 3600);
+})();
+
+
+
+
+/* ============================================================
+   FATORTY v10.44 — ترتيب الأقسام حسب النشاط (Activity-aware nav)
+   بيربط شاشات العيادة + الشاشات المُضافة حديثًا بنظام "بروفايل
+   النشاط" الموجود (bizProfile.flags)، عشان كل نشاط يشوف أقسامه بس.
+   - بيحترم "مفيش بروفايل = اعرض كله".
+   - ميخفيش شاشات العيادة أبدًا عن نشاط عنده مرضى/مواعيد فعلًا (أمان).
+   - بيضيف موديول "العيادة" لتوجلات الإعدادات لو النظام بيدعمها.
+   - بيخفي بس (مايظهرش حاجة المفروض متخفي) فمايتعارضش مع الصلاحيات.
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof db === 'undefined') return;
+
+  // نضيف موديول العيادة لقائمة المميزات (لو النظام بيدعمها) + نفعّله لنوع العيادة
+  try { if (typeof FAT_FLAG_LABELS !== 'undefined' && !FAT_FLAG_LABELS.clinic) FAT_FLAG_LABELS.clinic = { ic: '🩺', ar: 'العيادة والمواعيد', en: 'Clinic & appointments' }; } catch (e) {}
+  try { if (typeof BIZ_TYPES !== 'undefined' && BIZ_TYPES.clinic && BIZ_TYPES.clinic.flags) BIZ_TYPES.clinic.flags.clinic = 1; } catch (e) {}
+
+  // شاشات كل مجموعة
+  var CLINIC = ['patients', 'appointments', 'clinic', 'clinicreports', 'apptcal', 'queue', 'recall'];
+  var KITCHEN = ['kds', 'production'];
+  var INV_EXTRA = ['abc', 'cyclecount', 'labels', 'batches']; // تحاليل/أدوات مخزون
+  var SUP_EXTRA = ['supcompare'];
+
+  function hasClinicData() {
+    try { return (db.customers || []).some(function (c) { return c.isPatient; }) || (db.appointments || []).length > 0; } catch (e) { return false; }
+  }
+
+  window.fatActivityNav = function () {
+    try {
+      var st = db.settings || {}; var p = st.bizProfile;
+      if (!p || !p.flags) return;               // مفيش بروفايل = اعرض كل حاجة (زي النظام الأصلي)
+      var f = p.flags; var bt = st.businessType || '';
+      var hide = {};
+      var showClinic = (bt === 'clinic') || f.clinic === 1 || hasClinicData();
+      if (!showClinic) CLINIC.forEach(function (v) { hide[v] = 1; });
+      if (f.kitchen !== 1) KITCHEN.forEach(function (v) { hide[v] = 1; });
+      if (f.inventory === 0) { INV_EXTRA.forEach(function (v) { hide[v] = 1; }); hide['warranties'] = 1; }
+      if (f.suppliers === 0) SUP_EXTRA.forEach(function (v) { hide[v] = 1; });
+
+      var nav = document.getElementById('nav'); if (!nav) return;
+      Object.keys(hide).forEach(function (v) {
+        var a = nav.querySelector('a[data-view="' + v + '"]');
+        if (a) a.style.display = 'none';
+      });
+    } catch (e) {}
+  };
+
+  // نشغّلها بعد renderNav (بعد ما النظام الأصلي يخلّص) + بعد حقن الروابط المتأخرة
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') {
+      window.renderNav = function () {
+        var r = _rn.apply(this, arguments);
+        try { setTimeout(window.fatActivityNav, 0); } catch (e) {}
+        return r;
+      };
+    }
+  })();
+  [4200, 7200, 9700, 10600].forEach(function (ms) { setTimeout(function () { try { window.fatActivityNav(); } catch (e) {} }, ms); });
+})();
+
+
+
+
+/* ============================================================
+   FATORTY v10.45 — جرد درج الكاش / مطابقة الوردية (Cash count)
+   عدّاد بالفئات (جنيه مصري) + حساب المتوقّع (رصيد افتتاحي + مبيعات
+   نقدي − مصروفات نقدي) + الفرق (عجز/زيادة). بيتخزن سجل بالتاريخ.
+   شفّاف: بيوري تفاصيل الحساب. db.settings.cashCounts.
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof views === 'undefined' || typeof db === 'undefined') return;
+
+  var DENOMS = [200, 100, 50, 20, 10, 5, 1, 0.5, 0.25];
+  window.fatCashCounts = function () { db.settings = db.settings || {}; db.settings.cashCounts = db.settings.cashCounts || []; return db.settings.cashCounts; };
+
+  function todayCashSales() {
+    var t = today();
+    try {
+      return (db.sales || []).filter(function (s) { return String(s.date).slice(0, 10) === t; })
+        .reduce(function (a, s) {
+          var cash = (s.cash != null) ? (+s.cash || 0) : ((s.payMethod === 'cash' || s.pay === 'cash' || !s.payMethod) ? (+s.total || 0) : 0);
+          return a + cash;
+        }, 0);
+    } catch (e) { return 0; }
+  }
+  function todayCashExpenses() {
+    var t = today();
+    try {
+      return (db.expenses || []).filter(function (e) { return String(e.date).slice(0, 10) === t && (!e.acct || e.acct === 'cash' || e.method === 'cash'); })
+        .reduce(function (a, e) { return a + (+e.amount || 0); }, 0);
+    } catch (e) { return 0; }
+  }
+
+  window.fatCashCounted = function () {
+    var sum = 0;
+    DENOMS.forEach(function (d) { var el = document.getElementById('cc_' + String(d).replace('.', '_')); var n = el ? (+el.value || 0) : 0; sum += n * d; });
+    var m = document.getElementById('cc_counted'); if (m) m.textContent = (typeof money === 'function' ? money(sum) : sum.toFixed(2));
+    window._ccRecalc();
+    return sum;
+  };
+  window._ccRecalc = function () {
+    var g = function (i) { var e = document.getElementById(i); return e ? (+e.value || 0) : 0; };
+    var opening = g('cc_open'), out = g('cc_out'), sales = window._ccSales || 0;
+    var expected = opening + sales - out;
+    var counted = 0; DENOMS.forEach(function (d) { var el = document.getElementById('cc_' + String(d).replace('.', '_')); counted += (el ? (+el.value || 0) : 0) * d; });
+    var diff = counted - expected;
+    var ex = document.getElementById('cc_expected'); if (ex) ex.textContent = (typeof money === 'function' ? money(expected) : expected.toFixed(2));
+    var dv = document.getElementById('cc_diff');
+    if (dv) {
+      var col = Math.abs(diff) < 0.005 ? 'var(--ok)' : (diff < 0 ? 'var(--danger)' : 'var(--gold,#b8923a)');
+      var lbl = Math.abs(diff) < 0.005 ? L('مظبوط ✓', 'Balanced ✓') : (diff < 0 ? L('عجز', 'Short') : L('زيادة', 'Over'));
+      dv.style.color = col; dv.textContent = (typeof money === 'function' ? money(Math.abs(diff)) : Math.abs(diff).toFixed(2)) + ' — ' + lbl;
+    }
+  };
+  window.fatCashSave = function () {
+    var g = function (i) { var e = document.getElementById(i); return e ? (+e.value || 0) : 0; };
+    var opening = g('cc_open'), out = g('cc_out'), sales = window._ccSales || 0, counted = window.fatCashCounted();
+    var expected = opening + sales - out, diff = counted - expected;
+    var recId = uid();
+    var posted = false;
+    // تكامل مع الخزينة: نرحّل الفرق كتسوية لو المستخدم موافق
+    try {
+      var chk = document.getElementById('cc_post');
+      if (chk && chk.checked && typeof addCash === 'function' && Math.abs(diff) >= 0.005) {
+        if (diff > 0) addCash('in', diff, L('تسوية جرد كاش (زيادة)', 'Cash count adjustment (over)'), recId, 'cash');
+        else addCash('out', -diff, L('تسوية جرد كاش (عجز)', 'Cash count adjustment (short)'), recId, 'cash');
+        posted = true;
+      }
+    } catch (e) {}
+    window.fatCashCounts().push({ id: recId, date: today(), by: (typeof currentUserName === 'function' ? currentUserName() : ''), opening: opening, sales: sales, out: out, expected: expected, counted: counted, diff: diff, posted: posted });
+    try { logAudit(L('جرد كاش', 'Cash count'), (typeof money === 'function' ? money(counted) : counted) + ' / ' + L('فرق', 'diff') + ' ' + (typeof money === 'function' ? money(diff) : diff) + (posted ? ' — ' + L('رُحّل للخزينة', 'posted') : '')); } catch (e) {}
+    save(); toast('✅ ' + L('اتسجّل الجرد', 'Count saved') + (posted ? ' + ' + L('رُحّل للخزينة', 'posted to treasury') : '')); views.cashcount();
+  };
+  window.fatCashDelete = function (id) { db.settings.cashCounts = window.fatCashCounts().filter(function (x) { return x.id !== id; }); save(); views.cashcount(); };
+
+  try {
+    PG.cashcount = [['جرد الكاش', 'مطابقة درج النقدية'], ['Cash count', 'Drawer reconciliation']];
+    var _cv = window.canView; window.canView = function (v) { if (v === 'cashcount') return _cv('treasury'); return _cv(v); };
+  } catch (e) {}
+
+  views.cashcount = function () {
+    try { document.getElementById('topActions').innerHTML = ''; } catch (e) {}
+    window._ccSales = todayCashSales();
+    var suggestOut = todayCashExpenses();
+    var rows = DENOMS.map(function (d) {
+      var id = 'cc_' + String(d).replace('.', '_');
+      return '<tr><td style="width:110px"><b>' + (d >= 1 ? d : d) + '</b> ' + L('ج', 'EGP') + '</td>' +
+        '<td><input id="' + id + '" type="number" min="0" step="1" value="0" oninput="fatCashCounted()" style="width:90px"></td>' +
+        '<td style="color:var(--muted)">× ' + d + '</td></tr>';
+    }).join('');
+    var histAll = window.fatCashCounts().slice().reverse();
+    var hist = histAll.length
+      ? '<div class="panel"><div class="panel-h">' + L('سجل الجرد', 'History') + '</div><div class="panel-b"><table><thead><tr><th>' + L('التاريخ', 'Date') + '</th><th>' + L('المتوقّع', 'Expected') + '</th><th>' + L('المعدود', 'Counted') + '</th><th>' + L('الفرق', 'Diff') + '</th><th class="no-print"></th></tr></thead><tbody>' +
+        histAll.slice(0, 60).map(function (x) {
+          var col = Math.abs(x.diff) < 0.005 ? 'var(--ok)' : (x.diff < 0 ? 'var(--danger)' : 'var(--gold,#b8923a)');
+          return '<tr><td style="font-size:12px">' + esc(x.date) + (x.by ? '<div style="font-size:10px;color:var(--muted)">' + esc(x.by) + '</div>' : '') + '</td><td>' + money(x.expected) + '</td><td>' + money(x.counted) + '</td>' +
+            '<td style="color:' + col + ';font-weight:700">' + money(x.diff) + '</td><td class="no-print"><button class="iconbtn del" onclick="fatCashDelete(\'' + x.id + '\')">🗑️</button></td></tr>';
+        }).join('') + '</tbody></table></div></div>'
+      : '';
+    document.getElementById('content').innerHTML =
+      '<div class="grid2" style="align-items:start">' +
+      '<div class="panel"><div class="panel-h">💵 ' + L('عدّ الدرج بالفئات', 'Count by denomination') + '</div><div class="panel-b"><table><tbody>' + rows + '</tbody></table>' +
+      '<div style="text-align:center;margin-top:10px;padding:10px;background:var(--card2,#f3f4f6);border-radius:10px"><div style="font-size:12px;color:var(--muted)">' + L('إجمالي المعدود', 'Total counted') + '</div><div id="cc_counted" style="font-size:22px;font-weight:800;color:var(--primary)">0</div></div></div></div>' +
+      '<div class="panel"><div class="panel-h">🧾 ' + L('المطابقة', 'Reconciliation') + '</div><div class="panel-b">' +
+      '<div class="field"><label>' + L('رصيد أول الوردية', 'Opening float') + '</label><input id="cc_open" type="number" step="0.01" value="0" oninput="_ccRecalc()"></div>' +
+      '<div class="field"><label>' + L('مبيعات نقدي اليوم (تلقائي)', 'Cash sales today (auto)') + '</label><input value="' + (typeof money === 'function' ? money(window._ccSales) : window._ccSales) + '" disabled></div>' +
+      '<div class="field"><label>' + L('مصروفات نقدي اليوم', 'Cash paid out today') + '</label><input id="cc_out" type="number" step="0.01" value="' + suggestOut + '" oninput="_ccRecalc()"></div>' +
+      '<div style="padding:10px;background:var(--card2,#f3f4f6);border-radius:10px;margin:8px 0"><div style="display:flex;justify-content:space-between"><span>' + L('المتوقّع في الدرج', 'Expected in drawer') + '</span><b id="cc_expected">0</b></div>' +
+      '<div style="display:flex;justify-content:space-between;margin-top:6px;font-size:17px"><span>' + L('الفرق', 'Variance') + '</span><b id="cc_diff">—</b></div></div>' +
+      (typeof addCash === 'function' ? '<label style="display:flex;align-items:center;gap:8px;margin:2px 0 10px;font-size:13px;cursor:pointer"><input type="checkbox" id="cc_post" checked> ' + L('رحّل الفرق للخزينة كتسوية', 'Post variance to treasury') + '</label>' : '') +
+      '<button class="btn btn-primary" style="width:100%" onclick="fatCashSave()">' + L('حفظ الجرد', 'Save count') + '</button>' +
+      '<div class="hint" style="margin-top:8px">' + L('المتوقّع = الرصيد الافتتاحي + مبيعات النقدي − المصروفات النقدي.', 'Expected = opening + cash sales − cash paid out.') + '</div>' +
+      '</div></div></div>' + hist;
+    setTimeout(function () { try { window._ccRecalc(); } catch (e) {} }, 30);
+  };
+
+  function injectCcNav() {
+    try { var nav = document.getElementById('nav'); if (!nav || nav.querySelector('a[data-view="cashcount"]')) return;
+      if (typeof canView === 'function' && !canView('cashcount')) return;
+      var anchor = nav.querySelector('a[data-view="treasury"]') || nav.querySelector('a[data-view="shifts"]'); if (!anchor) return;
+      var a = document.createElement('a'); a.setAttribute('data-view', 'cashcount'); a.innerHTML = '<span class="ic">💵</span> ' + L('جرد الكاش', 'Cash count'); a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('cashcount'); }; anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () { var _rn = window.renderNav; if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); injectCcNav(); return r; }; setTimeout(injectCcNav, 6600); setTimeout(injectCcNav, 9400); })();
+})();
+
+
+
+
+/* ============================================================
+   FATORTY v10.46 — تقرير أداء الكاشير/البائع (Cashier performance)
+   بيجمّع المبيعات حسب الكاشير (s.cashier) لفترة: عدد الفواتير ·
+   الإيراد · متوسط الفاتورة · عدد الأصناف. للقراءة فقط.
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof views === 'undefined' || typeof db === 'undefined') return;
+
+  function ym(d) { return String(d || '').slice(0, 7); }
+  window._cpfMode = window._cpfMode || 'month';
+  window.fatCpfMode = function (m) { window._cpfMode = m; views.cashierperf(); };
+
+  window.fatCashierStats = function (mode) {
+    var cm = ym(today());
+    var sales = (db.sales || []).filter(function (s) {
+      if (mode === 'all') return true;
+      return ym(s.date) === cm;
+    });
+    var map = {};
+    sales.forEach(function (s) {
+      var name = s.cashier || s.user || s.by || L('غير محدد', 'Unspecified');
+      if (!map[name]) map[name] = { name: name, count: 0, revenue: 0, items: 0 };
+      map[name].count++; map[name].revenue += (+s.total || 0);
+      map[name].items += (s.items || []).reduce(function (a, it) { return a + (+it.qty || 0); }, 0);
+    });
+    return Object.keys(map).map(function (k) { var r = map[k]; r.avg = r.count ? Math.round(r.revenue / r.count) : 0; return r; })
+      .sort(function (a, b) { return b.revenue - a.revenue; });
+  };
+
+  try {
+    PG.cashierperf = [['أداء الكاشير', 'أداء البائعين'], ['Cashier report', 'Sales by cashier']];
+    var _cv = window.canView; window.canView = function (v) { if (v === 'cashierperf') return _cv('reports'); return _cv(v); };
+  } catch (e) {}
+
+  views.cashierperf = function () {
+    try { document.getElementById('topActions').innerHTML = ''; } catch (e) {}
+    var mode = window._cpfMode, stats = window.fatCashierStats(mode);
+    var maxRev = stats.reduce(function (m, r) { return Math.max(m, r.revenue); }, 0) || 1;
+    var tabs = '<div class="no-print" style="display:flex;gap:6px;margin-bottom:12px">' +
+      [['month', L('هذا الشهر', 'This month')], ['all', L('كل الفترة', 'All time')]].map(function (t) {
+        return '<button class="btn btn-sm ' + (mode === t[0] ? 'btn-primary' : 'btn-ghost') + '" onclick="fatCpfMode(\'' + t[0] + '\')">' + t[1] + '</button>';
+      }).join('') + '</div>';
+    var body = stats.length
+      ? '<table><thead><tr><th>#</th><th>' + L('الكاشير', 'Cashier') + '</th><th>' + L('الفواتير', 'Invoices') + '</th><th>' + L('الإيراد', 'Revenue') + '</th><th>' + L('متوسط الفاتورة', 'Avg') + '</th><th>' + L('الأصناف', 'Items') + '</th></tr></thead><tbody>' +
+        stats.map(function (r, i) {
+          var pct = Math.round(r.revenue / maxRev * 100);
+          return '<tr><td>' + (i + 1) + (i === 0 ? ' 🏆' : '') + '</td><td><b>' + esc(r.name) + '</b>' +
+            '<div style="height:5px;background:var(--primary);border-radius:3px;width:' + pct + '%;margin-top:3px;min-width:6px"></div></td>' +
+            '<td>' + r.count + '</td><td><b>' + money(r.revenue) + '</b></td><td>' + money(r.avg) + '</td><td>' + r.items + '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty"><span class="big">🧑‍💼</span>' + L('مفيش مبيعات في الفترة دي', 'No sales in this period') + '</div>';
+    document.getElementById('content').innerHTML = tabs + '<div class="panel"><div class="panel-b">' + body + '</div></div>' +
+      '<div class="hint" style="margin-top:8px">💡 ' + L('مرتّب حسب الإيراد. البيانات من الكاشير المسجّل على كل فاتورة.', 'Sorted by revenue, from each invoice\'s recorded cashier.') + '</div>';
+  };
+
+  function injectCpfNav() {
+    try { var nav = document.getElementById('nav'); if (!nav || nav.querySelector('a[data-view="cashierperf"]')) return;
+      if (typeof canView === 'function' && !canView('cashierperf')) return;
+      var anchor = nav.querySelector('a[data-view="reports"]') || nav.querySelector('a[data-view="insights"]'); if (!anchor) return;
+      var a = document.createElement('a'); a.setAttribute('data-view', 'cashierperf'); a.innerHTML = '<span class="ic">🧑‍💼</span> ' + L('أداء الكاشير', 'Cashier report'); a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('cashierperf'); }; anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () { var _rn = window.renderNav; if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); injectCpfNav(); return r; }; setTimeout(injectCpfNav, 6700); setTimeout(injectCpfNav, 9500); })();
+})();
+
+
+
+
+/* ============================================================
+   FATORTY v10.48 — مركز المحاسبة + التدرّج حسب حجم النشاط
+   (Accounting Center, organized by business scale)
+   - مركز واحد بيجمّع كل الشاشات المالية منظّمة في أقسام + مؤشرات حيّة.
+   - "مستوى محاسبي" لكل نشاط: بسيط / متوسط / احترافي — بيحدّد العمق
+     الظاهر (النشاط الصغير يشوف محاسبة بسيطة، الكبير يشوف الكامل).
+   - بيدمج مع نظام النشاط: بيخفي الشاشات المتقدّمة من الشريط للمستوى الأقل.
+   - تكامل عبر نظام الأحداث: تقييم بعد البيع (اختياري) + ضمان تلقائي.
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof views === 'undefined' || typeof db === 'undefined') return;
+
+  var LEVELS = { basic: 0, standard: 1, pro: 2, all: 3 };
+  var LEVEL_LABELS = [['basic', 'بسيط', 'Basic', 'مبيعات ومصروفات ونقدية'], ['standard', 'متوسط', 'Standard', '+ تكاليف وموازنة وضرائب'], ['pro', 'احترافي', 'Professional', '+ قيود وقوائم مالية وأصول']];
+  // شاشات المحاسبة: v=اسم الشاشة، lvl=أقل مستوى تظهر فيه، sec=القسم
+  var ACCT = [
+    { v: 'ledger', ic: '📘', ar: 'القيود والقوائم المالية', en: 'Journal & statements', lvl: 'pro', sec: 'stmt' },
+    { v: 'taxReport', ic: '📋', ar: 'التقرير الضريبي', en: 'Tax report', lvl: 'standard', sec: 'stmt' },
+    { v: 'costCenters', ic: '🎯', ar: 'مراكز التكلفة', en: 'Cost centers', lvl: 'standard', sec: 'cost' },
+    { v: 'fixedAssets', ic: '🏛️', ar: 'الأصول الثابتة والإهلاك', en: 'Fixed assets', lvl: 'pro', sec: 'cost' },
+    { v: 'budget', ic: '📊', ar: 'الموازنة التقديرية', en: 'Budget', lvl: 'standard', sec: 'cost' },
+    { v: 'treasury', ic: '💵', ar: 'الخزينة', en: 'Treasury', lvl: 'basic', sec: 'cash' },
+    { v: 'bankRecon', ic: '🏦', ar: 'التسوية البنكية', en: 'Bank reconciliation', lvl: 'pro', sec: 'cash' },
+    { v: 'cashcount', ic: '🧮', ar: 'جرد الكاش', en: 'Cash count', lvl: 'basic', sec: 'cash' },
+    { v: 'zreport', ic: '📆', ar: 'تقفيل اليوم', en: 'Day close (Z)', lvl: 'basic', sec: 'tools' },
+    { v: 'cashierperf', ic: '🧑‍💼', ar: 'أداء الكاشير', en: 'Cashier report', lvl: 'standard', sec: 'tools' }
+  ];
+  var SECS = { stmt: ['📑 القوائم المالية', 'Financial statements'], cost: ['🎯 التكاليف والأصول', 'Costs & assets'], cash: ['💵 النقدية والبنوك', 'Cash & banks'], tools: ['🧰 أدوات وتقارير', 'Tools & reports'] };
+
+  // المستوى الافتراضي حسب نوع النشاط
+  function defaultLevel() {
+    var bt = (db.settings && db.settings.businessType) || '';
+    if (['factory', 'distribution', 'ecommerce', 'supermarket'].indexOf(bt) >= 0) return 'pro';
+    if (['clinic', 'gym', 'laundry', 'services'].indexOf(bt) >= 0) return 'basic';
+    return 'standard';
+  }
+  window.fatAcctLevel = function () { return (db.settings && db.settings.acctLevel) || null; }; // null = اعرض الكل (سلوك أصلي)
+  window.fatSetAcctLevel = function (lv) {
+    db.settings = db.settings || {}; db.settings.acctLevel = lv; save();
+    try { renderNav && renderNav(); } catch (e) {}
+    toast('✅ ' + L('المستوى المحاسبي: ', 'Accounting level: ') + (lv === 'basic' ? L('بسيط', 'Basic') : lv === 'standard' ? L('متوسط', 'Standard') : lv === 'pro' ? L('احترافي', 'Professional') : L('الكل', 'All')));
+    views.accounting();
+  };
+
+  function levelRank() { var lv = window.fatAcctLevel(); return lv ? LEVELS[lv] : 3; } // مفيش = الكل
+  function showView(v) { var meta = ACCT.filter(function (x) { return x.v === v; })[0]; if (!meta) return true; return levelRank() >= LEVELS[meta.lvl]; }
+
+  // مؤشرات مالية حيّة (الشهر الحالي)
+  function kpis() {
+    var cm = String(today()).slice(0, 7);
+    var rev = 0, prof = 0, exp = 0;
+    (db.sales || []).forEach(function (s) { if (String(s.date).slice(0, 7) === cm) { rev += (+s.total || 0); prof += (s.profit != null ? +s.profit : ((+s.total || 0) - (+s.cost || 0))); } });
+    (db.expenses || []).forEach(function (e) { if (String(e.date).slice(0, 7) === cm) exp += (+e.amount || 0); });
+    var cash = 0; try { cash = (typeof cashBalance === 'function') ? cashBalance() : (db.cash || []).reduce(function (a, m) { return a + (m.type === 'in' ? (+m.amount || 0) : -(+m.amount || 0)); }, 0); } catch (e) {}
+    return { rev: rev, prof: prof, exp: exp, net: prof - exp, cash: cash };
+  }
+
+  try {
+    PG.accounting = [['مركز المحاسبة', 'كل الحسابات في مكان واحد'], ['Accounting', 'Financial center']];
+    var _cv = window.canView; window.canView = function (v) { if (v === 'accounting') return _cv('ledger') || _cv('treasury') || _cv('reports'); return _cv(v); };
+  } catch (e) {}
+
+  views.accounting = function () {
+    try { document.getElementById('topActions').innerHTML = ''; } catch (e) {}
+    var k = kpis(); var curLv = window.fatAcctLevel();
+    var card = function (ic, lbl, val, col) { return '<div class="card"><div class="ic-bg">' + ic + '</div><div class="lbl">' + lbl + '</div><div class="val" style="color:' + (col || 'var(--ink)') + ';font-size:19px">' + val + '</div></div>'; };
+    var kpiRow = '<div class="cards">' +
+      card('💰', L('إيراد الشهر', 'Revenue'), money(k.rev), 'var(--primary)') +
+      card('📈', L('صافي الربح', 'Net profit'), money(k.net), k.net >= 0 ? 'var(--ok)' : 'var(--danger)') +
+      card('🧾', L('مصروفات الشهر', 'Expenses'), money(k.exp), 'var(--danger)') +
+      card('💵', L('رصيد النقدية', 'Cash balance'), money(k.cash), 'var(--ink)') + '</div>';
+
+    // اختيار المستوى المحاسبي
+    var lvBtns = '<div class="panel" style="margin-bottom:14px"><div class="panel-b pad">' +
+      '<div style="font-size:13px;font-weight:700;margin-bottom:4px">⚙️ ' + L('المستوى المحاسبي (حسب حجم نشاطك)', 'Accounting level (by your scale)') + '</div>' +
+      '<div style="font-size:11.5px;color:var(--muted);margin-bottom:10px">' + L('اختار العمق المناسب — الشريط الجانبي بيترتّب حسب اختيارك.', 'Pick the right depth — the sidebar adjusts.') + '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+      LEVEL_LABELS.map(function (o) {
+        var on = (curLv || defaultLevel()) === o[0] && curLv;
+        return '<button class="btn btn-sm ' + (on ? 'btn-primary' : 'btn-ghost') + '" style="flex:1;min-width:130px;text-align:start;padding:9px 11px" onclick="fatSetAcctLevel(\'' + o[0] + '\')">' +
+          '<div style="font-weight:700">' + L(o[1], o[2]) + '</div><div style="font-size:10.5px;opacity:.8">' + o[3] + '</div></button>';
+      }).join('') +
+      '<button class="btn btn-sm ' + (!curLv ? 'btn-primary' : 'btn-ghost') + '" style="min-width:90px" onclick="fatSetAcctLevel(\'all\');db.settings.acctLevel=null;save();views.accounting();">' + L('الكل', 'Show all') + '</button>' +
+      '</div></div></div>';
+
+    // شبكة الشاشات مقسّمة
+    var grid = Object.keys(SECS).map(function (sec) {
+      var items = ACCT.filter(function (x) { return x.sec === sec && typeof views[x.v] === 'function' && showView(x.v); });
+      if (!items.length) return '';
+      return '<div class="panel" style="margin-bottom:14px"><div class="panel-h">' + L(SECS[sec][0], SECS[sec][1]) + '</div><div class="panel-b pad">' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px">' +
+        items.map(function (x) {
+          return '<button onclick="go(\'' + x.v + '\')" style="display:flex;align-items:center;gap:11px;padding:13px;border:1px solid var(--line);border-radius:12px;background:var(--card,#fff);cursor:pointer;text-align:start;transition:.15s" onmouseover="this.style.borderColor=\'var(--primary)\'" onmouseout="this.style.borderColor=\'var(--line)\'">' +
+            '<span style="font-size:22px">' + x.ic + '</span><span style="flex:1;font-size:13.5px;font-weight:600">' + L(x.ar, x.en) + '</span><span style="color:var(--muted)">‹</span></button>';
+        }).join('') + '</div></div></div>';
+    }).join('');
+
+    document.getElementById('content').innerHTML = kpiRow + lvBtns + grid +
+      '<div class="hint">💡 ' + L('كل قوائمك المالية (قائمة الدخل، المركز المالي، ميزان المراجعة) جوّه شاشة «القيود والقوائم المالية».', 'Income statement, balance sheet & trial balance are inside "Journal & statements".') + '</div>';
+  };
+
+  // إخفاء الشاشات المحاسبية المتقدّمة من الشريط حسب المستوى (بيشتغل مع نظام النشاط)
+  window.fatAcctNav = function () {
+    try {
+      var lv = window.fatAcctLevel(); if (!lv || lv === 'all') return; // مفيش مستوى = اعرض الكل
+      var nav = document.getElementById('nav'); if (!nav) return;
+      ACCT.forEach(function (x) {
+        if (LEVELS[lv] < LEVELS[x.lvl]) { var a = nav.querySelector('a[data-view="' + x.v + '"]'); if (a) a.style.display = 'none'; }
+      });
+    } catch (e) {}
+  };
+
+  // رابط مركز المحاسبة في الشريط
+  function injectAcctNav() {
+    try { var nav = document.getElementById('nav'); if (!nav || nav.querySelector('a[data-view="accounting"]')) return;
+      if (typeof canView === 'function' && !canView('accounting')) return;
+      var anchor = nav.querySelector('a[data-view="ledger"]') || nav.querySelector('a[data-view="treasury"]') || nav.querySelector('a[data-view="reports"]'); if (!anchor) return;
+      var a = document.createElement('a'); a.setAttribute('data-view', 'accounting'); a.innerHTML = '<span class="ic">💼</span> ' + L('مركز المحاسبة', 'Accounting center'); a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('accounting'); }; anchor.parentNode.insertBefore(a, anchor);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); injectAcctNav(); try { setTimeout(window.fatAcctNav, 1); } catch (e) {} return r; };
+    [4300, 7300, 9800, 10700].forEach(function (ms) { setTimeout(function () { injectAcctNav(); try { window.fatAcctNav(); } catch (e) {} }, ms); });
+  })();
+
+  /* ===== تكامل عبر نظام الأحداث ===== */
+  if (typeof fatOn === 'function') {
+    // ضمان تلقائي: لو المنتج له مدة ضمان (warrantyMonths) يتسجّل ضمان عند البيع
+    fatOn('sale:completed', function (rec) {
+      try {
+        (rec && rec.items || []).forEach(function (it) {
+          var p = (typeof findProduct === 'function') ? findProduct(it.pid) : null;
+          if (p && +p.warrantyMonths > 0) {
+            db.settings = db.settings || {}; db.settings.warranties = db.settings.warranties || [];
+            db.settings.warranties.push({ id: uid(), productName: p.name, custId: rec.customerId || '', custName: rec.customerName || '', phone: '', purchaseDate: rec.date || today(), months: +p.warrantyMonths, serial: '', note: L('تلقائي من فاتورة', 'Auto from invoice') + ' #' + (rec.no || '') });
+          }
+        });
+      } catch (e) {}
+    });
+    // تقييم بعد البيع (اختياري: db.settings.npsAfterSale) — عبر إشعار غير مُعطِّل
+    fatOn('sale:completed', function (rec) {
+      try {
+        if (db.settings && db.settings.npsAfterSale && rec && rec.customerId && typeof toast === 'function' && typeof fatSurveyAdd === 'function') {
+          toast(L('تحب تسجّل تقييم العميل؟', 'Log customer rating?'), '', { actionLabel: L('تقييم', 'Rate'), onAction: function () { fatSurveyAdd(rec.customerId); } });
+        }
+      } catch (e) {}
+    });
+  }
+})();
+
+
+
+
+/* ============================================================
+   FATORTY v10.49 — شريط الأصناف السريعة في الكاشير (POS hot bar)
+   بيملأ #posHotBar (كان فاضي) بأصناف مفضلة أو الأكتر مبيعًا —
+   إضافة للسلة بضغطة واحدة. تخصيص المفضلة + احترام المخزون/الفئات.
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof views === 'undefined' || typeof db === 'undefined') return;
+
+  window.fatPosFavorites = function () { db.settings = db.settings || {}; db.settings.posFavorites = db.settings.posFavorites || []; return db.settings.posFavorites; };
+
+  window.fatPosTopSellers = function (n) {
+    var cnt = {};
+    (db.sales || []).forEach(function (s) { (s.items || []).forEach(function (it) { if (it.pid) cnt[it.pid] = (cnt[it.pid] || 0) + (+it.qty || 0); }); });
+    return Object.keys(cnt).sort(function (a, b) { return cnt[b] - cnt[a]; }).slice(0, n || 8);
+  };
+
+  window.fatPosHotBar = function () {
+    var bar = document.getElementById('posHotBar'); if (!bar) return;
+    var favs = window.fatPosFavorites();
+    var pids = favs.length ? favs : window.fatPosTopSellers(8);
+    var prods = pids.map(function (id) { return (typeof findProduct === 'function') ? findProduct(id) : null; }).filter(Boolean);
+    if (!prods.length) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
+    bar.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px;align-items:center';
+    bar.innerHTML = '<span style="font-size:11px;color:var(--muted);font-weight:700">⭐ ' + L('سريع', 'Quick') + ':</span>' +
+      prods.map(function (p) {
+        return '<button type="button" onclick="posTap(\'' + p.id + '\')" style="padding:7px 12px;border:1px solid var(--primary);border-radius:20px;background:var(--primary-soft);color:var(--primary-d);font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap">' + esc(p.name) + '</button>';
+      }).join('') +
+      '<button type="button" onclick="fatPosFavPick()" title="' + L('تخصيص الأصناف السريعة', 'Customize quick items') + '" style="padding:7px 10px;border:1px dashed var(--line);border-radius:20px;background:transparent;cursor:pointer">⚙️</button>';
+  };
+
+  window.fatPosFavPick = function () {
+    var favs = window.fatPosFavorites();
+    var prods = (db.products || []).slice(0, 400);
+    openModal('<div class="modal-h"><h3>⭐ ' + L('الأصناف السريعة', 'Quick items') + '</h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-b">' +
+      '<div class="hint" style="margin-bottom:10px">' + L('اختار الأصناف اللي بتبيعها كتير عشان تظهر للإضافة بضغطة. لو مختارتش، بيظهر الأكتر مبيعًا تلقائيًا.', 'Pick your frequent items. If none, top sellers show automatically.') + '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px;max-height:50vh;overflow:auto">' +
+      prods.map(function (p) {
+        var on = favs.indexOf(p.id) > -1;
+        return '<label style="display:flex;align-items:center;gap:7px;padding:7px 9px;border:1px solid ' + (on ? 'var(--primary)' : 'var(--line)') + ';border-radius:9px;cursor:pointer;font-size:12.5px"><input type="checkbox" ' + (on ? 'checked' : '') + ' onchange="fatPosFavToggle(\'' + p.id + '\')"> ' + esc(p.name) + '</label>';
+      }).join('') + '</div></div><div class="modal-f"><button class="btn btn-primary" onclick="closeModal();fatPosHotBar()">' + L('تم', 'Done') + '</button></div>');
+  };
+  window.fatPosFavToggle = function (pid) {
+    var favs = window.fatPosFavorites(); var i = favs.indexOf(pid);
+    if (i > -1) favs.splice(i, 1); else { if (favs.length >= 12) return toast(L('الحد 12 صنف', 'Max 12 items'), 'err'); favs.push(pid); }
+    save();
+  };
+
+  // نملأ الشريط بعد ما الكاشير يترسم
+  (function () {
+    if (typeof views.pos === 'function' && !views.pos._fatHotWrapped) {
+      var _pos = views.pos;
+      var wrapped = function () { var r = _pos.apply(this, arguments); try { window.fatPosHotBar(); setTimeout(window.fatPosHotBar, 80); } catch (e) {} return r; };
+      wrapped._fatHotWrapped = true;
+      views.pos = wrapped;
+    }
+  })();
+})();
+
+
+
+
+/* ============================================================
+   FATORTY v10.50 — تجميع القايمة الجانبية (Nav consolidation)
+   بيلمّ الشاشات المُضافة (المتناثرة) ويرتّبها تحت عناوين أقسام
+   واضحة قبل قسم "النظام" مباشرة — من غير ما يلمس القايمة الأساسية.
+   بيحترم إخفاء النشاط/المستوى المحاسبي، وبيحافظ على الروابط شغّالة.
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof document === 'undefined') return;
+
+  var GROUPS = [
+    { id: 'clinic', ar: '🏥 العيادة', en: 'Clinic', views: ['clinic', 'patients', 'appointments', 'apptcal', 'queue', 'recall', 'reminders', 'clinicreports'] },
+    { id: 'analytics', ar: '📊 تحليلات وتقارير', en: 'Analytics', views: ['rfm', 'abc', 'periodcompare', 'cashierperf', 'satisfaction'] },
+    { id: 'invadv', ar: '📦 مخزون متقدّم', en: 'Advanced inventory', views: ['cyclecount', 'labels', 'batches', 'aging', 'supcompare', 'warranties'] },
+    { id: 'staff2', ar: '👥 موظفين ومهام', en: 'Staff & tasks', views: ['leaves', 'tasks', 'permbuilder'] },
+    { id: 'mkt', ar: '🚀 مبيعات وتسويق', en: 'Sales & marketing', views: ['loyalty', 'promos', 'drivers', 'currency', 'renew'] },
+    { id: 'ops', ar: '🍳 تشغيل المطبخ', en: 'Kitchen ops', views: ['kds', 'production'] }
+  ];
+
+  function consolidate() {
+    try {
+      var nav = document.getElementById('nav'); if (!nav) return;
+      // نقطة الإدراج: قبل عنوان قسم "النظام" (اللي فيه الإعدادات)
+      var sysLink = nav.querySelector('a[data-view="settings"]');
+      var insBefore = null;
+      if (sysLink) {
+        var n = sysLink.previousElementSibling;
+        while (n && !(n.classList && n.classList.contains('group'))) n = n.previousElementSibling;
+        insBefore = n || sysLink; // لو مفيش عنوان قسم قبلها، ندرج قبل الرابط نفسه
+      }
+
+      GROUPS.forEach(function (g) {
+        var links = g.views.map(function (v) { return nav.querySelector('a[data-view="' + v + '"]'); }).filter(Boolean);
+        if (!links.length) return;
+        // عنوان القسم (نعيد استخدامه لو موجود)
+        var hdr = nav.querySelector('.group[data-fatg="' + g.id + '"]');
+        if (!hdr) { hdr = document.createElement('div'); hdr.className = 'group'; hdr.setAttribute('data-fatg', g.id); hdr.textContent = (typeof L === 'function' ? L(g.ar, g.en) : g.ar); }
+        if (insBefore && insBefore.parentNode === nav) nav.insertBefore(hdr, insBefore); else nav.appendChild(hdr);
+        links.forEach(function (a) { if (insBefore && insBefore.parentNode === nav) nav.insertBefore(a, insBefore); else nav.appendChild(a); });
+      });
+
+      // بعد النقل: نعيد تطبيق الإخفاء حسب النشاط/المستوى + تمييز الشاشة النشطة
+      try { if (typeof window.fatActivityNav === 'function') window.fatActivityNav(); } catch (e) {}
+      try { if (typeof window.fatAcctNav === 'function') window.fatAcctNav(); } catch (e) {}
+      try {
+        if (typeof current !== 'undefined') { var act = nav.querySelector('a[data-view="' + current + '"]'); if (act) { Array.prototype.forEach.call(nav.querySelectorAll('a.active'), function (x) { x.classList.remove('active'); }); act.classList.add('active'); } }
+      } catch (e) {}
+    } catch (e) {}
+  }
+  window.fatNavConsolidate = consolidate;
+
+  // نشغّلها بعد ما القايمة والحقن يستقرّوا
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); try { setTimeout(consolidate, 1200); } catch (e) {} return r; };
+  })();
+  [5600, 9900, 11200].forEach(function (ms) { setTimeout(consolidate, ms); });
+})();
+
+
+
+
+/* ============================================================
+   FATORTY v10.51 — تحسين القايمة الجانبية (بنود 1-5)
+   1) أقسام قابلة للطي (Accordion) + حفظ الحالة
+   2) تجميع شغل ما بعد الرسم في تمريرة واحدة (debounce)
+   3) مراقب واحد (MutationObserver) بدل المؤقّتات المتكرّرة
+   4) تنبيه لطيف للمستخدم القديم يرتّب قايمته حسب نشاطه
+   5) بحث داخل القايمة
+   مهم: الطي بيستخدم CLASS مش style.display عشان مايتعارضش مع
+   إخفاء النشاط/المستوى المحاسبي (اللي بيستخدم style.display).
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof document === 'undefined') return;
+
+  var KEY_OPEN = 'fat_nav_open', KEY_NUDGE = 'fat_nav_nudged';
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  /* ---------- استايل الطي والبحث ---------- */
+  function injectStyle() {
+    if (document.getElementById('fatNavStyle')) return;
+    var st = document.createElement('style'); st.id = 'fatNavStyle';
+    st.textContent =
+      '.fat-navhidden{display:none!important}' +
+      '.fat-searchhidden{display:none!important}' +
+      '#nav .group[data-fatacc]{cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none}' +
+      '#nav .group[data-fatacc]:hover{color:var(--primary)}' +
+      '#nav .group .fat-caret{margin-inline-start:auto;font-size:9px;transition:transform .15s;opacity:.7}' +
+      '#nav .group[data-fatcollapsed="1"] .fat-caret{transform:rotate(-90deg)}' +
+      '#fatNavSearch{width:calc(100% - 20px);margin:8px 10px 4px;padding:7px 10px;border:1px solid var(--line);' +
+      'border-radius:9px;font-size:12.5px;background:var(--card2,rgba(255,255,255,.08));color:inherit;outline:none}' +
+      '#fatNavSearch::placeholder{opacity:.6}';
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  /* ---------- قراءة أقسام القايمة ---------- */
+  function groupsOf(nav) {
+    var out = [], cur = null;
+    Array.prototype.forEach.call(nav.children, function (el) {
+      if (el.classList && el.classList.contains('group')) { cur = { hdr: el, items: [] }; out.push(cur); }
+      else if (cur && el.tagName === 'A' && el.hasAttribute('data-view')) cur.items.push(el);
+    });
+    return out;
+  }
+  function keyOf(hdr) { return hdr.getAttribute('data-fatg') || (hdr.textContent || '').trim().slice(0, 24); }
+  function openSet() { try { return JSON.parse(lsGet(KEY_OPEN) || '{}') || {}; } catch (e) { return {}; } }
+
+  /* ---------- 1) الطي ---------- */
+  window.fatNavToggle = function (key) {
+    var nav = document.getElementById('nav'); if (!nav) return;
+    var st = openSet(); st[key] = !st[key]; lsSet(KEY_OPEN, JSON.stringify(st));
+    applyAccordion();
+  };
+
+  function applyAccordion() {
+    var nav = document.getElementById('nav'); if (!nav) return;
+    injectStyle();
+    var groups = groupsOf(nav), st = openSet();
+    var activeView = null;
+    try { activeView = (typeof current !== 'undefined') ? current : null; } catch (e) {}
+    if (!activeView) { var a = nav.querySelector('a.active[data-view]'); activeView = a ? a.getAttribute('data-view') : null; }
+
+    groups.forEach(function (g, idx) {
+      var key = keyOf(g.hdr);
+      // الروابط الظاهرة فعليًا (بعد إخفاء النشاط/المستوى)
+      var visible = g.items.filter(function (a) { return a.style.display !== 'none'; });
+      if (!visible.length) return;
+
+      // القسم اللي فيه الشاشة الحالية يفضل مفتوح دايمًا
+      var hasActive = activeView && g.items.some(function (a) { return a.getAttribute('data-view') === activeView; });
+      // الافتراضي: أول قسم مفتوح، الباقي مطوي (إلا لو المستخدم اختار غير كده)
+      var isOpen = (key in st) ? !!st[key] : (idx === 0);
+      if (hasActive) isOpen = true;
+
+      // نجهّز العنوان مرة واحدة
+      if (!g.hdr.getAttribute('data-fatacc')) {
+        g.hdr.setAttribute('data-fatacc', '1');
+        if (!g.hdr.querySelector('.fat-caret')) {
+          var c = document.createElement('span'); c.className = 'fat-caret'; c.textContent = '▼';
+          g.hdr.appendChild(c);
+        }
+        g.hdr.addEventListener('click', function () { window.fatNavToggle(key); });
+      }
+      g.hdr.setAttribute('data-fatcollapsed', isOpen ? '0' : '1');
+      g.items.forEach(function (a) { a.classList.toggle('fat-navhidden', !isOpen); });
+    });
+  }
+  window.fatNavAccordion = applyAccordion;
+
+  /* ---------- 5) البحث في القايمة ---------- */
+  window.fatNavSearch = function (q) {
+    var nav = document.getElementById('nav'); if (!nav) return;
+    q = String(q || '').trim().toLowerCase();
+    var links = nav.querySelectorAll('a[data-view]');
+    if (!q) {
+      Array.prototype.forEach.call(links, function (a) { a.classList.remove('fat-searchhidden'); });
+      Array.prototype.forEach.call(nav.querySelectorAll('.group'), function (h) { h.classList.remove('fat-searchhidden'); });
+      applyAccordion(); // نرجّع حالة الطي
+      return;
+    }
+    // أثناء البحث: نفك الطي ونفلتر
+    Array.prototype.forEach.call(links, function (a) {
+      a.classList.remove('fat-navhidden');
+      var txt = (a.textContent || '').toLowerCase() + ' ' + (a.getAttribute('data-view') || '').toLowerCase();
+      a.classList.toggle('fat-searchhidden', txt.indexOf(q) === -1);
+    });
+    // نخفي عناوين الأقسام الفاضية
+    groupsOf(nav).forEach(function (g) {
+      var any = g.items.some(function (a) { return !a.classList.contains('fat-searchhidden') && a.style.display !== 'none'; });
+      g.hdr.classList.toggle('fat-searchhidden', !any);
+    });
+  };
+  function injectSearch() {
+    var nav = document.getElementById('nav'); if (!nav || document.getElementById('fatNavSearch')) return;
+    var links = nav.querySelectorAll('a[data-view]').length;
+    if (links < 12) return; // قايمة قصيرة = مش محتاجة بحث
+    injectStyle();
+    var inp = document.createElement('input');
+    inp.id = 'fatNavSearch'; inp.type = 'search'; inp.autocomplete = 'off';
+    inp.placeholder = (typeof L === 'function' ? L('🔎 دوّر في القايمة…', '🔎 Filter menu…') : 'Filter…');
+    inp.addEventListener('input', function () { window.fatNavSearch(this.value); });
+    inp.addEventListener('click', function (e) { e.stopPropagation(); });
+    nav.insertBefore(inp, nav.firstChild);
+  }
+
+  /* ---------- 2+3) تمريرة واحدة مؤجّلة + مراقب واحد ---------- */
+  var _pending = null, _busy = false;
+  function refresh() {
+    if (_pending) return;                       // تجميع النداءات المتلاحقة
+    _pending = setTimeout(function () {
+      _pending = null; _busy = true;            // نمنع المراقب من إعادة التشغيل بسبب تعديلاتنا إحنا
+      try {
+        try { if (typeof window.fatNavConsolidate === 'function') window.fatNavConsolidate(); } catch (e) {}
+        try { if (typeof window.fatActivityNav === 'function') window.fatActivityNav(); } catch (e) {}
+        try { if (typeof window.fatAcctNav === 'function') window.fatAcctNav(); } catch (e) {}
+        injectSearch();
+        applyAccordion();
+      } finally {
+        setTimeout(function () { _busy = false; }, 0);
+      }
+    }, 120);
+  }
+  window.fatNavRefresh = refresh;
+
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); refresh(); return r; };
+  })();
+
+  // مراقب واحد بدل المؤقّتات المتكرّرة: أي حقن متأخر في القايمة بيشغّل تمريرة واحدة
+  function startObserver() {
+    var nav = document.getElementById('nav'); if (!nav || nav._fatObserved) return;
+    if (typeof MutationObserver !== 'function') return;
+    nav._fatObserved = true;
+    var mo = new MutationObserver(function (muts) {
+      if (_busy) return;                        // تعديلاتنا إحنا — مانعيدش التشغيل
+      for (var i = 0; i < muts.length; i++) {
+        if (muts[i].type === 'childList' && muts[i].addedNodes && muts[i].addedNodes.length) { refresh(); return; }
+      }
+    });
+    mo.observe(nav, { childList: true });
+  }
+
+  /* ---------- 4) تنبيه: رتّب قايمتك حسب نشاطك ---------- */
+  function nudge() {
+    try {
+      if (lsGet(KEY_NUDGE) === '1') return;
+      if (typeof db === 'undefined' || !db.settings) return;
+      if (db.settings.bizProfile && db.settings.bizProfile.flags) return;   // مرتّب أصلًا
+      var nav = document.getElementById('nav'); if (!nav) return;
+      var visible = Array.prototype.filter.call(nav.querySelectorAll('a[data-view]'), function (a) { return a.style.display !== 'none'; }).length;
+      if (visible < 25) return;                                            // القايمة مش طويلة
+      if (typeof startBizWizard !== 'function' && typeof openModal !== 'function') return;
+      lsSet(KEY_NUDGE, '1');
+      if (typeof openModal !== 'function') return;
+      openModal('<div class="modal-h"><h3>✨ ' + L('رتّب قايمتك حسب نشاطك', 'Tidy your menu') + '</h3><button class="x" onclick="closeModal()">×</button></div>' +
+        '<div class="modal-b"><div style="text-align:center;padding:6px 0"><div style="font-size:40px">🗂️</div>' +
+        '<p style="margin:10px 0;font-size:13.5px;line-height:1.7">' +
+        L('القايمة عندك فيها ' + visible + ' قسم لأن كل المميزات ظاهرة. لو اخترت نوع نشاطك، هنخفي الأقسام اللي مالهاش لازمة ونخلّي القايمة نضيفة ومرتّبة.',
+          'Your menu shows all ' + visible + ' sections. Pick your business type and we\'ll hide what you don\'t need.') +
+        '</p><div class="hint">' + L('تقدر تغيّرها في أي وقت من الإعدادات.', 'You can change this anytime in Settings.') + '</div></div></div>' +
+        '<div class="modal-f">' +
+        (typeof startBizWizard === 'function' ? '<button class="btn btn-primary" onclick="closeModal();startBizWizard()">' + L('اختار نشاطي', 'Choose my business') + '</button>' : '') +
+        '<button class="btn btn-ghost" onclick="closeModal()">' + L('بعدين', 'Later') + '</button></div>');
+    } catch (e) {}
+  }
+
+  function boot() { injectStyle(); startObserver(); refresh(); setTimeout(nudge, 2500); }
+  if (document.getElementById('nav')) boot(); else setTimeout(boot, 1500);
+  setTimeout(boot, 6000);
+})();
+
+
+
+
+/* ============================================================
+   FATORTY v10.52 — بنود 8 · 10 · 11
+   8)  تراجع بعد الحذف (Undo) — بيستخدم سلة المهملات الموجودة
+   10) تثبيت الشاشات المفضّلة فوق القايمة
+   11) اختصارات كيبورد آمنة + شاشة مساعدة (Shift+؟)
+   ============================================================ */
+
+/* ---------- 8) تراجع بعد الحذف ---------- */
+(function () {
+  'use strict';
+  if (typeof window.trashAdd !== 'function' || typeof window.trashRestore !== 'function') return;
+  var _add = window.trashAdd;
+  if (_add._fatUndoWrapped) return;
+
+  var wrapped = function (type, item, label) {
+    var r = _add.apply(this, arguments);
+    try {
+      var last = (db.trash && db.trash[0]) ? db.trash[0] : null;
+      if (last && typeof toast === 'function') {
+        var id = last.id;
+        setTimeout(function () {
+          toast(L('اتحذف: ', 'Deleted: ') + (label || ''), '', {
+            actionLabel: L('تراجع', 'Undo'),
+            onAction: function () {
+              try { window.trashRestore(id); if (typeof toast === 'function') toast('✅ ' + L('اترجّع', 'Restored')); } catch (e) {}
+            }
+          });
+        }, 30);
+      }
+    } catch (e) {}
+    return r;
+  };
+  wrapped._fatUndoWrapped = true;
+  window.trashAdd = wrapped;
+})();
+
+
+/* ---------- 10) تثبيت الشاشات المفضّلة ---------- */
+(function () {
+  'use strict';
+  if (typeof document === 'undefined') return;
+  var KEY = 'fat_pinned';
+  function get() { try { return JSON.parse(localStorage.getItem(KEY) || '[]') || []; } catch (e) { return []; } }
+  function set(v) { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch (e) {} }
+  window.fatPinned = get;
+
+  window.fatPinToggle = function (view) {
+    var p = get(), i = p.indexOf(view);
+    if (i > -1) p.splice(i, 1); else { if (p.length >= 6) { if (typeof toast === 'function') toast(L('الحد 6 شاشات', 'Max 6'), 'err'); return; } p.push(view); }
+    set(p); render();
+    if (typeof toast === 'function') toast(i > -1 ? L('اتشال من المثبّت', 'Unpinned') : L('📌 اتثبّت', 'Pinned'));
+  };
+
+  function render() {
+    try {
+      var nav = document.getElementById('nav'); if (!nav) return;
+      var old = document.getElementById('fatPinBar'); if (old) old.remove();
+      var pins = get(); if (!pins.length) return;
+      var box = document.createElement('div'); box.id = 'fatPinBar';
+      box.style.cssText = 'padding:6px 10px 2px;display:flex;gap:5px;flex-wrap:wrap';
+      pins.forEach(function (v) {
+        var src = nav.querySelector('a[data-view="' + v + '"]');
+        if (!src) return;
+        if (typeof canView === 'function' && !canView(v)) return;
+        var label = (src.textContent || v).trim();
+        var b = document.createElement('button');
+        b.type = 'button'; b.title = label;
+        b.style.cssText = 'padding:5px 10px;border:1px solid var(--primary);border-radius:14px;background:var(--primary-soft);color:var(--primary-d);font-size:11.5px;font-weight:600;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        b.textContent = '📌 ' + label;
+        b.onclick = function (e) { e.preventDefault(); try { go(v); } catch (x) {} };
+        box.appendChild(b);
+      });
+      if (!box.children.length) return;
+      var search = document.getElementById('fatNavSearch');
+      if (search && search.nextSibling) nav.insertBefore(box, search.nextSibling);
+      else nav.insertBefore(box, nav.firstChild);
+    } catch (e) {}
+  }
+  window.fatPinRender = render;
+
+  // زر التثبيت في شريط الأدوات العلوي للشاشة الحالية
+  function injectPinBtn() {
+    try {
+      var ta = document.getElementById('topActions'); if (!ta) return;
+      if (document.getElementById('fatPinBtn')) return;
+      var v = null; try { v = (typeof current !== 'undefined') ? current : null; } catch (e) {}
+      if (!v) return;
+      var on = get().indexOf(v) > -1;
+      var b = document.createElement('button');
+      b.id = 'fatPinBtn'; b.className = 'btn btn-ghost btn-sm';
+      b.title = L('تثبيت الشاشة في القايمة', 'Pin this screen');
+      b.textContent = on ? '📌' : '📍';
+      b.onclick = function () { window.fatPinToggle(v); b.textContent = get().indexOf(v) > -1 ? '📌' : '📍'; };
+      ta.appendChild(b);
+    } catch (e) {}
+  }
+
+  (function () {
+    var _go = window.go;
+    if (typeof _go === 'function' && !_go._fatPinWrapped) {
+      var w = function () { var r = _go.apply(this, arguments); try { setTimeout(function () { injectPinBtn(); render(); }, 60); } catch (e) {} return r; };
+      w._fatPinWrapped = true; window.go = w;
+    }
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); try { setTimeout(render, 260); } catch (e) {} return r; };
+  })();
+  setTimeout(render, 6500);
+})();
+
+
+/* ---------- 11) اختصارات كيبورد + شاشة مساعدة ---------- */
+(function () {
+  'use strict';
+  if (typeof document === 'undefined') return;
+
+  var MAP = [
+    ['Alt+1', 'dashboard', 'لوحة التحكم', 'Dashboard'],
+    ['Alt+2', 'pos', 'نقطة البيع', 'Point of sale'],
+    ['Alt+3', 'sales', 'الفواتير', 'Sales'],
+    ['Alt+4', 'products', 'الأصناف', 'Products'],
+    ['Alt+5', 'customers', 'العملاء', 'Customers'],
+    ['Alt+6', 'reports', 'التقارير', 'Reports'],
+    ['Alt+0', 'settings', 'الإعدادات', 'Settings']
+  ];
+
+  function safeContext(e) {
+    var t = e.target || {};
+    var tag = (t.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable) return false;
+    var m = document.getElementById('modal');
+    if (m && m.classList && m.classList.contains('show')) return false;
+    return true;
+  }
+
+  window.fatShortcutsHelp = function () {
+    if (typeof openModal !== 'function') return;
+    var rows = MAP.map(function (r) {
+      return '<tr><td><kbd style="background:var(--card2,#eee);padding:2px 8px;border-radius:6px;font-family:monospace;font-size:12px">' + r[0] + '</kbd></td><td>' + L(r[2], r[3]) + '</td></tr>';
+    }).join('');
+    var extra = [
+      ['Ctrl/⌘ + K', L('البحث السريع', 'Quick search')],
+      ['Shift + ؟', L('الشاشة دي', 'This help')],
+      ['Esc', L('إغلاق النافذة', 'Close dialog')]
+    ].map(function (r) {
+      return '<tr><td><kbd style="background:var(--card2,#eee);padding:2px 8px;border-radius:6px;font-family:monospace;font-size:12px">' + r[0] + '</kbd></td><td>' + r[1] + '</td></tr>';
+    }).join('');
+    openModal('<div class="modal-h"><h3>⌨️ ' + L('اختصارات الكيبورد', 'Keyboard shortcuts') + '</h3><button class="x" onclick="closeModal()">×</button></div>' +
+      '<div class="modal-b"><table><tbody>' + rows + extra + '</tbody></table>' +
+      '<div class="hint" style="margin-top:10px">' + L('الاختصارات مابتشتغلش وانت بتكتب في خانة أو نافذة مفتوحة.', 'Shortcuts are disabled while typing or when a dialog is open.') + '</div></div>' +
+      '<div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">' + L('إغلاق', 'Close') + '</button></div>');
+  };
+
+  if (!window._fatShortcutsOn) {
+    window._fatShortcutsOn = true;
+    document.addEventListener('keydown', function (e) {
+      try {
+        // شاشة المساعدة: Shift + ؟  (أو Shift+/)
+        if (e.shiftKey && !e.ctrlKey && !e.metaKey && (e.key === '?' || e.key === '؟') && safeContext(e)) {
+          e.preventDefault(); window.fatShortcutsHelp(); return;
+        }
+        // Alt + رقم: تنقّل (Alt آمن — الكاشير بيستخدم أرقام عادية)
+        if (e.altKey && !e.ctrlKey && !e.metaKey && safeContext(e)) {
+          for (var i = 0; i < MAP.length; i++) {
+            if (e.key === MAP[i][0].split('+')[1]) {
+              var v = MAP[i][1];
+              if (typeof canView === 'function' && !canView(v)) return;
+              e.preventDefault(); try { go(v); } catch (x) {} return;
+            }
+          }
+        }
+      } catch (x) {}
+    }, true);
+  }
+})();
+
+
+
+
+/* ============================================================
+   FATORTY v10.53 — بنود 25 · 19 · 16
+   25) إقفال فترة محاسبية (منع الحذف قبل تاريخ الإقفال)
+   19) تحليل سلة الشراء (اللي بيشتري X بيشتري معاه Y)
+   16) مركز التقارير الموحّد
+   ============================================================ */
+
+/* ---------- 25) إقفال فترة محاسبية ---------- */
+(function () {
+  'use strict';
+  if (typeof db === 'undefined') return;
+
+  window.fatLockDate = function () { return (db.settings && db.settings.lockBefore) || ''; };
+  window.fatPeriodLocked = function (dateStr) {
+    var lock = window.fatLockDate(); if (!lock || !dateStr) return false;
+    return String(dateStr).slice(0, 10) <= String(lock).slice(0, 10);
+  };
+  window.fatSetLockDate = function (d) {
+    db.settings = db.settings || {};
+    db.settings.lockBefore = d || '';
+    try { logAudit(L('إقفال فترة محاسبية', 'Period lock'), d || L('اتلغى', 'cleared')); } catch (e) {}
+    save();
+    if (typeof toast === 'function') toast(d ? '🔒 ' + L('اتقفل لحد ', 'Locked through ') + d : L('اتلغى الإقفال', 'Lock cleared'));
+  };
+
+  window.fatLockDialog = function () {
+    if (typeof openModal !== 'function') return;
+    var cur = window.fatLockDate();
+    openModal('<div class="modal-h"><h3>🔒 ' + L('إقفال فترة محاسبية', 'Accounting period lock') + '</h3><button class="x" onclick="closeModal()">×</button></div>' +
+      '<div class="modal-b"><div class="hint" style="margin-bottom:10px">' +
+      L('لما تقفل فترة، مايبقاش ينفع تحذف أي فاتورة أو مصروف تاريخه قبل أو يساوي التاريخ ده — حماية للحسابات المُراجَعة.', 'Locking prevents deleting invoices/expenses dated on or before this date — protects audited books.') +
+      '</div><div class="field"><label>' + L('اقفل كل حاجة لحد تاريخ', 'Lock everything through') + '</label>' +
+      '<input id="lk_date" type="date" value="' + esc(cur) + '"></div>' +
+      (cur ? '<div class="badge warn">' + L('مقفول حاليًا لحد: ', 'Currently locked through: ') + esc(cur) + '</div>' : '') +
+      '</div><div class="modal-f"><button class="btn btn-primary" onclick="fatSetLockDate(document.getElementById(\'lk_date\').value);closeModal();">' + L('حفظ', 'Save') + '</button>' +
+      (cur ? '<button class="btn btn-ghost" onclick="fatSetLockDate(\'\');closeModal();">' + L('إلغاء الإقفال', 'Clear lock') + '</button>' : '') +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إغلاق', 'Close') + '</button></div>');
+  };
+
+  // حماية: منع حذف أي سجل داخل فترة مقفولة
+  (function () {
+    var _add = window.trashAdd;
+    if (typeof _add !== 'function' || _add._fatLockWrapped) return;
+    var wrapped = function (type, item, label) {
+      try {
+        var d = item && (item.date || item.ts);
+        if (d && window.fatPeriodLocked(d)) {
+          if (typeof toast === 'function') toast('🔒 ' + L('الفترة مقفولة — مينفعش تحذف سجل بتاريخ ', 'Period locked — cannot delete a record dated ') + String(d).slice(0, 10), 'err');
+          return false;
+        }
+      } catch (e) {}
+      return _add.apply(this, arguments);
+    };
+    wrapped._fatLockWrapped = true;
+    for (var k in _add) { if (Object.prototype.hasOwnProperty.call(_add, k)) wrapped[k] = _add[k]; }
+    window.trashAdd = wrapped;
+  })();
+})();
+
+
+/* ---------- 19) تحليل سلة الشراء ---------- */
+(function () {
+  'use strict';
+  if (typeof views === 'undefined' || typeof db === 'undefined') return;
+
+  window.fatBasketPairs = function (minCount) {
+    minCount = minCount || 2;
+    var pairs = {};
+    (db.sales || []).forEach(function (s) {
+      var ids = [];
+      (s.items || []).forEach(function (it) { if (it.pid && ids.indexOf(it.pid) === -1) ids.push(it.pid); });
+      for (var i = 0; i < ids.length; i++) {
+        for (var j = i + 1; j < ids.length; j++) {
+          var k = ids[i] < ids[j] ? ids[i] + '|' + ids[j] : ids[j] + '|' + ids[i];
+          pairs[k] = (pairs[k] || 0) + 1;
+        }
+      }
+    });
+    return Object.keys(pairs).filter(function (k) { return pairs[k] >= minCount; })
+      .map(function (k) {
+        var p = k.split('|');
+        var a = findProduct(p[0]), b = findProduct(p[1]);
+        return { a: a ? a.name : p[0], b: b ? b.name : p[1], count: pairs[k] };
+      })
+      .sort(function (x, y) { return y.count - x.count; }).slice(0, 40);
+  };
+
+  try {
+    PG.basket = [['سلة الشراء', 'المنتجات اللي بتتباع مع بعض'], ['Basket analysis', 'Products bought together']];
+    var _cv = window.canView; window.canView = function (v) { if (v === 'basket') return _cv('reports'); return _cv(v); };
+  } catch (e) {}
+
+  views.basket = function () {
+    try { document.getElementById('topActions').innerHTML = ''; } catch (e) {}
+    var pairs = window.fatBasketPairs(2);
+    var body = pairs.length
+      ? '<table><thead><tr><th>#</th><th>' + L('المنتج', 'Product') + '</th><th>' + L('بيتباع معاه', 'Bought with') + '</th><th>' + L('عدد المرات', 'Times') + '</th></tr></thead><tbody>' +
+        pairs.map(function (p, i) {
+          return '<tr><td>' + (i + 1) + '</td><td><b>' + esc(p.a) + '</b></td><td><b>' + esc(p.b) + '</b></td><td><span class="badge ok">' + p.count + '</span></td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty"><span class="big">🧺</span>' + L('محتاج فواتير فيها أكتر من صنف عشان نحلّل', 'Need multi-item invoices to analyse') + '</div>';
+    document.getElementById('content').innerHTML = '<div class="panel"><div class="panel-b">' + body + '</div></div>' +
+      '<div class="hint" style="margin-top:8px">💡 ' + L('استخدم النتايج دي في عمل عروض «اشترِ الاتنين» أو ترتيب الرفوف جنب بعض.', 'Use these to build bundle offers or place items together.') + '</div>';
+  };
+
+  function injectBasketNav() {
+    try { var nav = document.getElementById('nav'); if (!nav || nav.querySelector('a[data-view="basket"]')) return;
+      if (typeof canView === 'function' && !canView('basket')) return;
+      var anchor = nav.querySelector('a[data-view="rfm"]') || nav.querySelector('a[data-view="reports"]'); if (!anchor) return;
+      var a = document.createElement('a'); a.setAttribute('data-view', 'basket'); a.innerHTML = '<span class="ic">🧺</span> ' + L('سلة الشراء', 'Basket analysis'); a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('basket'); }; anchor.parentNode.insertBefore(a, anchor.nextSibling);
+    } catch (e) {}
+  }
+  (function () { var _rn = window.renderNav; if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); injectBasketNav(); return r; }; setTimeout(injectBasketNav, 6800); })();
+})();
+
+
+/* ---------- 16) مركز التقارير الموحّد ---------- */
+(function () {
+  'use strict';
+  if (typeof views === 'undefined') return;
+
+  var REPORTS = [
+    { sec: 'sales', v: 'reports', ic: '📈', ar: 'تقارير المبيعات', en: 'Sales reports' },
+    { sec: 'sales', v: 'periodcompare', ic: '📊', ar: 'مقارنة الفترات', en: 'Period compare' },
+    { sec: 'sales', v: 'cashierperf', ic: '🧑‍💼', ar: 'أداء الكاشير', en: 'Cashier report' },
+    { sec: 'sales', v: 'zreport', ic: '📆', ar: 'تقفيل اليوم', en: 'Day close' },
+    { sec: 'cust', v: 'rfm', ic: '👥', ar: 'شرائح العملاء', en: 'Customer segments' },
+    { sec: 'cust', v: 'basket', ic: '🧺', ar: 'سلة الشراء', en: 'Basket analysis' },
+    { sec: 'cust', v: 'satisfaction', ic: '⭐', ar: 'رضا العملاء', en: 'Satisfaction' },
+    { sec: 'cust', v: 'loyalty', ic: '🎁', ar: 'الولاء', en: 'Loyalty' },
+    { sec: 'inv', v: 'abc', ic: '🔤', ar: 'تحليل ABC', en: 'ABC analysis' },
+    { sec: 'inv', v: 'forecast', ic: '🔮', ar: 'التوقّعات', en: 'Forecast' },
+    { sec: 'inv', v: 'supcompare', ic: '⚖️', ar: 'مقارنة الموردين', en: 'Supplier compare' },
+    { sec: 'inv', v: 'insights', ic: '💡', ar: 'مؤشرات الأداء', en: 'Insights' },
+    { sec: 'fin', v: 'accounting', ic: '💼', ar: 'مركز المحاسبة', en: 'Accounting center' },
+    { sec: 'fin', v: 'taxReport', ic: '📋', ar: 'التقرير الضريبي', en: 'Tax report' },
+    { sec: 'fin', v: 'budget', ic: '📊', ar: 'الموازنة', en: 'Budget' }
+  ];
+  var SECS = { sales: ['📈 المبيعات', 'Sales'], cust: ['👥 العملاء', 'Customers'], inv: ['📦 المخزون', 'Inventory'], fin: ['💰 المالية', 'Financial'] };
+
+  try {
+    PG.reportshub = [['مركز التقارير', 'كل التقارير في مكان واحد'], ['Reports hub', 'All reports']];
+    var _cv = window.canView; window.canView = function (v) { if (v === 'reportshub') return _cv('reports'); return _cv(v); };
+  } catch (e) {}
+
+  views.reportshub = function () {
+    try { document.getElementById('topActions').innerHTML = ''; } catch (e) {}
+    var html = Object.keys(SECS).map(function (sec) {
+      var items = REPORTS.filter(function (r) {
+        return r.sec === sec && typeof views[r.v] === 'function' && (typeof canView !== 'function' || canView(r.v));
+      });
+      if (!items.length) return '';
+      return '<div class="panel" style="margin-bottom:14px"><div class="panel-h">' + L(SECS[sec][0], SECS[sec][1]) + '</div><div class="panel-b pad">' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">' +
+        items.map(function (r) {
+          return '<button onclick="go(\'' + r.v + '\')" style="display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:11px;background:var(--card,#fff);cursor:pointer;text-align:start" onmouseover="this.style.borderColor=\'var(--primary)\'" onmouseout="this.style.borderColor=\'var(--line)\'">' +
+            '<span style="font-size:20px">' + r.ic + '</span><span style="flex:1;font-size:13px;font-weight:600">' + L(r.ar, r.en) + '</span><span style="color:var(--muted)">‹</span></button>';
+        }).join('') + '</div></div></div>';
+    }).join('');
+    document.getElementById('content').innerHTML = html || '<div class="empty"><span class="big">📊</span>' + L('مفيش تقارير متاحة لصلاحيتك', 'No reports available') + '</div>';
+  };
+
+  function injectHubNav() {
+    try { var nav = document.getElementById('nav'); if (!nav || nav.querySelector('a[data-view="reportshub"]')) return;
+      if (typeof canView === 'function' && !canView('reportshub')) return;
+      var anchor = nav.querySelector('a[data-view="reports"]'); if (!anchor) return;
+      var a = document.createElement('a'); a.setAttribute('data-view', 'reportshub'); a.innerHTML = '<span class="ic">🗂️</span> ' + L('مركز التقارير', 'Reports hub'); a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('reportshub'); }; anchor.parentNode.insertBefore(a, anchor);
+    } catch (e) {}
+  }
+  (function () { var _rn = window.renderNav; if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); injectHubNav(); return r; }; setTimeout(injectHubNav, 6900); })();
 })();
 
 
