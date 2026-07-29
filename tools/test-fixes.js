@@ -280,7 +280,7 @@ setTimeout(() => {
     (function(){
       db.products=[{id:'e1',name:'لبن',qty:10,cost:1,trackBatch:true,bq:{b1:10},batches:[
         {id:'b_old',code:'A',expiry:'2020-01-01',qty:4,branch:'b1'},
-        {id:'b_soon',code:'B',expiry:'2026-07-25',qty:3,branch:'b1'},
+        {id:'b_soon',code:'B',expiry:addDays(today(),3),qty:3,branch:'b1'},
         {id:'b_un',code:'',expiry:'',qty:3,branch:'b1'}]}];
       var a=getAlerts();
       return {

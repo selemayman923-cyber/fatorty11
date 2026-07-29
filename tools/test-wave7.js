@@ -51,7 +51,7 @@ setTimeout(() => {
   w.fatSetTheme('purple');
   ok('تبديل لبنفسجي', w.document.documentElement.style.getPropertyValue('--primary').trim() === '#7c3aed');
   w.fatSetTheme('default');
-  ok('الرجوع للأخضر الافتراضي', w.document.documentElement.style.getPropertyValue('--primary').trim() === '#0f6b5c');
+  ok('الرجوع لثيم SNS الافتراضي (كحلي)', w.document.documentElement.style.getPropertyValue('--primary').trim() === '#0a2c56');
   // قائمة Aa بتعرض الثيمات
   if (typeof w.fatDisplayMenu === 'function') {
     w.fatDisplayMenu();

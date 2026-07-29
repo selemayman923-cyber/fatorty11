@@ -2,7 +2,7 @@
    التغيير الكبير: بدل ما ننزّل التطبيق كامل من النت في كل مرة،
    بنعرضه فورًا من الكاش وبنتأكد من التحديث في الخلفية.
    النتيجة: الفتح بقى لحظي، والتحديث بيوصل من غير ما تستنى.  */
-const CACHE = 'fatorty-v12.0';
+const CACHE = 'sns-v13.0';
 const ASSETS = [
   '/',
   '/index.html',
@@ -29,7 +29,7 @@ const offlineResponse = () =>
 // بلّغ كل التابات المفتوحة إن فيه نسخة جديدة جاهزة
 async function notifyUpdate() {
   const list = await self.clients.matchAll({ type: 'window' });
-  list.forEach(c => { try { c.postMessage({ type: 'FATORTY_UPDATE_READY' }); } catch (e) {} });
+  list.forEach(c => { try { c.postMessage({ type: 'SNS_UPDATE_READY' }); } catch (e) {} });
 }
 
 // التثبيت: كل ملف لوحده — لو واحد فشل، الباقي بيتخزّن عادي
@@ -111,5 +111,5 @@ self.addEventListener('fetch', e => {
 
 // السماح للصفحة تطلب تفعيل النسخة الجديدة فورًا
 self.addEventListener('message', e => {
-  if (e.data && e.data.type === 'FATORTY_SKIP_WAITING') self.skipWaiting();
+  if (e.data && e.data.type === 'SNS_SKIP_WAITING') self.skipWaiting();
 });

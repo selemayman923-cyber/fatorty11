@@ -1,5 +1,5 @@
 {
-  "name": "fatorty",
+  "name": "sns",
   "private": true,
   "scripts": {
     "check:syntax": "node tools/extract-inline-js.js",
