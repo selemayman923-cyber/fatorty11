@@ -5877,7 +5877,7 @@ function showAbout(){openModal('<div class="modal-h"><h3>ℹ️ '+L('عن SNS','
     '<h2 style="margin:0 0 4px;color:var(--primary-d)">SNS</h2>'+
     '<div style="font-size:13px;color:var(--muted);margin-bottom:18px">'+L('منصة إدارة أعمال متكاملة','Business Management System')+'</div>'+
     '<div style="background:var(--bg);border-radius:12px;padding:14px;text-align:right;font-size:13px;line-height:2">'+
-      '<div><b>'+L('الإصدار','Version')+':</b> 10.54 Enterprise (SNS Rebrand)</div>'+
+      '<div><b>'+L('الإصدار','Version')+':</b> 10.55 Enterprise</div>'+
       '<div><b>'+L('وحدة العيادات','Clinic module')+':</b> '+L('لوحة العيادة · المواعيد · التذكيرات · خطة العلاج · تسعير الجلسات · حسابات · تقارير · مخطط الأسنان (دائمة+لبنية) · الأشعة · الروشتة · المتابعة · تصدير PDF · صلاحيات','Clinic board · Appointments · Reminders · Treatment plans · Session pricing · Billing · Reports · Dental chart (adult+primary) · X-rays · Prescriptions · Recall · PDF export · Roles')+'</div>'+
       '<div><b>'+L('نوع النشاط','Business')+':</b> '+esc(db.settings.company||L('غير محدد','Not set'))+'</div>'+
       '<div><b>'+L('البيانات منذ','Data since')+':</b> '+(db.sales.length?[...db.sales].sort((a,b)=>a.date<b.date?-1:1)[0].date:L('لا توجد فواتير','No invoices'))+'</div>'+
@@ -33317,12 +33317,15 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   if (typeof document === 'undefined') return;
 
   var GROUPS = [
+    { id: 'academy', ar: '⚽ الأكاديمية', en: 'Academy', views: ['academy'] },
     { id: 'clinic', ar: '🏥 العيادة', en: 'Clinic', views: ['clinic', 'patients', 'appointments', 'apptcal', 'queue', 'recall', 'reminders', 'clinicreports'] },
-    { id: 'analytics', ar: '📊 تحليلات وتقارير', en: 'Analytics', views: ['rfm', 'abc', 'periodcompare', 'cashierperf', 'satisfaction'] },
-    { id: 'invadv', ar: '📦 مخزون متقدّم', en: 'Advanced inventory', views: ['cyclecount', 'labels', 'batches', 'aging', 'supcompare', 'warranties'] },
-    { id: 'staff2', ar: '👥 موظفين ومهام', en: 'Staff & tasks', views: ['leaves', 'tasks', 'permbuilder'] },
-    { id: 'mkt', ar: '🚀 مبيعات وتسويق', en: 'Sales & marketing', views: ['loyalty', 'promos', 'drivers', 'currency', 'renew'] },
-    { id: 'ops', ar: '🍳 تشغيل المطبخ', en: 'Kitchen ops', views: ['kds', 'production'] }
+    { id: 'sales2', ar: '🧾 مبيعات وطلبات', en: 'Sales & orders', views: ['quotes', 'returns', 'reservations', 'installments', 'giftCards', 'subdelivery', 'floorPlan'] },
+    { id: 'analytics', ar: '📊 تحليلات وتقارير', en: 'Analytics', views: ['reportshub', 'rfm', 'abc', 'basket', 'periodcompare', 'cashierperf', 'satisfaction', 'targets', 'invIntel'] },
+    { id: 'invadv', ar: '📦 مخزون متقدّم', en: 'Advanced inventory', views: ['stocktake', 'dailystock', 'waste', 'cyclecount', 'labels', 'batches', 'aging', 'supcompare', 'warranties', 'purchaseOrders', 'branchStock', 'catalog'] },
+    { id: 'staff2', ar: '👥 موظفين ومهام', en: 'Staff & tasks', views: ['attendance', 'schedule', 'shifts', 'shiftSessions', 'advances', 'commissions', 'leaves', 'tasks', 'permbuilder'] },
+    { id: 'mkt', ar: '🚀 مبيعات وتسويق', en: 'Sales & marketing', views: ['members', 'loyalty', 'promos', 'promoters', 'drivers', 'currency', 'renew'] },
+    { id: 'ops', ar: '🍳 تشغيل وخدمات', en: 'Operations', views: ['kds', 'production', 'recipes', 'services'] },
+    { id: 'sys2', ar: '🛠️ أدوات النظام', en: 'System tools', views: ['datasafety', 'healthCheck', 'syncHealth', 'reprintLog', 'etaPrep', 'devDocs', 'admin'] }
   ];
 
   function consolidate() {
@@ -33913,6 +33916,346 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     } catch (e) {}
   }
   (function () { var _rn = window.renderNav; if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); injectHubNav(); return r; }; setTimeout(injectHubNav, 6900); })();
+})();
+
+
+
+
+/* ============================================================
+   SNS v10.55 — نشاط "أكاديمية رياضية" (Sports Academy)
+   مبني فوق الموجود: الاشتراكات (db.memberships) + العملاء + الموظفين
+   الجديد:
+     • ملف اللاعب: تاريخ ميلاد + السن التلقائي + ولي الأمر + بيانات طبية
+     • المجموعات/الفرق: مدرب + يوم/وقت + الفئة السنية + سعة
+     • حضور الحصص للاعبين (منفصل عن حضور الموظفين)
+     • لوحة الأكاديمية: نشطين، اشتراكات قربت تنتهي، حضور النهاردة
+   البيانات: db.settings.acGroups · db.settings.acAttend · c.player{...}
+   ============================================================ */
+(function () {
+  'use strict';
+  if (typeof db === 'undefined' || typeof views === 'undefined') return;
+
+  /* ---------- 1) تسجيل نوع النشاط ---------- */
+  try {
+    if (typeof BIZ_TYPES !== 'undefined' && !BIZ_TYPES.academy) {
+      BIZ_TYPES.academy = {
+        icon: '⚽', ar: 'أكاديمية رياضية', en: 'Sports academy',
+        desc: { ar: 'لاعبين ومجموعات واشتراكات وحضور', en: 'Players, groups, subscriptions & attendance' },
+        flags: { barcode: 0, inventory: 0, suppliers: 0, purchases: 0, returns: 0, stockAlerts: 0, variants: 0, kitchen: 0, tables: 0, services: 1, academy: 1 }
+      };
+    }
+    if (typeof FAT_FLAG_LABELS !== 'undefined' && !FAT_FLAG_LABELS.academy) {
+      FAT_FLAG_LABELS.academy = { ic: '⚽', ar: 'الأكاديمية الرياضية', en: 'Sports academy' };
+    }
+  } catch (e) {}
+
+  function isAcademy() {
+    try {
+      var st = db.settings || {};
+      if (st.businessType === 'academy') return true;
+      if (st.bizProfile && st.bizProfile.flags && st.bizProfile.flags.academy === 1) return true;
+      return (db.customers || []).some(function (c) { return c.player; });   // فيه لاعبين فعلًا
+    } catch (e) { return false; }
+  }
+  window.fatIsAcademy = isAcademy;
+
+  /* ---------- 2) بيانات ---------- */
+  window.acGroups = function () { db.settings = db.settings || {}; db.settings.acGroups = db.settings.acGroups || []; return db.settings.acGroups; };
+  window.acAttend = function () { db.settings = db.settings || {}; db.settings.acAttend = db.settings.acAttend || []; return db.settings.acAttend; };
+
+  window.acAge = function (dob) {
+    if (!dob) return null;
+    try {
+      var b = new Date(dob), t = new Date(today());
+      var a = t.getFullYear() - b.getFullYear();
+      var m = t.getMonth() - b.getMonth();
+      if (m < 0 || (m === 0 && t.getDate() < b.getDate())) a--;
+      return a >= 0 && a < 120 ? a : null;
+    } catch (e) { return null; }
+  };
+  window.acPlayers = function () { return (db.customers || []).filter(function (c) { return c.player; }); };
+  window.acGroupOf = function (custId) {
+    var g = window.acGroups().filter(function (x) { return (x.players || []).indexOf(custId) > -1; })[0];
+    return g || null;
+  };
+  // الاشتراك النشط للاعب (من نظام الاشتراكات الموجود)
+  window.acSubOf = function (custId) {
+    var subs = (db.memberships || []).filter(function (m) { return m.customerId === custId && m.status !== 'ended'; });
+    return subs.length ? subs[subs.length - 1] : null;
+  };
+
+  /* ---------- 3) ملف اللاعب (يتحقن في شاشة العميل) ---------- */
+  window.acPlayerSave = function (custId) {
+    var c = findCustomer(custId); if (!c) return;
+    var g = function (i) { var e = document.getElementById(i); return e ? e.value.trim() : ''; };
+    c.player = c.player || {};
+    c.player.dob = g('ac_dob');
+    c.player.guardian = g('ac_guardian');
+    c.player.guardianPhone = g('ac_gphone');
+    c.player.position = g('ac_pos');
+    c.player.medical = g('ac_med');
+    c.player.joined = c.player.joined || today();
+    try { logAudit(L('ملف لاعب', 'Player profile'), c.name); } catch (e) {}
+    save();
+    if (typeof toast === 'function') toast('✅ ' + L('اتحفظ', 'Saved'));
+    closeModal();
+  };
+
+  window.acPlayerForm = function (custId) {
+    var c = findCustomer(custId); if (!c) return;
+    var p = c.player || {};
+    var age = window.acAge(p.dob);
+    openModal('<div class="modal-h"><h3>⚽ ' + L('ملف اللاعب', 'Player profile') + ' — ' + esc(c.name) + '</h3><button class="x" onclick="closeModal()">×</button></div>' +
+      '<div class="modal-b">' +
+      '<div class="grid2"><div class="field"><label>' + L('تاريخ الميلاد', 'Date of birth') + '</label>' +
+      '<input id="ac_dob" type="date" value="' + esc(p.dob || '') + '" oninput="acAgePreview()"></div>' +
+      '<div class="field"><label>' + L('السن', 'Age') + '</label><input id="ac_agev" disabled value="' + (age != null ? age + ' ' + L('سنة', 'yrs') : '—') + '"></div></div>' +
+      '<div class="grid2"><div class="field"><label>' + L('ولي الأمر', 'Guardian') + '</label><input id="ac_guardian" value="' + esc(p.guardian || '') + '"></div>' +
+      '<div class="field"><label>' + L('موبايل ولي الأمر', 'Guardian phone') + '</label><input id="ac_gphone" value="' + esc(p.guardianPhone || '') + '"></div></div>' +
+      '<div class="field"><label>' + L('المركز / التخصص', 'Position') + '</label><input id="ac_pos" value="' + esc(p.position || '') + '" placeholder="' + L('حارس، مدافع، وسط…', 'GK, defender…') + '"></div>' +
+      '<div class="field"><label>' + L('ملاحظات طبية (حساسية، إصابات)', 'Medical notes') + '</label><textarea id="ac_med" rows="2">' + esc(p.medical || '') + '</textarea></div>' +
+      '</div><div class="modal-f"><button class="btn btn-primary" onclick="acPlayerSave(\'' + custId + '\')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+  window.acAgePreview = function () {
+    var d = (document.getElementById('ac_dob') || {}).value;
+    var a = window.acAge(d); var e = document.getElementById('ac_agev');
+    if (e) e.value = a != null ? a + ' ' + L('سنة', 'yrs') : '—';
+  };
+  window.acMakePlayer = function (custId) {
+    var c = findCustomer(custId); if (!c) return;
+    c.player = c.player || { joined: today() }; save();
+    window.acPlayerForm(custId);
+  };
+
+  /* ---------- 4) المجموعات / الفرق ---------- */
+  window.acGroupForm = function (id) {
+    var g = window.acGroups().filter(function (x) { return x.id === id; })[0] || {};
+    var emps = (db.employees || []);
+    openModal('<div class="modal-h"><h3>👥 ' + (id ? L('تعديل مجموعة', 'Edit group') : L('مجموعة جديدة', 'New group')) + '</h3><button class="x" onclick="closeModal()">×</button></div>' +
+      '<div class="modal-b">' +
+      '<div class="field"><label>' + L('اسم المجموعة', 'Group name') + '</label><input id="g_name" value="' + esc(g.name || '') + '" placeholder="' + L('براعم 2016', 'U9 Team') + '"></div>' +
+      '<div class="grid2"><div class="field"><label>' + L('المدرب', 'Coach') + '</label><select id="g_coach"><option value="">' + L('— اختار —', '— pick —') + '</option>' +
+      emps.map(function (e) { return '<option value="' + e.id + '"' + (g.coachId === e.id ? ' selected' : '') + '>' + esc(e.name) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field"><label>' + L('السعة', 'Capacity') + '</label><input id="g_cap" type="number" min="1" value="' + (g.capacity || 20) + '"></div></div>' +
+      '<div class="grid2"><div class="field"><label>' + L('الفئة السنية من', 'Age from') + '</label><input id="g_amin" type="number" min="3" max="60" value="' + (g.ageMin || 6) + '"></div>' +
+      '<div class="field"><label>' + L('إلى', 'to') + '</label><input id="g_amax" type="number" min="3" max="60" value="' + (g.ageMax || 9) + '"></div></div>' +
+      '<div class="grid2"><div class="field"><label>' + L('أيام التدريب', 'Days') + '</label><input id="g_days" value="' + esc(g.days || '') + '" placeholder="' + L('سبت، اثنين، أربع', 'Sat, Mon, Wed') + '"></div>' +
+      '<div class="field"><label>' + L('الوقت', 'Time') + '</label><input id="g_time" value="' + esc(g.time || '') + '" placeholder="5:00 م"></div></div>' +
+      '</div><div class="modal-f"><button class="btn btn-primary" onclick="acGroupSave(\'' + (id || '') + '\')">' + L('حفظ', 'Save') + '</button>' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + L('إلغاء', 'Cancel') + '</button></div>');
+  };
+  window.acGroupSave = function (id) {
+    var g = function (i) { var e = document.getElementById(i); return e ? e.value.trim() : ''; };
+    var name = g('g_name'); if (!name) return toast(L('اكتب اسم المجموعة', 'Enter a name'), 'err');
+    var emp = (db.employees || []).filter(function (e) { return e.id === g('g_coach'); })[0];
+    var obj = {
+      name: name, coachId: g('g_coach'), coachName: emp ? emp.name : '',
+      capacity: +g('g_cap') || 20, ageMin: +g('g_amin') || 0, ageMax: +g('g_amax') || 99,
+      days: g('g_days'), time: g('g_time')
+    };
+    var list = window.acGroups();
+    var ex = list.filter(function (x) { return x.id === id; })[0];
+    if (ex) Object.assign(ex, obj);
+    else { obj.id = uid(); obj.players = []; list.push(obj); }
+    try { logAudit(L('مجموعة أكاديمية', 'Academy group'), name); } catch (e) {}
+    save(); closeModal(); toast('✅ ' + L('اتحفظ', 'Saved')); views.academy();
+  };
+  window.acGroupDelete = function (id) {
+    if (typeof confirmBox === 'function') {
+      confirmBox(L('تحذف المجموعة دي؟', 'Delete this group?'), { danger: true }).then(function (yes) {
+        if (!yes) return;
+        db.settings.acGroups = window.acGroups().filter(function (x) { return x.id !== id; });
+        save(); views.academy();
+      });
+    }
+  };
+  window.acAssign = function (groupId) {
+    var g = window.acGroups().filter(function (x) { return x.id === groupId; })[0]; if (!g) return;
+    var players = window.acPlayers();
+    openModal('<div class="modal-h"><h3>➕ ' + L('لاعبي', 'Players of') + ' ' + esc(g.name) + '</h3><button class="x" onclick="closeModal()">×</button></div>' +
+      '<div class="modal-b"><div class="hint" style="margin-bottom:8px">' + L('الفئة السنية:', 'Age range:') + ' ' + g.ageMin + '–' + g.ageMax + ' · ' + L('السعة:', 'Capacity:') + ' ' + (g.players || []).length + '/' + g.capacity + '</div>' +
+      (players.length ? '<div style="max-height:52vh;overflow:auto">' + players.map(function (c) {
+        var on = (g.players || []).indexOf(c.id) > -1;
+        var age = window.acAge((c.player || {}).dob);
+        var fit = age == null || (age >= g.ageMin && age <= g.ageMax);
+        return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid ' + (on ? 'var(--primary)' : 'var(--line)') + ';border-radius:9px;margin-bottom:5px;cursor:pointer">' +
+          '<input type="checkbox" ' + (on ? 'checked' : '') + ' onchange="acToggle(\'' + groupId + '\',\'' + c.id + '\')">' +
+          '<span style="flex:1">' + esc(c.name) + (age != null ? ' <span style="color:var(--muted);font-size:11px">(' + age + ' ' + L('سنة', 'y') + ')</span>' : '') + '</span>' +
+          (!fit ? '<span class="badge warn" style="font-size:10px">' + L('برّه الفئة', 'out of range') + '</span>' : '') + '</label>';
+      }).join('') + '</div>' : '<div class="empty">' + L('مفيش لاعبين — سجّلهم من شاشة العملاء', 'No players yet') + '</div>') +
+      '</div><div class="modal-f"><button class="btn btn-primary" onclick="closeModal();views.academy()">' + L('تم', 'Done') + '</button></div>');
+  };
+  window.acToggle = function (groupId, custId) {
+    var g = window.acGroups().filter(function (x) { return x.id === groupId; })[0]; if (!g) return;
+    g.players = g.players || [];
+    var i = g.players.indexOf(custId);
+    if (i > -1) g.players.splice(i, 1);
+    else {
+      if (g.players.length >= g.capacity) return toast(L('المجموعة كاملة', 'Group is full'), 'err');
+      // لاعب واحد في مجموعة واحدة
+      window.acGroups().forEach(function (o) { if (o.id !== groupId && o.players) { var j = o.players.indexOf(custId); if (j > -1) o.players.splice(j, 1); } });
+      g.players.push(custId);
+    }
+    save();
+  };
+
+  /* ---------- 5) حضور الحصص (للاعبين) ---------- */
+  window.acMark = function (groupId, custId, date) {
+    date = date || today();
+    var list = window.acAttend();
+    var rec = list.filter(function (r) { return r.groupId === groupId && r.custId === custId && r.date === date; })[0];
+    var order = ['present', 'absent', 'excused', ''];
+    if (!rec) { list.push({ id: uid(), groupId: groupId, custId: custId, date: date, status: 'present', by: (typeof currentUserName === 'function' ? currentUserName() : '') }); }
+    else {
+      var next = order[(order.indexOf(rec.status) + 1) % order.length];
+      if (next === '') db.settings.acAttend = list.filter(function (r) { return r.id !== rec.id; });
+      else rec.status = next;
+    }
+    save(); window.acSheet(groupId, date);
+  };
+  window.acStatusOf = function (groupId, custId, date) {
+    var r = window.acAttend().filter(function (x) { return x.groupId === groupId && x.custId === custId && x.date === date; })[0];
+    return r ? r.status : '';
+  };
+  window.acSheet = function (groupId, date) {
+    date = date || today();
+    var g = window.acGroups().filter(function (x) { return x.id === groupId; })[0]; if (!g) return;
+    var ids = g.players || [];
+    var badge = { present: ['✅', L('حاضر', 'Present'), 'var(--ok)'], absent: ['❌', L('غائب', 'Absent'), 'var(--danger)'], excused: ['🕒', L('بعذر', 'Excused'), 'var(--gold,#b8923a)'], '': ['—', L('مش متسجّل', 'Not marked'), 'var(--muted)'] };
+    openModal('<div class="modal-h"><h3>📋 ' + L('حضور', 'Attendance') + ' — ' + esc(g.name) + '</h3><button class="x" onclick="closeModal()">×</button></div>' +
+      '<div class="modal-b">' +
+      '<div class="field"><label>' + L('التاريخ', 'Date') + '</label><input type="date" value="' + date + '" onchange="acSheet(\'' + groupId + '\',this.value)"></div>' +
+      '<div class="hint" style="margin-bottom:8px">' + L('اضغط على اللاعب للتبديل: حاضر ← غائب ← بعذر ← مسح', 'Tap to cycle: present → absent → excused → clear') + '</div>' +
+      (ids.length ? ids.map(function (cid) {
+        var c = findCustomer(cid); if (!c) return '';
+        var st = window.acStatusOf(groupId, cid, date); var b = badge[st] || badge[''];
+        var sub = window.acSubOf(cid);
+        var expired = sub && typeof memStatus === 'function' ? /انتهى|Expired/.test((memStatus(sub) || {}).t || '') : false;
+        return '<div onclick="acMark(\'' + groupId + '\',\'' + cid + '\',\'' + date + '\')" style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);border-radius:10px;margin-bottom:6px;cursor:pointer">' +
+          '<span style="font-size:19px">' + b[0] + '</span>' +
+          '<span style="flex:1"><b>' + esc(c.name) + '</b>' + (expired ? ' <span class="badge danger" style="font-size:10px">' + L('اشتراك منتهي', 'expired') + '</span>' : '') + '</span>' +
+          '<span style="color:' + b[2] + ';font-size:12px;font-weight:600">' + b[1] + '</span></div>';
+      }).join('') : '<div class="empty">' + L('مفيش لاعبين في المجموعة', 'No players in this group') + '</div>') +
+      '</div><div class="modal-f"><button class="btn btn-primary" onclick="closeModal();views.academy()">' + L('تم', 'Done') + '</button></div>');
+  };
+
+  /* ---------- 6) شاشة الأكاديمية ---------- */
+  try {
+    PG.academy = [['الأكاديمية', 'مجموعات ولاعبين وحضور'], ['Academy', 'Groups, players & attendance']];
+    var _cv = window.canView; window.canView = function (v) { if (v === 'academy') return _cv('members') || _cv('customers'); return _cv(v); };
+  } catch (e) {}
+
+  views.academy = function () {
+    try { document.getElementById('topActions').innerHTML = '<button class="btn btn-primary btn-sm" onclick="acGroupForm()">+ ' + L('مجموعة', 'Group') + '</button>'; } catch (e) {}
+    var groups = window.acGroups(), players = window.acPlayers(), t = today();
+    var todayAttend = window.acAttend().filter(function (r) { return r.date === t && r.status === 'present'; }).length;
+    // اشتراكات قربت تنتهي / منتهية للاعبين
+    var expiring = 0, expired = 0;
+    players.forEach(function (c) {
+      var s = window.acSubOf(c.id); if (!s || typeof memStatus !== 'function') return;
+      var st = (memStatus(s) || {}).t || '';
+      if (/قارب|Ending/.test(st)) expiring++;
+      if (/انتهى|Expired/.test(st)) expired++;
+    });
+    var cards = '<div class="cards">' +
+      '<div class="card"><div class="ic-bg">⚽</div><div class="lbl">' + L('اللاعبين', 'Players') + '</div><div class="val">' + players.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">👥</div><div class="lbl">' + L('المجموعات', 'Groups') + '</div><div class="val">' + groups.length + '</div></div>' +
+      '<div class="card"><div class="ic-bg">📋</div><div class="lbl">' + L('حضور النهاردة', 'Present today') + '</div><div class="val" style="color:var(--ok)">' + todayAttend + '</div></div>' +
+      '<div class="card"><div class="ic-bg">⏳</div><div class="lbl">' + L('اشتراك قرب/انتهى', 'Expiring/Expired') + '</div><div class="val" style="color:' + (expired ? 'var(--danger)' : 'var(--gold,#b8923a)') + '">' + (expiring + expired) + '</div></div></div>';
+
+    var gHtml = groups.length ? '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">' +
+      groups.map(function (g) {
+        var n = (g.players || []).length;
+        var pct = g.capacity ? Math.round(n / g.capacity * 100) : 0;
+        return '<div class="panel"><div class="panel-b pad">' +
+          '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><b style="flex:1;font-size:14px">' + esc(g.name) + '</b>' +
+          '<button class="iconbtn" onclick="acGroupForm(\'' + g.id + '\')">✏️</button><button class="iconbtn del" onclick="acGroupDelete(\'' + g.id + '\')">🗑️</button></div>' +
+          '<div style="font-size:12px;color:var(--muted);line-height:1.9">' +
+          '👨‍🏫 ' + esc(g.coachName || L('بدون مدرب', 'No coach')) + '<br>' +
+          '🎂 ' + g.ageMin + '–' + g.ageMax + ' ' + L('سنة', 'yrs') + (g.days ? ' · 📅 ' + esc(g.days) : '') + (g.time ? ' · 🕐 ' + esc(g.time) : '') + '</div>' +
+          '<div style="margin:8px 0 4px;font-size:12px">' + L('اللاعبين', 'Players') + ': <b>' + n + '</b>/' + g.capacity + '</div>' +
+          '<div style="height:6px;background:var(--line);border-radius:4px;overflow:hidden"><div style="height:100%;width:' + Math.min(100, pct) + '%;background:' + (pct >= 100 ? 'var(--danger)' : 'var(--primary)') + '"></div></div>' +
+          '<div style="display:flex;gap:6px;margin-top:10px">' +
+          '<button class="btn btn-sm btn-ghost" style="flex:1" onclick="acAssign(\'' + g.id + '\')">➕ ' + L('لاعبين', 'Players') + '</button>' +
+          '<button class="btn btn-sm btn-primary" style="flex:1" onclick="acSheet(\'' + g.id + '\')">📋 ' + L('حضور', 'Attend') + '</button></div>' +
+          '</div></div>';
+      }).join('') + '</div>'
+      : '<div class="empty"><span class="big">👥</span>' + L('مفيش مجموعات — ابدأ بإضافة مجموعة', 'No groups yet') + '</div>';
+
+    // لاعبين من غير مجموعة
+    var un = players.filter(function (c) { return !window.acGroupOf(c.id); });
+    var unHtml = un.length ? '<div class="panel" style="margin-top:14px"><div class="panel-h">⚠️ ' + L('لاعبين من غير مجموعة', 'Players without a group') + ' (' + un.length + ')</div>' +
+      '<div class="panel-b pad"><div style="display:flex;gap:6px;flex-wrap:wrap">' + un.slice(0, 40).map(function (c) {
+        var a = window.acAge((c.player || {}).dob);
+        return '<span class="badge warn">' + esc(c.name) + (a != null ? ' (' + a + ')' : '') + '</span>';
+      }).join('') + '</div></div></div>' : '';
+
+    document.getElementById('content').innerHTML = cards + gHtml + unHtml +
+      '<div class="hint" style="margin-top:10px">💡 ' + L('اللاعبين بيتسجّلوا كعملاء، والاشتراك الشهري من شاشة «الاشتراكات» (بيعمل فاتورة تلقائي).', 'Players are customers; monthly fees via Subscriptions (auto-invoiced).') + '</div>';
+  };
+
+  /* ---------- 7) زر ملف اللاعب في شاشة العميل ---------- */
+  (function () {
+    var _cp = window.customerProfile || window.fatCustomerProfile;
+    if (typeof _cp !== 'function' || _cp._acWrapped) return;
+    var w = function (id) {
+      var r = _cp.apply(this, arguments);
+      try {
+        if (!isAcademy()) return r;
+        var box = document.querySelector('#modal .modal-b');
+        if (!box || document.getElementById('acPlayerBtn')) return r;
+        var c = findCustomer(id);
+        var has = c && c.player;
+        box.insertAdjacentHTML('afterbegin',
+          '<div id="acPlayerBtn" style="margin-bottom:10px"><button class="btn btn-sm ' + (has ? 'btn-ghost' : 'btn-primary') + '" onclick="acMakePlayer(\'' + id + '\')">⚽ ' +
+          (has ? L('ملف اللاعب', 'Player profile') : L('سجّل كلاعب', 'Register as player')) + '</button></div>');
+      } catch (e) {}
+      return r;
+    };
+    w._acWrapped = true;
+    if (window.customerProfile) window.customerProfile = w; else window.fatCustomerProfile = w;
+  })();
+
+  /* ---------- 8) رابط القايمة (بيظهر للأكاديمية بس) ---------- */
+  function injectAcNav() {
+    try {
+      var nav = document.getElementById('nav'); if (!nav) return;
+      var ex = nav.querySelector('a[data-view="academy"]');
+      if (!isAcademy()) { if (ex) ex.style.display = 'none'; return; }
+      if (ex) { ex.style.display = ''; return; }
+      if (typeof canView === 'function' && !canView('academy')) return;
+      var anchor = nav.querySelector('a[data-view="members"]') || nav.querySelector('a[data-view="customers"]'); if (!anchor) return;
+      var a = document.createElement('a'); a.setAttribute('data-view', 'academy');
+      a.innerHTML = '<span class="ic">⚽</span> ' + L('الأكاديمية', 'Academy'); a.style.cursor = 'pointer';
+      a.onclick = function (ev) { if (ev) ev.preventDefault(); go('academy'); };
+      anchor.parentNode.insertBefore(a, anchor);
+    } catch (e) {}
+  }
+  (function () {
+    var _rn = window.renderNav;
+    if (typeof _rn === 'function') window.renderNav = function () { var r = _rn.apply(this, arguments); injectAcNav(); return r; };
+    setTimeout(injectAcNav, 7000); setTimeout(injectAcNav, 9600);
+  })();
+
+  /* ---------- 9) تنبيه: اشتراكات اللاعبين اللي قربت تنتهي ---------- */
+  (function () {
+    var _ga = window.getAlerts; if (typeof _ga !== 'function') return;
+    window.getAlerts = function () {
+      var list = []; try { list = _ga.apply(this, arguments) || []; } catch (e) { list = []; }
+      try {
+        if (!isAcademy() || typeof memStatus !== 'function') return list;
+        var n = 0;
+        window.acPlayers().forEach(function (c) {
+          var s = window.acSubOf(c.id); if (!s) return;
+          var st = (memStatus(s) || {}).t || '';
+          if (/قارب|Ending|انتهى|Expired/.test(st)) n++;
+        });
+        if (n) list.push({ type: 'warn', msg: '⚽ ' + n + ' ' + L('لاعب اشتراكه قرب/انتهى', 'players with expiring subscriptions'), action: "go('academy')" });
+      } catch (e) {}
+      return list;
+    };
+  })();
 })();
 
 
