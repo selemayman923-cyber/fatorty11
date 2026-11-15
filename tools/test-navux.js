@@ -45,7 +45,7 @@ setTimeout(()=>{
    const key=firstCollapsed.getAttribute('data-fatg')||(firstCollapsed.textContent||'').trim().slice(0,24);
    w.fatNavToggle(key);
    ok('الضغط بيفتح القسم', firstCollapsed.getAttribute('data-fatcollapsed')==='0');
-   ok('حالة الطي اتحفظت', !!store['fat_nav_open']);
+   ok('حالة الطي اتحفظت', Object.keys(store).some(key=>key.startsWith('sns_nav_open:')));
  } else ok('قسم مطوي موجود للاختبار', false);
 
  console.log('\n▶ البحث في القايمة');
@@ -54,6 +54,22 @@ setTimeout(()=>{
 
  setTimeout(()=>{
  ok('مربع البحث ظهر', !!w.document.getElementById('fatNavSearch'));
+ const logout=w.document.getElementById('snsLogout');
+ ok('تسجيل الخروج في تذييل القائمة خارج منطقة التمرير', !!logout?.closest('.sidebar .foot')&&!nav.contains(logout));
+ const topLogout=w.document.getElementById('snsTopLogout');
+ ok('زر خروج مستقل في الشريط العلوي', !!topLogout?.closest('.topbar')&&!topLogout.closest('.sidebar')&&topLogout.textContent.includes('تسجيل الخروج'));
+ w.fatSetMode('online');
+ w.document.body.classList.add('pos-fullscreen');
+ topLogout?.click();
+ const dialog=w.document.getElementById('dlgBg');
+ ok('زر الخروج يفتح التأكيد في وضع الكاشير', dialog.classList.contains('open')&&dialog.textContent.includes('تسجيل الخروج من الحساب'));
+ w.document.getElementById('dlgNo')?.click();
+ ok('الإلغاء يقفل التأكيد', !dialog.classList.contains('open'));
+ w.document.body.classList.remove('pos-fullscreen');
+ w.fatNavSearch('zzzz-no-match');
+ ok('البحث بدون نتائج يعرض رسالة', !w.document.getElementById('snsNavEmpty').hidden);
+ w.fatNavSearch('');
+ ok('مسح البحث يخفي الرسالة', w.document.getElementById('snsNavEmpty').hidden);
  w.fatNavSearch('customers');
  const shown=Array.prototype.filter.call(nav.querySelectorAll('a[data-view]'),a=>!a.classList.contains('fat-searchhidden')).length;
  const total=nav.querySelectorAll('a[data-view]').length;
@@ -68,6 +84,11 @@ setTimeout(()=>{
  // نفتح كل الأقسام ونتأكد إن إخفاء النشاط لسه شغّال
  Array.prototype.forEach.call(nav.querySelectorAll('.group[data-fatg]'),h=>{const k=h.getAttribute('data-fatg');if(h.getAttribute('data-fatcollapsed')==='1')w.fatNavToggle(k);});
  ok('فتح الأقسام مابيلغيش إخفاء النشاط', !pat || pat.style.display==='none', pat?('display='+pat.style.display):'مفيش لينك');
+ w.fatNavSearch('patients');
+ ok('البحث مابيظهرش شاشة مخفية بالنشاط', !w.document.getElementById('snsNavEmpty').hidden);
+ w.fatNavSearch('');
+ ev("db.settings.role='cashier';snsSetActivity('upholstery');renderNav();go('pos')");
+ w.fatNavRefresh();
 
  console.log('\n▶ الأداء: تجميع النداءات (debounce)');
  ev("window.__consolidateCalls=0; if(window.fatNavConsolidate){var _o=window.fatNavConsolidate; window.fatNavConsolidate=function(){window.__consolidateCalls++; return _o.apply(this,arguments);};}");
@@ -75,6 +96,15 @@ setTimeout(()=>{
  setTimeout(()=>{
    const calls=ev("window.__consolidateCalls");
    ok('10 نداءات متلاحقة = تمريرة واحدة بس', calls===1, 'اتنفّذ '+calls+' مرة');
+   const daily=nav.querySelector('[data-fatg="daily"]');
+   ok('البيع اليومي مفتوح للكاشير وصفحته مميزة', daily?.getAttribute('aria-expanded')==='true'&&nav.querySelector('[data-view="pos"]')?.getAttribute('aria-current')==='page');
+   w.fatNavSearch('products');
+   ok('البحث يحترم صلاحيات الكاشير', !w.document.getElementById('snsNavEmpty').hidden);
+   w.fatNavSearch('');
+   Object.defineProperty(w,'innerWidth',{value:390,configurable:true});
+   w.toggleNav(true);
+   nav.querySelector('[data-view="pos"]').click();
+   ok('القائمة بتتقفل بعد اختيار صفحة في المقاس الضيق', !w.document.body.classList.contains('nav-open'));
    const inline=(html.match(/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/gi)||[]).length;
    ok('بلوكين سكربت', inline===2);
    console.log('النتيجة: '+pass+' نجحت · '+fail+' فشلت');dom.window.close();process.exit(fail?1:0);

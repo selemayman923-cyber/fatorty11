@@ -5,9 +5,13 @@
     "check:syntax": "node tools/extract-inline-js.js",
     "test:boot": "node tools/test-boot.js index.html",
     "test:fixes": "node tools/test-fixes.js index.html",
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:upholstery": "node tools/test-upholstery.js",
+    "test:reliability": "node tools/test-reliability.js",
+    "test:accounting": "node tools/test-accounting-month.js"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.16",
     "@playwright/test": "^1.62.0",
     "jsdom": "^24.1.3"
   }

@@ -19,14 +19,14 @@ setTimeout(()=>{
  // نجهّز نav فيه شاشات متناثرة + رابط الإعدادات (نقطة الإدراج)
  var nav=w.document.getElementById('nav');
  ok('عنصر nav موجود', !!nav);
- ['patients','appointments','rfm','abc','cyclecount','labels','leaves','tasks','kds','production','satisfaction','warranties','settings'].forEach(ensure);
+ ['patients','appointments','rfm','abc','cyclecount','labels','leaves','tasks','kds','production','satisfaction','warranties','settings','quotes','suppliers','pos','dashboard','sales','returns','products','purchases'].forEach(ensure);
  var beforeCount=nav.querySelectorAll('a[data-view]').length;
  w.fatNavConsolidate();
  var afterCount=nav.querySelectorAll('a[data-view]').length;
  ok('مفيش لينك اتفقد بعد التجميع', afterCount===beforeCount, beforeCount+' → '+afterCount);
  ok('عنوان قسم العيادة اتعمل', !!nav.querySelector('.group[data-fatg="clinic"]'));
- ok('عنوان قسم التحليلات اتعمل', !!nav.querySelector('.group[data-fatg="analytics"]'));
- ok('عنوان قسم المخزون المتقدّم اتعمل', !!nav.querySelector('.group[data-fatg="invadv"]'));
+ ok('عنوان قسم التحليلات اتعمل', !!nav.querySelector('.group[data-fatg="reports"]'));
+ ok('عنوان قسم المخزون المتقدّم اتعمل', !!nav.querySelector('.group[data-fatg="inventory"]'));
  // شاشات العيادة بقت ورا عنوان العيادة مباشرة
  var hdr=nav.querySelector('.group[data-fatg="clinic"]');
  var nxt=hdr&&hdr.nextElementSibling;
@@ -34,6 +34,8 @@ setTimeout(()=>{
  // الإعدادات فضلت بعد المجموعات (التجميع قبلها)
  var links=Array.prototype.map.call(nav.querySelectorAll('a[data-view]'),function(a){return a.getAttribute('data-view');});
  ok('الإعدادات فضلت في الآخر', links.indexOf('settings')>links.indexOf('rfm'), 'settings@'+links.indexOf('settings')+' rfm@'+links.indexOf('rfm'));
+ ok('الشغل اليومي مرتب قبل المخزون والمشتريات', links.filter(v=>['dashboard','pos','sales','returns','quotes','products','purchases','suppliers'].includes(v)).join(' ')==='dashboard pos sales returns quotes products purchases suppliers');
+ ok('التحكم في مجموعات القائمة بأزرار أصلية', nav.querySelector('[data-fatg="daily"]')?.tagName==='BUTTON');
  // تشغيل مرتين ما يكررش العناوين
  w.fatNavConsolidate();
  ok('التشغيل المتكرر ما بيكررش العناوين', nav.querySelectorAll('.group[data-fatg="clinic"]').length===1);

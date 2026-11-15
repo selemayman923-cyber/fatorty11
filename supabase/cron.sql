@@ -1,33 +1,21 @@
--- ═══════════════════════════════════════════════════════════════════════
--- فاتورتي — جدولة daily-backup Edge Function يوميًا عبر pg_cron + pg_net
---
--- المتطلبات (Dashboard → Database → Extensions):
---   create extension if not exists pg_cron;
---   create extension if not exists pg_net;
---
--- استبدل <PROJECT_REF> و <SERVICE_ROLE_KEY> و <BACKUP_FUNCTION_SECRET> بالقيم الحقيقية
--- بتاعتك قبل التنفيذ. BACKUP_FUNCTION_SECRET لازم يبقى نفس القيمة المضبوطة كـ env var
--- على الـ Edge Function نفسها (supabase secrets set BACKUP_FUNCTION_SECRET=...).
--- ═══════════════════════════════════════════════════════════════════════
-
+-- Enable pg_cron, pg_net and Vault. Add these secrets in the Vault dashboard:
+-- sns_project_url = https://<project-ref>.supabase.co
+-- sns_backup_secret = the same value as BACKUP_FUNCTION_SECRET on daily-backup.
+-- Apply org-backups.sql and deploy daily-backup with --no-verify-jwt first.
 select cron.schedule(
-  'fatorty-daily-backup',      -- job name
-  '0 2 * * *',                 -- كل يوم الساعة 2 صباحًا UTC
+  'fatorty-daily-backup',
+  '0 2 * * *',
   $$
   select net.http_post(
-    url := 'https://<PROJECT_REF>.functions.supabase.co/daily-backup',
+    url := rtrim(project.decrypted_secret, '/') || '/functions/v1/daily-backup',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
-      'Authorization', 'Bearer <SERVICE_ROLE_KEY>',
-      'x-backup-secret', '<BACKUP_FUNCTION_SECRET>'
+      'x-backup-secret', secret.decrypted_secret
     ),
     body := '{}'::jsonb
-  );
+  )
+  from vault.decrypted_secrets project
+  cross join vault.decrypted_secrets secret
+  where project.name = 'sns_project_url' and secret.name = 'sns_backup_secret';
   $$
 );
-
--- لإلغاء الجدولة لاحقًا:
--- select cron.unschedule('fatorty-daily-backup');
-
--- لمراجعة آخر تشغيلات الـ job:
--- select * from cron.job_run_details where jobname = 'fatorty-daily-backup' order by start_time desc limit 20;

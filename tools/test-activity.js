@@ -77,6 +77,17 @@ setTimeout(() => {
   w.fatActivityNav();
   ok('العيادة ماتخفتش لأن فيه مرضى فعلًا (أمان)', navHas('patients') && navHas('appointments'));
 
+  console.log('\\n▶ إعداد نشاط الأقمشة من غير أصناف تجريبية');
+  ev("db.products=[]; db.categories=[]; db.settings.role='manager'; snsSetActivity('pharmacy');");
+  ok('تصنيفات الصيدلية موجودة من غير إنشاء منتجات', ev("getAllCats().includes('أدوية') && db.products.length===0"));
+  ev("snsSetActivity('upholstery');");
+  ok('نشاط الأقمشة بيعرض تصنيفاته الخاصة', ev("getAllCats().includes('أقمشة') && !getAllCats().includes('أدوية') && db.products.length===0"));
+  ok('شاشات البيع والمخزون متاحة والمطبخ مخفي', ev("!isFeatureBlocked('pos') && !isFeatureBlocked('purchases') && isFeatureBlocked('kds')"));
+  ev("db.products=[{...snsLegacyExamples('pharmacy')[0],id:'unused'},{...snsLegacyExamples('pharmacy')[1],id:'sold'},{id:'real',name:'كتان',cat:'قماش خاص'}]; db.sales=[{items:[{pid:'sold'}]}];");
+  ok('المراجعة تستبعد الأصناف الحقيقية والمستخدمة', ev("snsUnusedExamples().map(p=>p.id).join(',')==='unused'"));
+  ok('تصنيفات المحل اليدوية محفوظة', ev("getAllCats().includes('قماش خاص')"));
+  ok('تخزين كل محل له مفتاح مستقل', ev("fatSetMode('online'); CURRENT_UID='u'; CURRENT_ORG='a'; var before=snsCacheKey(); CURRENT_ORG='b'; before!==snsCacheKey()"));
+
   console.log('\n▶ بنية الملف سليمة');
   const inlineBlocks = html.match(/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/gi) || [];
   ok('عدد بلوكات السكربت = ٢', inlineBlocks.length === 2, 'لقيت ' + inlineBlocks.length);
