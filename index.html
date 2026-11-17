@@ -1777,8 +1777,8 @@ const norm=s=>(s||'').toString().toLowerCase().replace(/[\u064B-\u0652\u0670]/g,
 const matches=(hay,q)=>{var h=norm(hay);var words=norm(q).split(/\s+/).filter(Boolean);if(!words.length)return true;return words.every(function(w){return h.indexOf(w)>-1;});};
 
 /* ============ Supabase Auth + per-account Storage ============ */
-const SUPA_URL='https://pycurwyugnhwhfdcthub.supabase.co';
-const SUPA_KEY='sb_publishable_tmbe2wFViXhvseJXNs8S9g_2CblqQYe';
+const SUPA_URL='https://kedfgspcpnmcrmujcpxh.supabase.co';
+const SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtlZGZnc3BjcG5tY3JtdWpjcHhoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAwMTAzNjEsImV4cCI6MjA5NTU4NjM2MX0.pREcSyypH4KP5kqxQ-L1y4kE5-Z4_f4QyWFy8pjNJgg';
 const DATA_TABLE='user_data';           // per-account row, protected by RLS (legacy v1)
 const V2_RECORDS='v2_records';          // per-record rows (v2 storage)
 const V2_SETTINGS='v2_settings';        // single settings row per account (v2)
