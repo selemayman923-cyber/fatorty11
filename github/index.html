@@ -1933,8 +1933,9 @@ async function authSubmit(){
       if(error)throw error;
       try{db.settings.termsAccepted=true;db.settings.termsAcceptedAt=new Date().toISOString();}catch(e){}
       if(!data.session){ // email confirmation is enabled on the project
-        setAuthMsg(L('تم إنشاء الحساب. افتح إيميلك وأكّد الحساب، وبعدها سجّل دخول.','Account created. Confirm via the email we sent, then sign in.'),'ok');
-        AUTH_MODE='signin';renderAuthMode();btn.disabled=false;return;
+        AUTH_MODE='signin';renderAuthMode();btn.disabled=false;
+        setAuthMsg(L('تم إنشاء الحساب. أكّد إيميلك وسجّل دخول عشان تجهّز محلك.','Account created. Confirm your email, then sign in to set up your business.'),'ok');
+        return;
       }
       CURRENT_UID=data.session.user.id;
     }else{
@@ -2448,7 +2449,8 @@ async function resolveOrg(uid){
   if(mem&&mem.length){
     // which of these orgs do I own?
     const ids=mem.map(m=>m.org_id);
-    const {data:owned}=await sb.from('orgs').select('id').eq('owner_id',uid).in('id',ids);
+    const {data:owned,error:ownedError}=await sb.from('orgs').select('id').eq('owner_id',uid).in('id',ids);
+    if(ownedError)throw ownedError;
     const ownedSet=new Set((owned||[]).map(o=>o.id));
     // prefer a shop I was invited into (not my own); else my own
     const invited=mem.find(m=>!ownedSet.has(m.org_id));
@@ -2458,12 +2460,19 @@ async function resolveOrg(uid){
     CURRENT_ROLE=CURRENT_ORG_OWNED?'manager':(chosen.role||'cashier');
     return;
   }
-  // no membership at all → create my own shop
-  const {data:org,error:oe}=await sb.from('orgs').insert({name:'محلي',owner_id:uid}).select('id').single();
-  if(oe)throw oe;
+  // A failed membership insert on the first sign-in may leave an owned shop.
+  const {data:existing,error:existingError}=await sb.from('orgs').select('id').eq('owner_id',uid)
+    .order('created_at',{ascending:true}).limit(1).maybeSingle();
+  if(existingError)throw existingError;
+  let org=existing;
+  if(!org){
+    const {data:created,error}=await sb.from('orgs').insert({name:'محلي',owner_id:uid}).select('id').single();
+    if(error)throw error;
+    org=created;
+  }
   CURRENT_ORG=org.id; CURRENT_ROLE='manager';
-  const {error:ie}=await sb.from('org_members').insert({org_id:CURRENT_ORG,user_id:uid,role:'manager',email:(db.settings&&db.settings.cloudEmail)||null});
-  if(ie)throw ie;
+  const {error:joinError}=await sb.from('org_members').insert({org_id:CURRENT_ORG,user_id:uid,role:'manager',email:db.settings.cloudEmail||null});
+  if(joinError&&joinError.code!=='23505')throw joinError;
   CURRENT_ORG_OWNED=true;
 }
 
@@ -2527,6 +2536,7 @@ async function load(){
   if(!sb||!uid){seedDemo();migrate();return;}
   try{
     CURRENT_ORG=null;
+    V2_READY=false;
     await resolveOrg(uid);                         // figure out my shop + role
     await loadSubscription();                      // trial on first run + read status
     const org=CURRENT_ORG;
@@ -2582,7 +2592,9 @@ setTimeout(function(){try{if(!db.settings._guideShown)return;if(db.settings._las
     db.settings.role=CURRENT_ROLE;
     migrate();
     V2_READY=true; V2_SNAP={}; V2_IDMAP={};
-    await syncV2();                                // push seeded data up, now tagged with org_id
+    // The first setup can open as soon as the empty shop has loaded.
+    // Save its first settings with the actual choices instead of a blank profile.
+    if(seed||!CURRENT_ORG_OWNED||!snsNeedsIndustry())await syncV2();
     cacheLocal(uid); return;
   }catch(e){
     console.warn('v2 load failed — using local cache',e);
@@ -3016,7 +3028,11 @@ function renderNav(){
   try{if(typeof applyFeatureFlags==='function')applyFeatureFlags();}catch(e){}}
 let current='dashboard';
 const MGR_VIEWS=['dashboard','purchases','quotes','returns','products','customers','suppliers','treasury','expenses','reports','employees','targets','purchaseOrders'];
-function defaultView(){const r=db.settings.role||'manager';return r==='cashier'?'pos':(r==='stockkeeper'?'products':'dashboard');}
+function defaultView(){
+  const role=db.settings.role||'manager', preferred=db.settings.entryView;
+  if(role==='manager'&&['pos','products'].includes(preferred)&&snsViewAccess(preferred)==='open')return preferred;
+  return role==='cashier'?'pos':(role==='stockkeeper'?'products':'dashboard');
+}
 let snsViewRevision=0;
 function go(view){
   const access=snsViewAccess(view);
@@ -4753,6 +4769,9 @@ function snsSetActivity(type, options={}){
   const same=snsActivityType()===type;
   const flags={...preset.flags,...(same?current?.flags:{})};
   const sells=options.sells||(same?current?.sells:'')||'products';
+  if(options.sells&&current?.sells==='services'&&sells!=='services'){
+    for(const key of ['inventory','barcode','suppliers','purchases'])flags[key]=preset.flags[key];
+  }
   if(sells==='services')Object.assign(flags,{services:1,inventory:0,barcode:0,suppliers:0,purchases:0});
   else if(sells==='both')flags.services=1;
   db.settings.bizProfile={...(same?current:{}),...options,type,typeName:preset.ar,flags};
@@ -8858,17 +8877,42 @@ async function startApp(){
   try{ if(typeof fatInitCustomerUX==='function') fatInitCustomerUX(); }catch(e){}
   if(db.settings.theme==='dark'){document.body.classList.add('dark');snsThemeButton();}
   if(db.settings.pin){document.getElementById('lock').style.display='flex';setTimeout(()=>document.getElementById('lockPin').focus(),100);}
-  go(defaultView());autoBackupCheck();
   renderSubBanner();
   enforceSubLock();
-  maybeOnboard();
+  if(!maybeOnboard()){go(defaultView());autoBackupCheck();}
   // real-time notifications: refresh badge (and open panel) periodically
   if(!window.__notifTimer){window.__notifTimer=setInterval(()=>{try{updateAlertBadge();const np=document.getElementById('notifPanel');if(np&&np.style.display==='block')renderNotif();}catch(e){}},20000);}
 }
-/* Show industry setup only on the owner's first setup. */
+function snsNeedsIndustry(){
+  if(db.settings.onboarded===true||Object.hasOwn(BIZ_TYPES,snsActivityType()))return false;
+  // Legacy shops with operating history continue from their previous workspace.
+  const label=String(db.settings.activity||'').trim();
+  if(label&&!['محلي','مشروعي'].includes(label)&&['products','customers','suppliers'].some(key=>db[key]?.length))return false;
+  return !['sales','purchases','appointments','expenses','cash','returns','quotes','serviceOrders']
+    .some(key=>Array.isArray(db[key])&&db[key].length>0)&&!(db.customers||[]).some(customer=>customer.isPatient);
+}
 function maybeOnboard(){
-  if(db.settings.onboarded||snsActivityType()||db.settings.activity||document.getElementById('subLock'))return;
-  if(snsCanChooseIndustry())startBizWizard(false);
+  if(document.getElementById('subLock'))return false;
+  const cloud=fatGetMode()!=='offline'&&!!CURRENT_UID;
+  if(cloud&&(!CURRENT_ORG||(CURRENT_ORG_OWNED&&snsNeedsIndustry()&&!V2_READY))){
+    const root=document.getElementById('snsIndustry');
+    toggleNav(false);closeModal();
+    document.body.classList.add('sns-choosing-industry');
+    document.querySelector('.app').inert=true;
+    root.hidden=false;
+    root.innerHTML='<div class="sns-industry-wrap sns-industry-content"><h1 id="snsIndustryTitle" tabindex="-1">'+
+      L('تعذّر تجهيز المحل','Could not set up the shop')+'</h1><p>'+
+      L('سجّلنا دخولك، لكن بيانات المحل لسه ما اتحمّلتش من السحابة. جرّب التحميل تاني.','You signed in, but the shop did not load from the cloud. Try reloading.')+
+      '</p><div class="sns-industry-actions"><button class="btn btn-primary" type="button" data-industry-action="reload">'+L('أعد التحميل','Reload')+
+      '</button><button class="btn btn-danger" type="button" data-industry-action="logout">'+L('تسجيل الخروج','Sign out')+'</button></div></div>';
+    root.querySelector('h1').focus();
+    return true;
+  }
+  if(snsNeedsIndustry()&&snsCanChooseIndustry()){
+    startBizWizard(false);
+    return !!snsIndustryState;
+  }
+  return false;
 }
 /* Full-screen lock when the shop's subscription has expired (admins are exempt). */
 function enforceSubLock(){
@@ -13036,10 +13080,11 @@ function snsCanChooseIndustry(){
 
 function startBizWizard(isRerun){
   if(!snsCanChooseIndustry())return toast(L('اختيار المجال متاح لصاحب المحل','Only the shop owner can choose the industry'),'err');
-  if(!isRerun&&(db.settings.onboarded||snsActivityType()||db.settings.activity))return;
+  if(!isRerun&&!snsNeedsIndustry())return;
   if(snsIndustryState||document.getElementById('subLock'))return;
   snsIndustryState={rerun:!!isRerun,org:CURRENT_ORG,user:CURRENT_UID,history:[],sector:'',all:false,field:'',query:'',
-    name:db.settings.company==='مشروعي'?'':db.settings.company||''};
+    name:['مشروعي','محلي'].includes(db.settings.company)?'':db.settings.company||'',
+    sells:db.settings.bizProfile?.sells||'',entry:db.settings.entryView||'dashboard'};
   toggleNav(false);
   closeModal();
   document.body.classList.add('sns-choosing-industry');
@@ -13086,7 +13131,13 @@ function renderWizType(headingFocus=false){
       ${field?`<form class="sns-industry-detail" id="snsIndustryForm">
         <label for="wiz_name">${L('اسم المحل على الفاتورة','Business name on invoices')}</label>
         <input id="wiz_name" autocomplete="organization" required maxlength="120" value="${esc(state.name)}">
-        <button type="submit" class="btn btn-primary">${L('حفظ المجال وفتح لوحة التحكم','Save industry and open dashboard')}</button>
+        <label for="wiz_sells">${L('بتبيع إيه؟','What do you sell?')}</label>
+        <select id="wiz_sells">${[['products',L('منتجات','Products')],['services',L('خدمات','Services')],['both',L('منتجات وخدمات','Products and services')]].map(([value,label])=>
+          `<option value="${value}" ${value===(state.sells||(['services','clinic'].includes(field.activity)?'services':'products'))?'selected':''}>${label}</option>`).join('')}</select>
+        <label for="wiz_entry">${L('تحب تبدأ منين بعد تسجيل الدخول؟','Where should SNS open after sign-in?')}</label>
+        <select id="wiz_entry">${[['dashboard',L('لوحة التحكم','Dashboard')],['pos',L('نقطة البيع','Point of sale')],['products',L('الأصناف','Products')]].map(([value,label])=>
+          `<option value="${value}" ${value===state.entry?'selected':''}>${label}</option>`).join('')}</select>
+        <button type="submit" class="btn btn-primary">${L('احفظ وابدأ','Save and get started')}</button>
       </form>`:`
       <div class="sns-industry-search">
         <label for="snsIndustrySearch">${L('ابحث عن مجال عمل','Search for an industry')}</label>
@@ -13184,7 +13235,10 @@ function wizFinish(){
   const name=state.name.trim();
   if(!field||!name)return toast(L('اكتب اسم المحل','Enter the business name'),'err');
   const key=field.activity||state.field;
-  if(!snsSetActivity(key,{industryKey:state.field}))return;
+  const sells=document.getElementById('wiz_sells').value;
+  const entry=document.getElementById('wiz_entry').value;
+  if(!snsSetActivity(key,{industryKey:state.field,sells}))return;
+  if(['dashboard','pos','products'].includes(entry))db.settings.entryView=entry;
   db.settings.company=name;
   snsCompleteIndustry(L(field.ar,field.en));
 }
@@ -13205,14 +13259,26 @@ function snsCompleteIndustry(label){
   logAudit(L('اختيار مجال العمل','Choose industry'),label);
   snsCloseIndustry();
   if(CURRENT_UID)db.settings._guideShown=true;
-  void save();
   applyBrand();
   applyLang();
-  go('dashboard');
+  go(defaultView());
+  const org=CURRENT_ORG,user=CURRENT_UID;
+  const name=db.settings.company, profile=db.settings.bizProfile;
+  void save().then(()=>{
+    if(org!==CURRENT_ORG||user!==CURRENT_UID)return;
+    let synced=!user;
+    try{
+      const settings=JSON.parse(V2_SNAP.__settings||'null')?.settings;
+      synced=synced||(settings?.company===name&&settings?.bizProfile?.type===profile.type&&
+        settings.bizProfile.industryKey===profile.industryKey&&settings.bizProfile.sells===profile.sells&&
+        settings.entryView===db.settings.entryView);
+    }catch(e){}
+    toast(synced?L('إعدادات المحل اتحفظت','Business setup saved'):
+      L('الحفظ على السحابة لسه ما اتأكدش. راجع حالة المزامنة قبل ما تفتح من جهاز تاني.','Cloud save is not confirmed yet. Check sync before opening on another device.'));
+  });
   const heading=document.getElementById('pageTitle');
   heading.tabIndex=-1;
   heading.focus({preventScroll:true});
-  toast(L('مجال العمل اتحفظ','Industry saved'));
   if(CURRENT_UID&&!db.settings.termsAccepted)showTermsIfNeeded();
 }
 
@@ -13220,6 +13286,8 @@ const snsIndustryRoot=document.getElementById('snsIndustry');
 snsIndustryRoot.addEventListener('input',event=>{
   if(!snsIndustryState)return;
   if(event.target.id==='wiz_name')snsIndustryState.name=event.target.value;
+  if(event.target.id==='wiz_sells')snsIndustryState.sells=event.target.value;
+  if(event.target.id==='wiz_entry')snsIndustryState.entry=event.target.value;
   if(event.target.id==='snsIndustrySearch'){
     snsIndustryState.query=event.target.value;
     snsRenderIndustryResults();
@@ -13228,8 +13296,11 @@ snsIndustryRoot.addEventListener('input',event=>{
 snsIndustryRoot.addEventListener('click',event=>{
   const button=event.target.closest('button');
   const state=snsIndustryState;
-  if(!button||!state)return;
+  if(!button)return;
   const {industrySector,industryField,industryAction}=button.dataset;
+  if(industryAction==='reload')return location.reload();
+  if(industryAction==='logout'&&!state)return snsSidebarLogout();
+  if(!state)return;
   if(industrySector)snsNavigateIndustry({sector:industrySector,query:''});
   else if(industryField)wizPickType(industryField);
   else if(industryAction==='all')snsNavigateIndustry({sector:'',all:true});
@@ -13362,7 +13433,14 @@ function rerunBizWizard(){
 
 
 /* SECURITY: maps a view to its feature flag — returns true if the business profile disables it */
+const SNS_CLINIC_VIEWS=new Set(['patients','appointments','clinic','clinicreports','apptcal','queue','recall','reminders']);
+function snsClinicEnabled(){
+  const type=snsActivityType();
+  if(type)return type==='clinic';
+  return db.settings.bizProfile?.flags?.clinic===1||(db.customers||[]).some(c=>c.isPatient)||(db.appointments||[]).length>0;
+}
 function isFeatureBlocked(view){
+  if(SNS_CLINIC_VIEWS.has(view))return !snsClinicEnabled();
   try{
     var p = db.settings.bizProfile;
     if(!p || !p.flags) return false;  // no profile = nothing blocked (existing users see all)
@@ -13378,10 +13456,6 @@ function isFeatureBlocked(view){
       recipes:'kitchen',
       services:'services'
     };
-    if(['patients','appointments','clinic','clinicreports','apptcal','queue','recall','reminders'].includes(view)){
-      return snsActivityType()!=='clinic'&&f.clinic!==1&&
-        !db.customers.some(c=>c.isPatient)&&!(db.appointments||[]).length;
-    }
     if(view==='production'&&snsActivityType()==='factory')return false;
     if(viewFeature[view]==='memberships'&&(db.memberships||[]).some(m=>m.status!=='ended'))return false;
     var feature = viewFeature[view];
@@ -17356,6 +17430,7 @@ setInterval(function(){
   if(typeof _origStart==='function'){
     window.startApp=async function(){
       var r=await _origStart.apply(null,arguments);
+      if(snsIndustryState||document.body.classList.contains('sns-choosing-industry'))return r;
       try{
         var ua=navigator.userAgent||'';
         var dev=/Mobile|Android|iPhone/i.test(ua)?'\ud83d\udcf1 '+L('موبايل','Mobile'):'\ud83d\udcbb '+L('كمبيوتر','Desktop');
@@ -30056,6 +30131,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     window.getAlerts = function () {
       var list = [];
       try { list = _ga.apply(this, arguments) || []; } catch (e) { list = []; }
+      if(snsViewAccess('appointments')!=='open')return list;
       try {
         var todays = window.fatApptsForDate(today()).filter(function (a) { return a.status !== 'cancelled' && a.status !== 'done'; });
         if (todays.length) {
@@ -31956,7 +32032,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   try {
     PG.clinicreports = [['تقارير العيادة', 'دخل وتحليلات العيادة'], ['Clinic reports', 'Clinic income & analytics']];
     var _cv = window.canView;
-    window.canView = function (v) { if (v === 'clinicreports') return _cv('reports'); return _cv(v); };
+    window.canView = function (v) { if (v === 'clinicreports') return snsClinicEnabled()&&_cv('reports'); return _cv(v); };
   } catch (e) {}
 
   views.clinicreports = function () {
@@ -34682,21 +34758,14 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   var INV_EXTRA = ['abc', 'cyclecount', 'labels', 'batches']; // تحاليل/أدوات مخزون
   var SUP_EXTRA = ['supcompare'];
 
-  function hasClinicData() {
-    try { return (db.customers || []).some(function (c) { return c.isPatient; }) || (db.appointments || []).length > 0; } catch (e) { return false; }
-  }
-
   window.fatActivityNav = function () {
     try {
-      var st = db.settings || {}; var p = st.bizProfile;
-      if (!p || !p.flags) return;               // مفيش بروفايل = اعرض كل حاجة (زي النظام الأصلي)
-      var f = p.flags; var bt = st.businessType || '';
+      var f = db.settings.bizProfile?.flags;
       var hide = {};
-      var showClinic = (bt === 'clinic') || f.clinic === 1 || hasClinicData();
-      if (!showClinic) CLINIC.forEach(function (v) { hide[v] = 1; });
-      if (f.kitchen !== 1) KITCHEN.forEach(function (v) { hide[v] = 1; });
-      if (f.inventory === 0) { INV_EXTRA.forEach(function (v) { hide[v] = 1; }); hide['warranties'] = 1; }
-      if (f.suppliers === 0) SUP_EXTRA.forEach(function (v) { hide[v] = 1; });
+      if (!snsClinicEnabled()) CLINIC.forEach(function (v) { hide[v] = 1; });
+      if (f && f.kitchen !== 1) KITCHEN.forEach(function (v) { hide[v] = 1; });
+      if (f?.inventory === 0) { INV_EXTRA.forEach(function (v) { hide[v] = 1; }); hide['warranties'] = 1; }
+      if (f?.suppliers === 0) SUP_EXTRA.forEach(function (v) { hide[v] = 1; });
 
       var nav = document.getElementById('nav'); if (!nav) return;
       Object.keys(hide).forEach(function (v) {
@@ -35181,6 +35250,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
         else headers.set(key,child);
       }else if(child.matches('a[data-view]')){
         const view = child.dataset.view;
+        if(SNS_CLINIC_VIEWS.has(view)&&!snsClinicEnabled()){child.remove();continue;}
         if(seen.has(view)){child.remove();continue;}
         seen.add(view);
         linksByGroup.get(placement.get(view)?.id||more.id).push(child);
