@@ -8884,7 +8884,15 @@ async function startApp(){
   if(!window.__notifTimer){window.__notifTimer=setInterval(()=>{try{updateAlertBadge();const np=document.getElementById('notifPanel');if(np&&np.style.display==='block')renderNotif();}catch(e){}},20000);}
 }
 function snsNeedsIndustry(){
-  if(db.settings.onboarded===true||Object.hasOwn(BIZ_TYPES,snsActivityType()))return false;
+  if(db.settings.industrySetupRequired===false){
+    if(!CURRENT_UID||!CURRENT_ORG||fatGetMode()==='offline')return false;
+    const cloud=JSON.parse(V2_SNAP.__settings||'null')?.settings;
+    if(cloud?.industrySetupRequired===false)return false;
+    return true;
+  }
+  const configuredType=snsActivityType();
+  const skipped= configuredType==='other'&&db.settings.bizProfile?.industryKey==='';
+  if(!skipped&&(db.settings.onboarded===true||Object.hasOwn(BIZ_TYPES,configuredType)))return false;
   // Legacy shops with operating history continue from their previous workspace.
   const label=String(db.settings.activity||'').trim();
   if(label&&!['محلي','مشروعي'].includes(label)&&['products','customers','suppliers'].some(key=>db[key]?.length))return false;
@@ -13079,6 +13087,7 @@ function snsCanChooseIndustry(){
 }
 
 function startBizWizard(isRerun){
+  if(CURRENT_UID&&(!CURRENT_ORG||!V2_READY))return toast(L('بيانات المحل لسه ما اتحمّلتش. أعد تحميل الصفحة وجرّب تاني.','Reload the shop and try again.'),'err');
   if(!snsCanChooseIndustry())return toast(L('اختيار المجال متاح لصاحب المحل','Only the shop owner can choose the industry'),'err');
   if(!isRerun&&!snsNeedsIndustry())return;
   if(snsIndustryState||document.getElementById('subLock'))return;
@@ -13151,7 +13160,8 @@ function renderWizType(headingFocus=false){
       <p class="sns-industry-count" id="snsIndustryCount" role="status"></p>
       <div id="snsIndustryResults" aria-labelledby="snsIndustryListTitle"></div>`}
       <footer class="sns-industry-footer">
-        <button type="button" class="btn btn-ghost" data-industry-action="${state.rerun?'cancel':'skip'}">${state.rerun?L('إلغاء','Cancel'):L('تخطي وإعداد النظام يدويًا','Skip and set up manually')}</button>
+        ${state.rerun?`<button type="button" class="btn btn-ghost" data-industry-action="cancel">${L('إلغاء','Cancel')}</button>`:''}
+        <p id="snsIndustrySaveStatus" role="status" aria-live="polite"></p>
       </footer>
     </div>`;
   if(!field)snsRenderIndustryResults();
@@ -13233,6 +13243,7 @@ function wizFinish(){
   if(!state||state.org!==CURRENT_ORG||state.user!==CURRENT_UID||!snsCanChooseIndustry())return;
   const field=SNS_INDUSTRY_CATALOG.fields[state.field];
   const name=state.name.trim();
+  if(state.saving)return;
   if(!field||!name)return toast(L('اكتب اسم المحل','Enter the business name'),'err');
   const key=field.activity||state.field;
   const sells=document.getElementById('wiz_sells').value;
@@ -13251,31 +13262,42 @@ function wizSkip(){
     applyLang();
     return document.querySelector('[onclick="rerunBizWizard()"]')?.focus();
   }
-  if(!snsSetActivity('other',{industryKey:''}))return;
-  snsCompleteIndustry(L('نشاط عام','General business'));
+
 }
 
-function snsCompleteIndustry(label){
-  logAudit(L('اختيار مجال العمل','Choose industry'),label);
-  snsCloseIndustry();
+async function snsCompleteIndustry(label){
+  const state=snsIndustryState;
+  if(!state||state.saving)return;
+  state.saving=true;
+  const button=document.querySelector('#snsIndustryForm button[type="submit"]');
+  const status=document.getElementById('snsIndustrySaveStatus');
+  button.disabled=true;
+  status.textContent=L('جاري حفظ إعدادات المحل…','Saving shop setup…');
+  const firstSetup=!state.rerun;
+  if(firstSetup)db.settings.industrySetupRequired=false;
   if(CURRENT_UID)db.settings._guideShown=true;
+  if(!state.audited){logAudit(L('اختيار مجال العمل','Choose industry'),label);state.audited=true;}
+  const {company,bizProfile,entryView}=db.settings;
+  try{
+    await save();
+    if(snsIndustryState!==state||CURRENT_ORG!==state.org||CURRENT_UID!==state.user)return;
+    if(firstSetup&&CURRENT_UID&&fatGetMode()!=='offline'){
+      const settings=JSON.parse(V2_SNAP.__settings||'null')?.settings;
+      if(settings?.industrySetupRequired!==false||settings.company!==company||settings.entryView!==entryView||
+        settings.bizProfile?.industryKey!==bizProfile.industryKey||settings.bizProfile?.sells!==bizProfile.sells){
+        status.textContent=L('لسه ما قدرناش نحفظ الإعدادات على السحابة. اتأكد من الاتصال واضغط احفظ وابدأ تاني.','Cloud save is pending. Check your connection and try again.');
+        return;
+      }
+    }
+  }finally{
+    state.saving=false;
+    button.disabled=false;
+  }
+  snsCloseIndustry();
   applyBrand();
   applyLang();
   go(defaultView());
-  const org=CURRENT_ORG,user=CURRENT_UID;
-  const name=db.settings.company, profile=db.settings.bizProfile;
-  void save().then(()=>{
-    if(org!==CURRENT_ORG||user!==CURRENT_UID)return;
-    let synced=!user;
-    try{
-      const settings=JSON.parse(V2_SNAP.__settings||'null')?.settings;
-      synced=synced||(settings?.company===name&&settings?.bizProfile?.type===profile.type&&
-        settings.bizProfile.industryKey===profile.industryKey&&settings.bizProfile.sells===profile.sells&&
-        settings.entryView===db.settings.entryView);
-    }catch(e){}
-    toast(synced?L('إعدادات المحل اتحفظت','Business setup saved'):
-      L('الحفظ على السحابة لسه ما اتأكدش. راجع حالة المزامنة قبل ما تفتح من جهاز تاني.','Cloud save is not confirmed yet. Check sync before opening on another device.'));
-  });
+  toast(L('إعدادات المحل اتحفظت','Business setup saved'));
   const heading=document.getElementById('pageTitle');
   heading.tabIndex=-1;
   heading.focus({preventScroll:true});
@@ -13300,7 +13322,7 @@ snsIndustryRoot.addEventListener('click',event=>{
   const {industrySector,industryField,industryAction}=button.dataset;
   if(industryAction==='reload')return location.reload();
   if(industryAction==='logout'&&!state)return snsSidebarLogout();
-  if(!state)return;
+  if(!state||state.saving)return;
   if(industrySector)snsNavigateIndustry({sector:industrySector,query:''});
   else if(industryField)wizPickType(industryField);
   else if(industryAction==='all')snsNavigateIndustry({sector:'',all:true});
@@ -13318,7 +13340,7 @@ snsIndustryRoot.addEventListener('submit',event=>{
   wizFinish();
 });
 snsIndustryRoot.addEventListener('keydown',event=>{
-  if(event.key==='Escape'&&snsIndustryState?.history.length){
+  if(event.key==='Escape'&&!snsIndustryState?.saving&&snsIndustryState?.history.length){
     event.preventDefault();
     event.stopPropagation();
     snsIndustryBack();
