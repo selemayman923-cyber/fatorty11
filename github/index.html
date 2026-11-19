@@ -34748,8 +34748,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   'use strict';
   if (typeof db === 'undefined') return;
 
-  // نضيف موديول العيادة لقائمة المميزات (لو النظام بيدعمها) + نفعّله لنوع العيادة
-  try { if (typeof FAT_FLAG_LABELS !== 'undefined' && !FAT_FLAG_LABELS.clinic) FAT_FLAG_LABELS.clinic = { ic: '🩺', ar: 'العيادة والمواعيد', en: 'Clinic & appointments' }; } catch (e) {}
+  // Clinical access follows the shop activity. The legacy flag stays readable for uncategorized clinics.
   try { if (typeof BIZ_TYPES !== 'undefined' && BIZ_TYPES.clinic && BIZ_TYPES.clinic.flags) BIZ_TYPES.clinic.flags.clinic = 1; } catch (e) {}
 
   // شاشات كل مجموعة

@@ -2,7 +2,7 @@
    التغيير الكبير: بدل ما ننزّل التطبيق كامل من النت في كل مرة،
    بنعرضه فورًا من الكاش وبنتأكد من التحديث في الخلفية.
    النتيجة: الفتح بقى لحظي، والتحديث بيوصل من غير ما تستنى.  */
-const CACHE = 'sns-production-customer-v2';
+const CACHE = 'sns-production-customer-v3';
 const ASSETS = [
   '/',
   '/index.html',
