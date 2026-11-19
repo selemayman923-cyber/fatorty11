@@ -260,7 +260,14 @@ async function monthEnd(pg) {
 
     const afterReload = createShopApp(pg, ids.owner, 'manager');
     try {
-      await afterReload.hydrateFromDatabase();
+      const readDocuments = () => JSON.stringify({
+        sales: db.sales.map(({ id, no, total, dueAmount, items }) => ({ id, no, total, dueAmount, items })),
+        returns: db.returns,
+      });
+      const savedDocuments = app.call(readDocuments);
+      assert.notEqual(afterReload.call(readDocuments), savedDocuments, 'Fresh session already had the documents');
+      await afterReload.evalJs('pullV2({replace:true,expectedOutbox:null})');
+      assert.deepEqual(JSON.parse(afterReload.call(readDocuments)), JSON.parse(savedDocuments), 'Reload changed the invoice or return');
       await assertMonthEnd(afterReload, '2026-10-31', expected);
     } finally {
       afterReload.close();
@@ -527,13 +534,114 @@ async function verifyTwoRegisters(pg) {
   }
 }
 
+async function verifySyncMigration() {
+  const pg = await createAccountingDatabase({ migrate: false });
+  try {
+    await pg.query(
+      `insert into public.v2_records(user_id, org_id, kind, local_id, data)
+       select $1, $2, 'customers', 'duplicate-customer', jsonb_build_object('balance', amount)
+       from (values (0), (40)) as sample(amount)`,
+      [ids.owner, ids.mainShop],
+    );
+    await pg.query(
+      `insert into public.v2_settings(user_id, org_id, data)
+       values ($1, $3, '{"seq":{"sale":1,"quote":1},"settings":{"company":"Owner shop"}}'),
+              ($2, $3, '{"seq":{"sale":42,"quote":2,"shiftSession":4},"settings":{"company":"Staff copy"}}')`,
+      [ids.owner, ids.cashier, ids.mainShop],
+    );
+    const sql = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'org-sync-staging.sql'), 'utf8');
+    await assert.rejects(pg.exec(sql), /SNS_SYNC_MIGRATION_REVIEW_REQUIRED/);
+    await pg.exec('rollback');
+    const { rows: [state] } = await pg.query(`
+      select (select jsonb_agg(data->'balance' order by (data->>'balance')::int) from public.v2_records) as balances,
+             (select jsonb_agg(data->'seq'->'sale' order by (data->'seq'->>'sale')::int) from public.v2_settings) as counters,
+             has_function_privilege('authenticated','public.v2_apply_changes(uuid,jsonb,uuid[],jsonb)','execute') as legacy_sync_enabled,
+             has_table_privilege('authenticated','public.v2_records','insert') as legacy_insert_enabled,
+             to_regprocedure('public.sns_apply_changes_checked(uuid,jsonb,jsonb,jsonb,jsonb,uuid)') is not null as new_sync_installed
+    `);
+    assert.deepEqual(state, {
+      balances: [0, 40], counters: [1, 42], legacy_sync_enabled: true,
+      legacy_insert_enabled: true, new_sync_installed: false,
+    });
+    process.stdout.write('PASS sync migration rejected duplicates and preserved records, settings and legacy permissions\n');
+
+    await pg.query(
+      `insert into public.v2_records(user_id, org_id, kind, local_id, data)
+       select $1, $2, 'audit', 'audit-' || sample, jsonb_build_object('id','audit-' || sample)
+       from generate_series(1,425) as sample cross join generate_series(1,2)`,
+      [ids.owner, ids.mainShop],
+    );
+    await pg.query(
+      `insert into public.v2_records(user_id, org_id, kind, local_id, data)
+       select $1::uuid, $2::uuid, 'sales', 'sale-' || fixture.no,
+              jsonb_build_object('id','sale-' || fixture.no,'no',fixture.no,
+                                 'customerId','duplicate-customer','dueAmount',fixture.due)
+       from (values (43,200), (44,350)) as fixture(no,due) cross join generate_series(1,2)
+       union all
+       select $1, $2, fixture.kind, fixture.kind || '-test', jsonb_build_object('no',fixture.no)
+       from (values ('quotes',3), ('shiftSessions',5)) as fixture(kind,no)`,
+      [ids.owner, ids.mainShop],
+    );
+
+    const reconcile = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'org-sync-reconcile-staging.sql'), 'utf8');
+    await assert.rejects(pg.exec(reconcile), /SNS_RECONCILE_APPROVED_BALANCE_REQUIRED/);
+    await pg.exec('rollback');
+    const approved = reconcile.replace('approved_balance numeric := null;', 'approved_balance numeric := 40;');
+    assert.notEqual(approved, reconcile, 'Synthetic balance could not be selected');
+    await pg.query(
+      `update public.v2_settings set data = jsonb_set(data, '{settings,warranties}', '[{"id":"test-warranty"}]')
+       where user_id=$1`, [ids.cashier],
+    );
+    await assert.rejects(pg.exec(approved), /SNS_RECONCILE_SHARED_SETTINGS_REVIEW_REQUIRED/);
+    await pg.exec('rollback');
+    const { rows: [staff] } = await pg.query(
+      `select data #> '{settings,warranties}' as warranties from public.v2_settings where user_id=$1`, [ids.cashier],
+    );
+    assert.deepEqual(staff.warranties, [{ id: 'test-warranty' }]);
+    await pg.query(
+      `update public.v2_settings set data = jsonb_set(data, '{settings,warranties}', $2)
+       where user_id=$1`, [ids.owner, JSON.stringify(staff.warranties)],
+    );
+    await pg.exec(approved);
+    const { rows: [result] } = await pg.query(`
+      select (select count(*)::int from public.v2_records) as remaining_records,
+             (select data->'balance' from public.v2_records where kind='customers') as balance,
+             (select data->'seq' from public.v2_settings) as counters,
+             (select data #>> '{settings,company}' from public.v2_settings) as company,
+             (select data #> '{settings,warranties}' from public.v2_settings) as warranties,
+             (select count(*)::int from sns_recovery.sync_reconcile_rows) as archived_rows,
+             (select jsonb_agg(original #> '{data,balance}' order by (original #>> '{data,balance}')::int)
+              from sns_recovery.sync_reconcile_rows where original->>'kind'='customers') as archived_balances
+    `);
+    assert.deepEqual(result, {
+      remaining_records: 430, balance: 40, counters: { sale: 45, quote: 4, shiftSession: 5 },
+      company: 'Owner shop', warranties: [{ id: 'test-warranty' }],
+      archived_rows: 858, archived_balances: [0, 40],
+    });
+    const preflight = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'org-sync-preflight.sql'), 'utf8');
+    const [checks] = await pg.exec(preflight);
+    assert.ok(checks.rows.every(({ affected }) => Number(affected) === 0));
+    await pg.exec(sql);
+    const { rows: [permissions] } = await pg.query(`
+      select has_function_privilege('authenticated','public.v2_apply_changes(uuid,jsonb,uuid[],jsonb)','execute') as legacy,
+             has_function_privilege('authenticated','public.sns_apply_changes_checked(uuid,jsonb,jsonb,jsonb,jsonb,uuid)','execute') as upgraded
+    `);
+    assert.deepEqual(permissions, { legacy: false, upgraded: true });
+    process.stdout.write('PASS staging reconciliation archived all duplicate versions and preserved numbering before sync installation\n');
+
+  } finally {
+    await pg.close();
+  }
+}
+
 async function main() {
+  await verifySyncMigration();
   const pg = await createAccountingDatabase();
   try {
     const { balances } = await monthEnd(pg);
     await verifyTwoRegisters(pg);
     await verifyPurchaseCostAndOpenings(pg);
-    process.stdout.write('PASS month close, cross-period settlements, backup restore, shop isolation, concurrent sale retry, opening balances, and purchase costing using PostgreSQL\n');
+    process.stdout.write('PASS month close, invoice and return reload, cross-period settlements, backup restore, shop isolation, concurrent sale retry, opening balances, and purchase costing using PostgreSQL\n');
     process.stdout.write(JSON.stringify(balances) + '\n');
   } finally {
     await pg.close();

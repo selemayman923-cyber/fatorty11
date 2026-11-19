@@ -86,6 +86,21 @@ begin
   ) then
     raise exception 'SNS_RECONCILE_FINANCE_OR_SHIFT_REVIEW_REQUIRED';
   end if;
+  -- These settings contain operational records, so keep conflicting versions for review.
+  if exists (
+    select 1
+    from (values ('staffTasks'), ('warranties')) as shared(key)
+    cross join lateral (
+      select
+        coalesce(nullif(cfg.data #> array['settings', shared.key], 'null'::jsonb), '[]'::jsonb) as owner_data,
+        coalesce(nullif(seller_settings #> array['settings', shared.key], 'null'::jsonb), '[]'::jsonb) as staff_data
+    ) as entries
+    where jsonb_typeof(entries.owner_data) <> 'array'
+       or jsonb_typeof(entries.staff_data) <> 'array'
+       or entries.owner_data is distinct from entries.staff_data
+  ) then
+    raise exception 'SNS_RECONCILE_SHARED_SETTINGS_REVIEW_REQUIRED';
+  end if;
   if coalesce(cfg.data #>> '{seq,sale}','') <> '1'
     or coalesce(cfg.data #>> '{seq,quote}','') <> '1'
     or cfg.data #>> '{seq,shiftSession}' is not null

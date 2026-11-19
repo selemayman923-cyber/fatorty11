@@ -33,6 +33,8 @@ w.document.querySelector('[data-industry-action="back"]').click();
 w.document.querySelector('[data-industry-field="upholstery"]').click();
 assert.equal(el('wiz_name').value,'محل القماش التجريبي');
 w.document.querySelector('#snsIndustryForm button[type=submit]').click();
+await new Promise(resolve=>setImmediate(resolve));
+assert.equal(el('snsIndustry').hidden,true);
 ev(()=>fatSetMode('online'));
 assert.equal(ev(()=>db.settings.bizProfile.type),'upholstery');
 assert.equal(el('brandName').textContent,'محل القماش التجريبي');

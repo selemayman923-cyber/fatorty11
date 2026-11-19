@@ -1,11 +1,9 @@
-/* فاتورتي — Service Worker v12.0
-   التغيير الكبير: بدل ما ننزّل التطبيق كامل من النت في كل مرة،
-   بنعرضه فورًا من الكاش وبنتأكد من التحديث في الخلفية.
-   النتيجة: الفتح بقى لحظي، والتحديث بيوصل من غير ما تستنى.  */
-const CACHE = 'sns-staging-v14.5';
+/* SNS service worker. Prefer revalidated network assets and keep an offline copy. */
+const CACHE = 'sns-production-audit-v4';
 const ASSETS = [
   '/',
   '/index.html',
+  '/wholesale.js',
   '/manifest.json',
   '/vendor/jsbarcode.min.js',
   '/vendor/supabase.min.js',
@@ -32,81 +30,43 @@ async function notifyUpdate() {
   list.forEach(c => { try { c.postMessage({ type: 'SNS_UPDATE_READY' }); } catch (e) {} });
 }
 
-// التثبيت: كل ملف لوحده — لو واحد فشل، الباقي بيتخزّن عادي
-self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE)
-      .then(c => Promise.all(
-        ASSETS.map(u => c.add(new Request(u, { cache: 'reload' })).catch(() => null))
-      ))
-      .then(() => self.skipWaiting())
-      .catch(() => self.skipWaiting())
-  );
+self.addEventListener('install', event => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    await cache.addAll(ASSETS.map(path => new Request(path, { cache: 'reload' })));
+    await self.skipWaiting();
+  })());
 });
 
-// التفعيل: امسح الكاش القديم + تحكم في كل التابات فورًا
-self.addEventListener('activate', e => {
-  e.waitUntil(
-    caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
+self.addEventListener('activate', event => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    const oldCaches = keys.filter(key => key.startsWith('sns-') && key !== CACHE);
+    await Promise.all(oldCaches.map(key => caches.delete(key)));
+    await self.clients.claim();
+    if (oldCaches.length) await notifyUpdate();
+  })());
 });
 
-self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
-  const url = new URL(e.request.url);
-  if (url.origin !== location.origin) return;
-  const isAppShell = url.pathname === '/' || url.pathname === '/index.html';
-
-  if (isAppShell) {
-    /* STALE-WHILE-REVALIDATE
-       ١) اعرض من الكاش فورًا (فتح لحظي)
-       ٢) في نفس الوقت اسأل السيرفر: فيه جديد؟ الطلب ده شرطي —
-          لو مفيش تغيير السيرفر بيرد 304 من غير ما ينزّل حاجة
-       ٣) لو فيه جديد: خزّنه وبلّغ المستخدم */
-    e.respondWith(
-      caches.open(CACHE).then(cache =>
-        cache.match('/index.html').then(cached => {
-          const fresh = fetch(e.request)
-            .then(res => {
-              if (res && res.status === 200) {
-                const oldTag = cached && (cached.headers.get('etag') || cached.headers.get('last-modified'));
-                const newTag = res.headers.get('etag') || res.headers.get('last-modified');
-                cache.put('/index.html', res.clone());
-                if (cached && oldTag && newTag && oldTag !== newTag) notifyUpdate();
-                else if (cached && !oldTag && !newTag) {
-                  Promise.all([cached.clone().text(), res.clone().text()])
-                    .then(([a, b]) => { if (a !== b) notifyUpdate(); })
-                    .catch(() => {});
-                }
-              }
-              return res;
-            })
-            .catch(() => null);
-
-          // الكاش أولاً — لو مفيش، استنى الشبكة
-          return cached || fresh.then(r => r || offlineResponse());
-        })
-      ).catch(() => offlineResponse())
-    );
-    return;
-  }
-
-  // باقي الملفات: من الكاش الأول مع fallback آمن
-  e.respondWith(
-    caches.match(e.request).then(cached =>
-      cached || fetch(e.request).then(res => {
-        if (res && res.status === 200) {
-          const clone = res.clone();
-          caches.open(CACHE).then(cache => cache.put(e.request, clone));
-        }
-        return res;
-      }).catch(() =>
-        new Response('', { status: 504, statusText: 'Offline' })
-      )
-    )
-  );
+self.addEventListener('fetch', event => {
+  if (event.request.method !== 'GET') return;
+  const url = new URL(event.request.url);
+  if (url.origin !== location.origin || !ASSETS.includes(url.pathname)) return;
+  const shell = url.pathname === '/' || url.pathname === '/index.html';
+  const key = shell ? '/index.html' : url.pathname;
+  event.respondWith((async () => {
+    const cache = await caches.open(CACHE).catch(() => null);
+    try {
+      const response = await fetch(event.request, {cache: 'no-cache'});
+      if (response.ok && cache) await cache.put(key, response.clone()).catch(() => {});
+      if (response.status < 500) return response;
+      const saved = await cache?.match(key).catch(() => null);
+      return saved || response;
+    } catch {
+      const saved = await cache?.match(key).catch(() => null);
+      return saved || (shell ? offlineResponse() : Response.error());
+    }
+  })());
 });
 
 // السماح للصفحة تطلب تفعيل النسخة الجديدة فورًا

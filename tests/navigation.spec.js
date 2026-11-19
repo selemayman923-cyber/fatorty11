@@ -10,7 +10,12 @@ async function openWorkspace(page, { role = 'manager', activity = 'upholstery', 
     localStorage.setItem('fat_mode', 'online');
     localStorage.setItem('fat_nav_nudged', '1');
   });
+  await page.route('**/vendor/supabase.min.js', route => route.fulfill({
+    contentType: 'application/javascript',
+    body: "window.supabase={createClient:()=>({auth:{getSession:async()=>({data:{session:null}}),onAuthStateChange:()=>({data:{subscription:{unsubscribe(){}}}})}})};"
+  }));
   await page.goto('/index.html');
+  await expect(page.locator('#landing')).toBeVisible();
   await page.evaluate(({ role, activity, plan }) => {
     hideLanding();
     hideAuthScreen();
@@ -182,5 +187,123 @@ test('invoice rows open the correct invoice and actions with confirmation', asyn
   await page.getByRole('button', { name: /القيود اليومية/ }).click();
   await page.locator('button[data-source="sale-test"]').click();
   await expect(modal.locator('#printArea')).toContainText('عميل الاختبار');
+  expect(errors).toEqual([]);
+});
+
+test('customers can be searched, filtered and opened from the action menu', async ({ page }) => {
+  const errors = await openWorkspace(page);
+  await page.evaluate(() => {
+    db.customers[0].phone2 = '01500123456';
+    db.customers.push({ id: 'trade', name: 'عميل جملة', phone: '01100000000', tier: 'wholesale', balance: 60, openingBalance: 60 });
+    _rebuildCustIdx();
+    go('customers');
+  });
+  const list = page.locator('#snsCustomersList');
+  const search = page.getByRole('searchbox', { name: 'بحث في العملاء' });
+  await search.fill('01500123456');
+  await expect(list.locator('tbody tr')).toHaveCount(1);
+  await expect(list).toContainText('عميل الاختبار');
+  await page.getByRole('button', { name: 'جملة', exact: true }).click();
+  await expect(list).toContainText('مفيش عملاء مطابقين');
+  await list.getByRole('button', { name: 'مسح البحث والتصفية' }).click();
+  await expect(search).toHaveValue('');
+  const row = list.getByRole('row', { name: /عميل جملة/ });
+  await row.getByRole('button', { name: 'عرض', exact: true }).click();
+  await expect(page.locator('#modal')).toContainText('عميل جملة');
+  await page.locator('#modal .modal-h .x').click();
+  await row.getByRole('button', { name: 'المزيد', exact: true }).click();
+  await page.getByRole('dialog', { name: 'عميل جملة' }).getByRole('button', { name: 'كشف حساب' }).click();
+  await expect(page.locator('#printArea')).toContainText('عميل جملة');
+  expect(errors).toEqual([]);
+});
+
+test('treasury filters by account and shows the new balances after a transfer', async ({ page }) => {
+  const errors = await openWorkspace(page);
+  await page.evaluate(() => {
+    db.banks = [{ id: 'wallet', name: 'المحفظة التجريبية', opening: 100 }];
+    addCash('in', 500, 'إيداع أولي', null, 'cash');
+    addCash('in', 30, 'تحصيل بالمحفظة', null, 'wallet');
+    go('treasury');
+  });
+  const list = page.locator('#snsTreasuryMovements');
+  const account = page.locator('#snsTreasuryAccount');
+  await page.getByRole('button', { name: 'عرض الحركات' }).click();
+  await expect(account).toHaveValue('wallet');
+  await expect(list).toContainText('تحصيل بالمحفظة');
+  await expect(list).not.toContainText('إيداع أولي');
+  await page.locator('#snsTreasuryType').selectOption('out');
+  await expect(list).toContainText('مفيش حركات مطابقة');
+  await page.getByRole('button', { name: 'مسح التصفية' }).click();
+  await expect(account).toHaveValue('');
+  await expect(page.getByRole('button', { name: 'حذف الحساب' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'تحويل بين الحسابات', exact: true }).click();
+  await page.locator('#tr_amt').fill('25');
+  await page.locator('#tr_note').fill('نقل رصيد اختباري');
+  await page.getByRole('button', { name: 'تنفيذ التحويل' }).click();
+  await expect(list.getByText(/نقل رصيد اختباري/)).toHaveCount(2);
+  expect(await page.evaluate(() => [cashBalance(), bankBalance('wallet')])).toEqual([475, 155]);
+  expect(errors).toEqual([]);
+});
+
+test('mobile settings switch panels, clear search and localize tab labels', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const errors = await openWorkspace(page);
+  await page.evaluate(() => go('settings'));
+  const tabs = page.locator('#snsSettingsTabs');
+  const search = page.getByRole('searchbox', { name: 'بحث في الإعدادات' });
+  await expect(page.locator('#sns-settings-profile')).toBeVisible();
+  await expect(page.locator('#sns-settings-print')).toBeHidden();
+  await tabs.getByRole('button', { name: 'الفواتير والطباعة' }).click();
+  await expect(page.locator('#sns-settings-print')).toBeVisible();
+  await search.fill('  النسخ   الاحتياطي  ');
+  await expect(page.locator('#sns-settings-backup')).toBeVisible();
+  await search.fill('no-matching-settings');
+  await expect(page.locator('#snsNoSettings')).toBeVisible();
+  await tabs.getByRole('button', { name: 'الفروع والفريق' }).click();
+  await expect(search).toHaveValue('');
+  await expect(page.locator('#sns-settings-branches')).toBeVisible();
+  await expect(page.locator('#snsNoSettings')).toBeHidden();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.locator('#langBtn').click();
+  await expect(tabs.getByRole('button', { name: 'Branches & team' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('html')).toHaveAttribute('dir', 'ltr');
+  expect(errors).toEqual([]);
+});
+
+test('dashboard invoice total follows the selected branch and each recent invoice opens', async ({ page }) => {
+  const errors = await openWorkspace(page, { activity: 'other' });
+  await page.evaluate(() => {
+    db.branches = [{ id: 'main', name: 'الفرع الرئيسي' }, { id: 'other', name: 'فرع آخر' }];
+    db.settings.activeBranch = 'main';
+    const base = { date: today(), no: 1, profit: 60, total: 100, paidAmount: 100, customerName: 'عميل الفرع', items: [] };
+    db.sales = [
+      { ...base, id: 'invoice-main', branch: 'main' },
+      { ...base, id: 'invoice-other', total: 900, branch: 'other', customerName: 'عميل الفرع الآخر' },
+      { ...base, id: 'invoice-void', total: 700, branch: 'main', voided: true }
+    ];
+    go('dashboard');
+  });
+  const total = page.locator('.sns-metric').filter({ hasText: 'إجمالي المبيعات' });
+  await expect(total).toContainText('100');
+  await expect(page.locator('.sns-recent-sales tbody tr')).toHaveCount(1);
+  await page.locator('.sns-recent-sales .sns-text-action').click();
+  await expect(page.locator('#modal #printArea')).toContainText('عميل الفرع');
+  expect(errors).toEqual([]);
+});
+
+test('mobile product cards are keyboard accessible and invoice review does not post a sale', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const errors = await openWorkspace(page, { activity: 'other' });
+  await page.evaluate(() => go('pos'));
+  const item = page.locator('#posGrid button[data-pid="cloth"]');
+  await expect(item).toBeVisible();
+  await item.focus();
+  await item.press('Enter');
+  await expect(page.locator('#cartItems')).toContainText('قماش كتان للعرض');
+  await expect(page.locator('#snsPosReview')).toContainText('150');
+  await page.locator('#snsPosReview').click();
+  await expect(page.locator('#snsPosCart')).toBeFocused();
+  expect(await page.evaluate(() => db.sales.length)).toBe(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   expect(errors).toEqual([]);
 });

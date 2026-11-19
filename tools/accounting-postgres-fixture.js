@@ -12,7 +12,7 @@ const ids = {
   otherOwner: '20000000-0000-4000-8000-000000000005',
 };
 
-async function createAccountingDatabase() {
+async function createAccountingDatabase({ migrate = true } = {}) {
   const pg = new PGlite();
   try {
     // Reproduce the tables and auth contract that the migrations consume.
@@ -63,8 +63,10 @@ async function createAccountingDatabase() {
         exists (select 1 from public.org_members m where m.org_id = v2_settings.org_id)
       );
     `);
-    for (const filename of ['org-sync-staging.sql', 'org-accounting-period-lock.sql', 'org-backups.sql']) {
-      await pg.exec(await fs.readFile(path.join(__dirname, '..', 'supabase', filename), 'utf8'));
+    if (migrate) {
+      for (const filename of ['org-sync-staging.sql', 'org-accounting-period-lock.sql', 'org-backups.sql']) {
+        await pg.exec(await fs.readFile(path.join(__dirname, '..', 'supabase', filename), 'utf8'));
+      }
     }
     await pg.query('insert into public.orgs values ($1,$2),($3,$4)', [
       ids.mainShop, ids.owner, ids.otherShop, ids.otherOwner,
