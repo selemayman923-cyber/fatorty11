@@ -118,11 +118,13 @@ test('inventory toolbar imports product rows into stock and keeps row actions us
     sb.from = table => ({
       select: () => ({
         eq: () => ({
-          maybeSingle: async () => ({
-            data: table === 'subscriptions'
-              ? { plan: 'trial', status: 'active', expires_at: '2099-01-01' }
-              : { max_products: 100, max_users: 10, max_branches: 4 },
-          }),
+          maybeSingle: async () => {
+            if(table==='subscriptions'){
+              await new Promise(resolve=>{window.releaseCsvPlan=resolve;});
+              return {data:{plan:'trial',status:'active',expires_at:'2099-01-01'}};
+            }
+            return {data:{max_products:100,max_users:10,max_branches:4}};
+          },
         }),
       }),
     });
@@ -143,16 +145,22 @@ test('inventory toolbar imports product rows into stock and keeps row actions us
   });
   await expect(modal.getByRole('heading', { name: /استيراد أصناف/ })).toBeVisible();
   await modal.getByRole('button', { name: /استيراد 1 سجل/ }).click();
+  await expect(modal.getByRole('button',{name:/جارٍ التحقق/})).toBeDisabled();
+  await page.evaluate(async () => {
+    await csvDoImport();
+    window.releaseCsvPlan();
+  });
   await expect(modal).not.toBeVisible();
   const imported = await page.evaluate(() => {
     const item = db.products.find(product => product.sku === 'CSV-01');
     return {
       item: item && [item.name, item.price, item.cost, item.qty, item.cat, item.unit],
+      importedCount: db.products.filter(product=>product.sku==='CSV-01').length,
       customers: db.customers.map(customer => customer.id),
       movement: db.stockMoves.find(move => move.pid === item?.id)?.delta,
     };
   });
-  expect(imported).toEqual({ item: ['صنف CSV', 125, 80, 17, 'أقمشة', 'متر'], customers: ['customer'], movement: 17 });
+  expect(imported).toEqual({ item: ['صنف CSV', 125, 80, 17, 'أقمشة', 'متر'], customers: ['customer'], movement: 17, importedCount: 1 });
   const row = page.locator('#prodTable').getByRole('row', { name: /CSV-01/ });
   await row.getByRole('button', { name: 'تعديل' }).click();
   await expect(page.locator('#f_name')).toHaveValue('صنف CSV');
@@ -669,4 +677,261 @@ test('day closing reconciles cash movements independently of the sale method', a
     return db.shifts[0]?.expectedCash;
   });
   expect(expected).toBe(155);
+});
+
+test('four customer categories and an optional fifth survive saving and keep price levels', async ({ page }) => {
+  const errors=await openWorkspace(page,{activity:'other'});
+  await page.evaluate(() => { db.settings.priceTierNames={wholesale:'تجار وموزعون'}; go('customers'); });
+  for (const label of ['قطاعي','زبون','نص جملة','تجار وموزعون']) {
+    await expect(page.getByRole('button',{name:label,exact:true})).toBeVisible();
+  }
+  await expect(page.locator('#content [data-tier="custom"]')).toHaveCount(0);
+  await page.evaluate(() => { views.settings(); document.getElementById('s_tier_custom').value='شركات'; saveSettings(); go('customers'); });
+  await expect(page.getByRole('button',{name:'شركات',exact:true})).toBeVisible();
+  await page.evaluate(() => partyForm('customer','customer'));
+  await expect(page.locator('#p_tier option')).toHaveCount(5);
+  await page.locator('#p_tier').selectOption('shopper');
+  await page.locator('#modal').getByRole('button',{name:'حفظ',exact:true}).click();
+  await page.getByRole('button',{name:'زبون',exact:true}).click();
+  await expect(page.locator('#snsCustomersList tbody tr')).toHaveCount(1);
+  await expect(page.locator('#snsCustomersList tbody')).toContainText('زبون');
+  await page.evaluate(() => go('pos'));
+  await page.locator('#posCustomer').selectOption('customer');
+  expect(await page.evaluate(() => ({tier:db.customers[0].tier,level:posPriceTier,price:effPrice(db.products[0])})))
+    .toEqual({tier:'shopper',level:'default',price:150});
+  expect(errors).toEqual([]);
+});
+
+test('a cashier can find an item and the owner can search and open large invoice histories on mobile', async ({ page }) => {
+  await page.setViewportSize({width:390,height:844});
+  const errors=await openWorkspace(page,{activity:'other'});
+  await page.evaluate(() => {
+    const branch=activeBranch();
+    db.branches.push({id:'remote-branch',name:'الفرع الآخر'});
+    db.sales=Array.from({length:30000},(_,i)=>({
+      id:'sale-'+(i+1),no:i+1,date:'2026-10-12',branch,customerName:'عميل '+(i+1),
+      items:[],sub:200,total:200,profit:50,paidAmount:200,dueAmount:0,vat:0,disc:0
+    }));
+    db.sales.push({...db.sales[0],id:'remote-sale',customerName:'خارج الفرع',branch:'remote-branch'});
+    db.purchases=[{...db.sales[0],id:'target-purchase',no:30123,supplierName:'مورد حرير',dueAmount:120}];
+    db.products=Array.from({length:10000},(_,i)=>({id:'item-'+i,name:'صنف '+i,sku:'CODE-'+i,qty:4,price:20,cost:10}));
+    _rebuildProdIdx();go('sales');
+  });
+  await expect(page.locator('#salesTbl tbody tr')).toHaveCount(300);
+  const metrics=await page.evaluate(() => {
+    const input=document.getElementById('salesSearch');
+    input.value='عميل ٣٠٠٠٠';
+    const searchStart=performance.now();
+    input.dispatchEvent(new Event('input'));
+    const searchMs=performance.now()-searchStart;
+    const openStart=performance.now();
+    document.querySelector('#salesTbl tbody button').click();
+    return {searchMs,openMs:performance.now()-openStart};
+  });
+  await expect(page.locator('#modal #printArea')).toContainText('عميل 30000');
+  expect(metrics.searchMs).toBeLessThan(1200);
+  expect(metrics.openMs).toBeLessThan(500);
+  await page.locator('#modal .x').click();
+  await page.locator('#salesSearch').fill('خارج الفرع');
+  await expect(page.locator('#salesTbl tbody tr')).toHaveCount(0);
+  await page.evaluate(() => go('purchases'));
+  await page.locator('#purchasesSearch').fill('٣٠١٢٣');
+  await expect(page.locator('#purchasesTbl tbody tr')).toHaveCount(1);
+  await page.locator('#purchasesTbl').getByRole('button',{name:'عرض',exact:true}).click();
+  await expect(page.locator('#modal').getByRole('button',{name:'سداد',exact:true})).toBeVisible();
+  await page.locator('#modal .x').click();
+  await page.evaluate(() => go('pos'));
+  const posMs=await page.evaluate(() => {
+    const start=performance.now();
+    renderPosGrid('CODE-9999');
+    return performance.now()-start;
+  });
+  await expect(page.locator('#posGrid [data-pid="item-9999"]')).toBeVisible();
+  expect(await page.locator('#posGrid .sns-pos-product').count()).toBe(1);
+  expect(posMs).toBeLessThan(1200);
+  console.log('SNS timing ms on synthetic data',JSON.stringify({...metrics,posMs}));
+  expect(errors).toEqual([]);
+});
+
+test('branch transfer preserves total stock and is blocked in a locked period', async ({ page }) => {
+  const errors=await openWorkspace(page,{activity:'other'});
+  const result=await page.evaluate(() => {
+    const from=activeBranch();
+    db.branches.push({id:'destination',name:'الفرع الثاني'});
+    db.products[0].bq={[from]:10,destination:0};
+    go('products');
+    stockTransferForm();
+    window._tfRows=[{pid:'cloth',qty:2},{pid:'cloth',qty:3}];
+    fatTfConfirm();
+    const movements=db.stockMoves.slice(-2).map(({branch,delta})=>[branch,delta]);
+    stockTransferForm();
+    window._tfRows=[{pid:'cloth',qty:1}];
+    db.settings.lockBefore=today();
+    fatTfConfirm();
+    const product=findProduct('cloth');
+    return {from,movements,source:product.bq[from],destination:product.bq.destination,total:product.qty,drift:fatBQDrift(product),transfers:db.transfers.length};
+  });
+  expect(result).toMatchObject({movements:[[result.from,-5],['destination',5]],source:5,destination:5,total:10,drift:0,transfers:1});
+  expect(errors).toEqual([]);
+});
+
+test('cloud restore leaves an existing cash-only shop intact', async ({ page }) => {
+  const errors=await openWorkspace(page,{activity:'other'});
+  await page.evaluate(() => {
+    CURRENT_ORG='restore-shop'; CURRENT_UID='restore-owner'; CURRENT_ROLE='manager';
+    db.customers=[];db.products=[];db.sales=[];db.purchases=[];
+    db.cash=[{id:'existing-cash',type:'in',amount:70}];
+    const data={sales:[],customers:[],products:[],cash:[{id:'backup-cash',type:'in',amount:2}]};
+    restoreFullBackup({files:[new File([JSON.stringify(data)],'restore.json')]});
+  });
+  await expect(page.locator('#toast')).toContainText('جرّب استرجاع الملف في محل تجريبي فاضي');
+  expect(await page.evaluate(() => db.cash.map(movement=>movement.id))).toEqual(['existing-cash']);
+  expect(errors).toEqual([]);
+});
+
+test('supplier search and both statements expose the balance direction and next action', async ({ page }) => {
+  const errors=await openWorkspace(page,{activity:'other'});
+  await page.evaluate(() => {
+    db.customers[0].balance=80;
+    db.suppliers=[
+      {id:'supplier-due',name:'مورد مستحق',phone:'01000000023',balance:120},
+      {id:'supplier-advance',name:'مورد مقدم',phone:'01000000024',balance:-40},
+    ];
+    go('suppliers');
+  });
+  const search=page.getByRole('searchbox',{name:'بحث في الموردين'});
+  await search.fill('01000000023');
+  await expect(page.locator('#snsSupplierList tbody tr')).toHaveCount(1);
+  await page.locator('#snsSupplierList').getByRole('button',{name:'كشف حساب'}).click();
+  await expect(page.locator('#printArea')).toContainText('مستحق للمورد');
+  await expect(page.locator('#modal').getByRole('button',{name:'سداد',exact:true})).toBeVisible();
+  await page.locator('#modal .x').click();
+  await search.fill('مقدم');
+  await page.locator('#snsSupplierList').getByRole('button',{name:'كشف حساب'}).click();
+  await expect(page.locator('#printArea')).toContainText('رصيد مقدّم للمورد');
+  await expect(page.locator('#modal').getByRole('button',{name:'سداد',exact:true})).toHaveCount(0);
+  await page.locator('#modal .x').click();
+  await page.evaluate(() => go('customers'));
+  await page.locator('#snsCustomersList').getByRole('button',{name:'كشف حساب'}).click();
+  await expect(page.locator('#printArea')).toContainText('مستحق لك من العميل');
+  await expect(page.locator('#modal').getByRole('button',{name:'تحصيل',exact:true})).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('manual invoice rejects duplicate quantities against the active branch and saves the valid sale once', async ({ page }) => {
+  const errors = await openWorkspace(page, { activity: 'other' });
+  await page.evaluate(() => {
+    const branch=activeBranch();
+    db.branches.push({id:'reserve',name:'فرع احتياطي'});
+    Object.assign(findProduct('cloth'), {qty:10,bq:{[branch]:3,reserve:7}});
+    invoiceForm('sale');
+    invLines=[{pid:'cloth',qty:2,price:150},{pid:'cloth',qty:2,price:150}];
+    saveInvoice();
+  });
+  await expect(page.locator('#toast')).toContainText('الكمية أكبر من المتاح في الفرع');
+  expect(await page.evaluate(() => [db.sales.length,db.cash.length,findProduct('cloth').qty])).toEqual([0,0,10]);
+
+  await page.evaluate(() => {
+    invLines[1].qty=1;
+    saveInvoice();
+    saveInvoice();
+  });
+  expect(await page.evaluate(() => ({
+    sales:db.sales.map(row=>row.total),cash:db.cash.map(row=>row.amount),
+    stock:findProduct('cloth').qty,branch:fatBQOf(findProduct('cloth'),activeBranch()),
+    reserve:fatBQOf(findProduct('cloth'),'reserve')
+  }))).toEqual({sales:[513],cash:[513],stock:7,branch:0,reserve:7});
+  expect(errors).toEqual([]);
+});
+
+test('mobile renewal can open above the subscription lock and an unsent draft creates no payment', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const errors = await openWorkspace(page, { activity: 'other' });
+  await page.evaluate(() => {
+    CURRENT_ORG='test-renewal';
+    SUB={plan:'starter',status:'active',expires_at:new Date(Date.now()-60_000).toISOString()};
+    enforceSubLock();
+    window.fatPayMethods=()=>[{key:'demo',icon:'✓',label:'تجريبي',labelEn:'Demo',value:'0000'}];
+    window.open=()=>null;
+  });
+  expect(await page.evaluate(() => [subDaysLeft(),snsCanPost(today())])).toEqual([-1,false]);
+  await page.getByRole('button', { name:'الباقات والتجديد' }).click();
+  const modal=page.locator('#modalBg.open');
+  await expect(modal.getByRole('heading', { name:'تجديد الاشتراك' })).toBeVisible();
+  await modal.locator('#rn_ref').fill('TEST-1');
+  const send=modal.getByRole('button', { name:'افتح رسالة التحويل على واتساب' });
+  await send.click();
+  await expect(page.locator('#toast')).toContainText('المتصفح منع فتح واتساب');
+  await page.evaluate(() => {
+    window.testDrafts=[];
+    window.open=()=>({
+      opener:window,
+      location:{set href(value){testDrafts.push(value);}}
+    });
+  });
+  await send.click();
+  await send.click();
+  await expect(page.locator('#toast')).toContainText('اضغط إرسال داخل واتساب');
+  expect(await page.evaluate(() => ({
+    validDrafts:testDrafts.every(link=>link.startsWith('https://wa.me/')&&decodeURIComponent(link).includes('TEST-1')),
+    count:testDrafts.length,claims:(db.payClaims||[]).length
+  }))).toEqual({validDrafts:true,count:2,claims:0});
+
+  await page.evaluate(() => {
+    closeModal();
+    let verified=false;
+    Object.assign(sb,{from(table){
+      return {select(){return this;},eq(){return this;},async maybeSingle(){
+        if(table==='plan_limits')return {data:{max_users:5,max_products:500,max_branches:1}};
+        if(!verified){verified=true;return {error:new Error('Test disconnect')};}
+        return {data:{plan:'starter',status:'active',expires_at:new Date(Date.now()+86_400_000).toISOString()}};
+      }};
+    }});
+  });
+  const verify=page.getByRole('button', { name:'تحقّق من التفعيل' });
+  await verify.click();
+  await expect(page.locator('#toast')).toContainText('تعذّر التحقق من الاشتراك');
+  await expect(page.locator('#subLock')).toBeVisible();
+  await verify.click();
+  await expect(page.locator('#subLock')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('a purchase order receives partial quantities only at its originating branch', async ({ page }) => {
+  const errors=await openWorkspace(page,{activity:'other'});
+  await page.evaluate(() => {
+    window.orderBranch=activeBranch();
+    db.branches.push({id:'reserve',name:'فرع احتياطي'});
+    db.suppliers=[{id:'supplier-test',name:'مورد الاختبار',balance:0}];
+    poForm([{pid:'cloth',name:'قماش كتان للعرض',qty:4,estCost:20}]);
+    document.getElementById('po_sup').value='supplier-test';
+    savePO();
+    db.settings.activeBranch='reserve';
+    receivePO(db.purchaseOrders[0].id);
+  });
+  await expect(page.locator('#toast')).toContainText('اختار فرع أمر الشراء قبل الاستلام');
+  expect(await page.evaluate(() => db.purchases.length)).toBe(0);
+  await page.evaluate(() => {
+    db.settings.activeBranch=orderBranch;
+    receivePO(db.purchaseOrders[0].id);
+    db.settings.activeBranch='reserve';
+    saveInvoice();
+  });
+  await expect(page.locator('#toast')).toContainText('اختار فرع أمر الشراء قبل حفظ الاستلام');
+  expect(await page.evaluate(() => db.purchases.length)).toBe(0);
+  await page.evaluate(() => {
+    db.settings.activeBranch=orderBranch;
+    invLines[0].qty=2;
+    document.getElementById('inv_vat').value='0';
+    document.getElementById('inv_pm').value='credit';
+    saveInvoice();
+    viewPO(db.purchaseOrders[0].id);
+  });
+  await expect(page.locator('#modal')).toContainText('المتبقي للمورد في الفواتير المرتبطة');
+  expect(await page.evaluate(() => ({
+    status:db.purchaseOrders[0].status,remainder:purchaseOrderRemaining(db.purchaseOrders[0])[0].qty,
+    receivable:db.purchases[0].dueAmount,supplier:findSupplier('supplier-test').balance,
+    qty:fatBQOf(findProduct('cloth'),orderBranch),reserve:fatBQOf(findProduct('cloth'),'reserve')
+  }))).toEqual({status:'partial',remainder:2,receivable:40,supplier:40,qty:12,reserve:0});
+  expect(errors).toEqual([]);
 });

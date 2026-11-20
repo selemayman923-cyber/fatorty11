@@ -232,7 +232,10 @@ async function monthEnd(pg) {
     await app.sync();
 
     app.day('2026-10-17');
-    await app.pay(() => collect('customer'), null, 60);
+    await app.pay(() => posQuickCollect('customer'), null, 60);
+    assert.equal(app.evalJs('current'),'pos');
+    assert.equal(app.evalJs("db.cash.at(-1).invoicePayment.kind"),'sale');
+    assert.equal(app.evalJs("db.sales[0].dueAmount"),90);
     await app.pay(() => payy('supplier'), null, 70);
     await app.sync();
 
@@ -674,6 +677,35 @@ async function verifySyncMigration() {
   }
 }
 
+async function verifySubscriptionWriteGate(pg) {
+  const setState = (status, expiresAt) => pg.query(
+    'update public.subscriptions set status=$1,expires_at=$2 where org_id=$3',
+    [status, expiresAt, ids.otherShop],
+  );
+  const post = batch => applyBatch(pg, ids.otherOwner, ids.otherShop, batch);
+  const accepted = request([change('customers', 'verified-before-renewal', null, { name: 'Test', balance: 0 })]);
+  const pending = request([change('customers', 'pending-renewal', null, { name: 'Pending test', balance: 0 })]);
+  const firstResult = await post(accepted);
+
+  await setState('suspended', '2099-12-31T00:00:00Z');
+  await assert.rejects(post(pending), /SUB_EXPIRED/);
+  assert.deepEqual(await post(accepted), firstResult);
+  assert.equal(await databaseRecord(pg, ids.otherShop, 'customers', 'pending-renewal'), undefined);
+  await setState('active', new Date(Date.now()-60_000).toISOString());
+  await assert.rejects(post(pending), /SUB_EXPIRED/);
+  await setState('active', '2099-12-31T00:00:00Z');
+  const result = await post(pending);
+  assert.equal(result.length, 1);
+  assert.deepEqual(await post(pending), result);
+  process.stdout.write('PASS suspended or expired subscriptions block new writes and cannot duplicate accepted or retried batches\n');
+
+  const originalPurchase = request([change('purchases', 'purchase-register-a', null, { no: 1 })]);
+  await post(originalPurchase);
+  await assert.rejects(post(request([change('purchases', 'purchase-register-b', null, { no: 1 })])), /SNS_SYNC_CONFLICT/);
+  assert.equal(await databaseRecord(pg, ids.otherShop, 'purchases', 'purchase-register-b'), undefined);
+  process.stdout.write('PASS simultaneous purchase documents cannot both claim the same invoice number\n');
+}
+
 async function main() {
   await verifySyncMigration();
   const pg = await createAccountingDatabase();
@@ -682,6 +714,7 @@ async function main() {
     await verifyTwoRegisters(pg);
     await verifyPurchaseCostAndOpenings(pg);
     await verifyStockkeeperPurchase(pg);
+    await verifySubscriptionWriteGate(pg);
     process.stdout.write('PASS month close, invoice and return reload, cross-period settlements, backup restore, shop isolation, concurrent sale retry, print audit, opening balances, stockkeeper purchase and purchase costing using PostgreSQL\n');
     process.stdout.write(JSON.stringify(balances) + '\n');
   } finally {

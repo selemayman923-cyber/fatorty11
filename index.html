@@ -126,6 +126,8 @@ tbody tr{transition:.12s}tbody tr:hover{background:#faf9f3}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
 .modal-bg{position:fixed;inset:0;background:rgba(10,20,35,.5);backdrop-filter:blur(3px);z-index:100;display:none;align-items:flex-start;justify-content:center;padding:36px 16px;overflow-y:auto}
 .modal-bg.open{display:flex}
+body:has(#subLock) #modalBg.open{z-index:10000}
+body:has(#subLock) #toast.show{z-index:10001}
 .modal{background:var(--panel);border-radius:18px;width:100%;max-width:560px;box-shadow:0 24px 64px rgba(0,0,0,.25);animation:pop .2s ease}
 .modal.lg{max-width:880px}
 .dlg-bg{position:fixed;inset:0;background:rgba(10,20,35,.62);backdrop-filter:blur(4px);z-index:200;display:none;align-items:center;justify-content:center;padding:20px}
@@ -1490,6 +1492,10 @@ body.pos-pro .main #posCheckoutBtn:disabled {opacity:.5;cursor:not-allowed}
   }
   #modal.sns-invoice-preview > :is(.modal-h,.modal-f){flex:0 0 auto}
   .sns-invoice-heading,#snsInvoiceSyncStatus{display:flex;align-items:center;gap:6px 10px;flex-wrap:wrap}
+  .sns-invoice-filters{flex-wrap:wrap;gap:8px}
+  .sns-invoice-filters .search{flex:1 1 190px}
+  .sns-invoice-filters input{max-width:100%}
+  .sns-table-scroll{overflow-x:auto;max-width:100%}
   #snsInvoiceSyncStatus [role="status"]:empty{display:none}
   #snsInvoiceSyncStatus button[hidden]{display:none}
   #modal.sns-invoice-preview > #printArea{
@@ -2246,6 +2252,7 @@ let V2_SNAP={};                 // last-synced map: kind -> { recId: jsonString 
 let V2_IDMAP={};                // kind -> { localId -> rowUuid }
 let V2_PENDING_BATCH=null;
 let V2_CONFLICT_ORG=null;
+let snsSubscriptionBlockedOrg=null;
 let V2_SYNC_RECOVERING=false;
 let V2_READY=false;             // true once this account is on v2 storage
 
@@ -2387,11 +2394,12 @@ async function save(){
     if(!sb||!CURRENT_UID||!V2_READY)return;
     snsSaveOutbox(V2_PENDING_BATCH);        // offline / not-yet-migrated → local only
     if(V2_CONFLICT_ORG===CURRENT_ORG){setSyncStatus('err');return;}
+    if(snsSubscriptionLocked()){setSyncStatus('err');enforceSubLock();return;}
     if(!navigator.onLine){setSyncStatus('offline');return;}
     if(window._syncLock){window._syncPending=true;return;}window._syncLock=true;setSyncStatus('syncing');
     const user=CURRENT_UID,org=CURRENT_ORG;
     try{await syncV2();setSyncStatus('ok');
-      if(current==='sales'&&document.getElementById('salesTbl'))renderSales(_rowQ.sales||'');
+      if(current==='sales'||current==='purchases')snsRenderInvoiceList(current);
     }catch(e){
       if(CURRENT_UID!==user||CURRENT_ORG!==org)return;
       setSyncStatus('err');
@@ -2400,6 +2408,12 @@ async function save(){
         snsSaveOutbox(V2_PENDING_BATCH);
         setSyncStatus('err');
         toast(L('تعذّر تعديل قيد فاتورة مرحّلة. راجع المستند والمزامنة.','A posted invoice could not be changed. Review the document and sync.'),'err');
+      }
+      if(e.message==='SUB_EXPIRED'){
+        snsSubscriptionBlockedOrg=org;
+        snsSaveOutbox(V2_PENDING_BATCH);
+        enforceSubLock();
+        toast(L('تعذّرت المزامنة بسبب حالة الاشتراك. العمليات المعلّقة محفوظة على الجهاز.','Sync is paused because of the subscription. Pending changes are saved on this device.'),'err');
       }
       if(e.message==='SNS_ACCOUNTING_PERIOD_LOCKED'){
         V2_CONFLICT_ORG=CURRENT_ORG;
@@ -2411,7 +2425,7 @@ async function save(){
         V2_CONFLICT_ORG=CURRENT_ORG;
         snsSaveOutbox(V2_PENDING_BATCH);
         setSyncStatus('err');
-        toast(L('تعارض في المزامنة — راجع الفاتورة على الجهاز الآخر قبل التحصيل','Sync conflict — verify the invoice on the other device before collecting payment'),'err');
+        toast(L('فيه تغيير من جهاز تاني. راجع المزامنة قبل ما تعيد العملية.','Another device made changes. Review sync before repeating this operation.'),'err');
       }
       console.warn('sync error',e);
     }finally{window._syncLock=false;if(window._syncPending){window._syncPending=false;setTimeout(save,500);}}
@@ -2687,29 +2701,58 @@ async function resolveOrg(uid){
 
 /* Make sure the shop has a subscription (creates a 14-day trial on first run),
    then read its current status into SUB. Safe: server decides everything. */
-async function loadSubscription(){
-  SUB=null; LIMITS=null;
-  if(!sb||!CURRENT_ORG)return;
-  try{ await sb.rpc('ensure_subscription',{p_org:CURRENT_ORG}); }catch(e){ console.warn('ensure_subscription',e); }
+async function loadSubscription({ensure=true}={}){
+  const org=CURRENT_ORG,user=CURRENT_UID;
+  const sameWorkspace=()=>CURRENT_ORG===org&&CURRENT_UID===user;
+  if(ensure){SUB=null;LIMITS=null;}
+  if(!sb||!org)return false;
+  if(ensure){
+    try{await sb.rpc('ensure_subscription',{p_org:org});}catch(e){console.warn('ensure_subscription',e);}
+  }
   try{
-    const {data}=await sb.from('subscriptions').select('plan,status,expires_at').eq('org_id',CURRENT_ORG).maybeSingle();
-    if(data)SUB=data;
-  }catch(e){ console.warn('read subscription',e); }
-  // read this plan's limits (for friendly UI checks; server enforces the hard limit)
+    const {data,error}=await sb.from('subscriptions').select('plan,status,expires_at').eq('org_id',org).maybeSingle();
+    if(error)throw error;
+    if(!data||!sameWorkspace())return false;
+    SUB=data;
+    if(snsSubscriptionBlockedOrg===org&&['active','trialing'].includes(data.status)&&!snsSubscriptionInactive(data)){
+      snsSubscriptionBlockedOrg=null;
+    }
+  }catch(e){console.warn('read subscription',e);return false;}
   try{
-    const plan=(SUB&&SUB.plan)||'trial';
-    const {data:lim}=await sb.from('plan_limits').select('max_users,max_products,max_branches').eq('plan',plan).maybeSingle();
-    if(lim)LIMITS=lim;
-  }catch(e){ console.warn('read limits',e); }
+    const plan=SUB.plan||'trial';
+    const {data:lim,error}=await sb.from('plan_limits').select('max_users,max_products,max_branches').eq('plan',plan).maybeSingle();
+    if(error)throw error;
+    if(lim&&sameWorkspace()&&SUB?.plan===plan)LIMITS=lim;
+  }catch(e){console.warn('read limits',e);}
+  return sameWorkspace();
+}
+async function snsCheckSubscriptionRecovery(button){
+  const org=CURRENT_ORG,user=CURRENT_UID;
+  button.disabled=true;
+  try{
+    if(!await loadSubscription({ensure:false})){
+      if(CURRENT_ORG===org&&CURRENT_UID===user)toast(L('تعذّر التحقق من الاشتراك. تأكّد من الاتصال وحاول تاني.','Could not check the subscription. Check your connection and retry.'),'err');
+      return;
+    }
+    renderSubBanner();
+    enforceSubLock();
+    if(snsSubscriptionLocked()){
+      toast(L('الاشتراك لسه غير نشط. لو حوّلت، تواصل مع الدعم برقم العملية.','Subscription is still inactive. If you transferred payment, send support the reference.'),'err');
+      return;
+    }
+    toast(L('الاشتراك نشط. جاري استكمال المزامنة.','Subscription is active. Resuming sync.'));
+    await save();
+  }finally{button.disabled=false;}
 }
 async function snsRefreshSubscriptionForImport(){
-  if(!sb||!CURRENT_ORG){
+  const org=CURRENT_ORG,user=CURRENT_UID;
+  if(!sb||!org){
     toast(L('لا يمكن التحقق من باقة المتجر حاليًا','Cannot verify shop plan right now'),'err');
     return false;
   }
   try{
     const {data:sub,error:subError}=await sb.from('subscriptions')
-      .select('plan,status,expires_at').eq('org_id',CURRENT_ORG).maybeSingle();
+      .select('plan,status,expires_at').eq('org_id',org).maybeSingle();
     if(subError||!sub)throw subError||new Error('Subscription missing');
     const {data:lim,error:limError}=await sb.from('plan_limits')
       .select('max_users,max_products,max_branches').eq('plan',sub.plan).maybeSingle();
@@ -2718,6 +2761,7 @@ async function snsRefreshSubscriptionForImport(){
       toast(L('اشتراك المتجر غير نشط — راجع الباقة','Shop subscription is not active'),'err');
       return false;
     }
+    if(CURRENT_ORG!==org||CURRENT_UID!==user)return false;
     SUB=sub; LIMITS=lim;
     renderPlanPanel(); renderSubBanner();
     return true;
@@ -2732,7 +2776,19 @@ function maxUsers(){ return LIMITS?LIMITS.max_users:-1; }
 function maxBranches(){ return LIMITS?LIMITS.max_branches:-1; }
 const PLAN_AR={trial:'التجربة',starter:'ستارتر',growth:'النمو',pro:'برو',enterprise:'المؤسسات'};
 // how many days left (negative = expired). null if unknown.
-function subDaysLeft(){ if(!SUB||!SUB.expires_at)return null; return Math.ceil((new Date(SUB.expires_at)-new Date())/86400000); }
+function subDaysLeft(){
+  const remaining=SUB?.expires_at?Date.parse(SUB.expires_at)-Date.now():NaN;
+  if(!Number.isFinite(remaining))return null;
+  return remaining<=0?Math.min(-1,Math.ceil(remaining/86400000)):Math.ceil(remaining/86400000);
+}
+function snsSubscriptionInactive(subscription){
+  if(!subscription)return false;
+  if(['suspended','expired','cancelled','canceled'].includes(subscription.status))return true;
+  return !!subscription.expires_at&&Date.parse(subscription.expires_at)<=Date.now();
+}
+function snsSubscriptionLocked(){
+  return !!CURRENT_ORG&&(snsSubscriptionBlockedOrg===CURRENT_ORG||snsSubscriptionInactive(SUB));
+}
 // is the shop currently allowed to use the system?
 
 async function load(){
@@ -3889,21 +3945,8 @@ function payBadge(s){if(s.voided)return '<span class="badge danger">'+L('ملغ�
 /* POS */
 let cart=[],posDiscount=0,posPromo='',posPriceTier='default';
 let posPage=1,posPerPage=20;
-/* تحصيل سريع من داخل الكاشير - دايماً بيسجل في الخزينة لمنع اللغبطة */
-async function posQuickCollect(cid){
-  const c=findCustomer(cid);if(!c)return;
-  const bal=+c.balance||0;if(bal<=0.009)return;
-  const amt=await promptBox(
-    L('تحصيل دين من','Collect debt from')+' '+c.name+'\n'+L('المستحق','Due')+': '+money(bal)+'\n'+L('اكتب المبلغ المحصَّل:','Amount collected:'),
-    {value:bal,type:'number'});
-  if(amt===null)return;const v=+amt;if(!v||v<=0)return;
-  // دايماً بيسجل في الخزينة — لمنع أي لغبطة في الحسابات
-  var _aq=await fatAskAccount(L('تحصيل دين من','Collect debt from')+' '+c.name,'cash');if(_aq===null)return;
-  c.balance=Math.round((c.balance-v)*100)/100;
-  addCash('in',v,L('تحصيل دين','Debt collected')+': '+c.name,null,_aq);
-  logAudit(L('تحصيل من عميل','Collect from customer'),c.name+' — '+money(v));
-  save();renderPosMemberCard();
-  toast('💵 '+money(v)+' — '+(c.balance>0.009?L('الرصيد الباقي','Remaining')+': '+money(c.balance):L('✓ تم سداد الدين كاملاً','✓ Fully settled')));
+function posQuickCollect(cid){
+  return snsSettleParty('sale',cid,{fromPos:true});
 }
 /* حفظ/استرجاع مسودة السلة — يحمي من انقطاع الكهرباء/إغلاق مفاجئ/Refresh.
    يستخدم sessionStorage (مؤقت، لا يلمس بيانات النظام ولا المزامنة). عرض فقط. */
@@ -3965,9 +4008,17 @@ function snsPosProductCodes(product){
   return [product.barcode,product.sku,product.code,product.upholstery?.roll,upholsteryRollLabel(product)]
     .filter(value=>value!==null&&value!==undefined&&String(value).trim()!=='');
 }
-function snsPosMatches(product,query){
-  return matches(product.name,query)||snsPosProductCodes(product).some(code=>matches(code,query));
+function snsPosMatches(product,query,terms=norm(query).trim().split(/\s+/).filter(Boolean)){
+  if(!terms.length)return true;
+  const name=norm(product.name);
+  if(terms.every(term=>name.includes(term)))return true;
+  return snsPosProductCodes(product).some(code=>{
+    const normalized=norm(code);
+    return terms.every(term=>normalized.includes(term));
+  });
 }
+const snsPosNameSort=new Intl.Collator('ar');
+
 function snsPosExactCode(products,input){
   const code=String(input).trim().toLowerCase();
   return products.filter(product=>snsPosProductCodes(product).some(value=>String(value).trim().toLowerCase()===code));
@@ -4123,10 +4174,7 @@ function renderPosMemberCard(){
       var _last=_prev.length?_prev.map(function(s){return s.date;}).sort().slice(-1)[0]:null;
       var _balColor=_bal>0.009?'var(--danger)':(_bal<-0.009?'var(--ok)':'var(--muted)');
       var _balLbl=_bal>0.009?L('عليه','Owes'):(_bal<-0.009?L('له رصيد','Credit'):L('لا يوجد','None'));
-      var _tierBadgeHtml='';
-      if(_ci.tier==='vip')_tierBadgeHtml=' <span style="background:#EFF4FF;color:#2563EB;border:1px solid #BFDBFE;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700">'+snsTierHtml('online')+'</span>';
-      else if(_ci.tier==='wholesale')_tierBadgeHtml=' <span style="background:#F0FDF4;color:#16A34A;border:1px solid #BBF7D0;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700">'+snsTierHtml('wholesale')+'</span>';
-      else _tierBadgeHtml=' <span style="background:#F8FAFC;color:#64748B;border:1px solid #E2E8F0;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700">🏪 '+L('افتراضي','Retail')+'</span>';
+      const _tierBadgeHtml=' <span class="badge info">'+esc(snsCustomerGroup(_ci))+'</span>';
       infoHtml='<div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:4px 0 8px">'+
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">'+
           '<div style="font-weight:700;font-size:13px">👤 '+esc(_ci.name||'')+_tierBadgeHtml+'</div>'+
@@ -4271,8 +4319,10 @@ function snsClearPosFilters(){
   hideSearchSuggest();
   search.focus();
 }
-function renderPosGrid(q){var _hotTop3=Object.keys(_posHot||{}).sort(function(a,b){return (_posHot[b]||0)-(_posHot[a]||0);}).slice(0,3);
-  const list=db.products.filter(p=>fatShowsInMenu(p)&&snsPosMatches(p,q)&&(!posCatFilter||p.cat===posCatFilter)).sort((a,b)=>((_posHot[b.id]||0)-(_posHot[a.id]||0))||String(a.name).localeCompare(String(b.name),'ar'));
+function renderPosGrid(q){
+  const terms=norm(q).trim().split(/\s+/).filter(Boolean);
+  const list=db.products.filter(p=>(!posCatFilter||p.cat===posCatFilter)&&fatShowsInMenu(p)&&snsPosMatches(p,q,terms))
+    .sort((a,b)=>((_posHot[b.id]||0)-(_posHot[a.id]||0))||snsPosNameSort.compare(String(a.name),String(b.name)));
   const bundleCards=(posCatFilter?[]:(db.bundles||[])).filter(b=>matches(b.name,q)).map(b=>{
     const avail=b.items.every(it=>{const p=findProduct(it.pid);return p&&p.qty>=it.qty;});
     return `<div class="pos-card ${avail?'':'out'}" onclick="posTapBundle('${b.id}')" style="border:1.5px solid var(--accent)"><div style="height:48px;display:grid;place-items:center"><div style="font-size:28px">🎁</div></div><div class="nm">${esc(b.name)}</div><div class="pr">${money(b.price)}</div><div class="q"><span class="badge" style="background:var(--accent-soft);color:var(--accent);font-size:10.5px;padding:1px 6px">${L('تجميعة','Bundle')} · ${b.items.length}</span></div></div>`;}).join('');
@@ -4414,7 +4464,7 @@ function effPrice(p){
 }
 /* Owner-editable display names. Pricing keys remain stable. */
 function snsTierName(tier){
-  var defaults={default:L('قطاعي','Retail'),online:L('أونلاين (نص جملة)','Online'),wholesale:L('جملة (كميات)','Wholesale')};
+  var defaults={default:L('قطاعي','Retail'),online:L('أونلاين (نص جملة)','Online'),wholesale:L('جملة (كميات)','Wholesale'),shopper:L('زبون','Regular customer'),custom:L('تصنيف خاص','Custom category')};
   var saved=(db&&db.settings&&db.settings.priceTierNames)||{};
   var value=saved[tier];
   return (typeof value==='string'&&value.trim())?value.trim().slice(0,40):defaults[tier]||defaults.default;
@@ -4422,6 +4472,26 @@ function snsTierName(tier){
 function snsTierHtml(tier){
   var icons={default:'🏪 ',online:'💻 ',wholesale:'📦 '};
   return (icons[tier]||'')+esc(snsTierName(tier));
+}
+function snsCustomerGroup(customer){
+  const key=customer.tier||'';
+  if(key==='vip'||key==='wholesale'){
+    const level=key==='vip'?'online':'wholesale';
+    const existing=db.settings.priceTierNames?.[level];
+    const oldDefault=key==='vip'?'أونلاين (نص جملة)':'جملة (كميات)';
+    if(typeof existing==='string'&&existing.trim()&&existing.trim()!==oldDefault)return snsTierName(level);
+    return key==='vip'?L('نص جملة','Semi-wholesale'):L('جملة','Wholesale');
+  }
+  return snsTierName(['shopper','custom'].includes(key)?key:'default');
+}
+function snsCustomerGroups(){
+  const custom=db.settings.priceTierNames?.custom;
+  const keys=['','shopper','vip','wholesale'];
+  if((typeof custom==='string'&&custom.trim())||db.customers.some(customer=>customer.tier==='custom'))keys.push('custom');
+  return keys.map(tier=>[tier,snsCustomerGroup({tier})]);
+}
+function snsCustomerTierMatches(customer){
+  return !custTierFilter||(customer.tier||'')===(custTierFilter==='regular'?'':custTierFilter);
 }
 function priceTierLabel(tier){
   return snsTierHtml(tier);
@@ -4797,28 +4867,37 @@ function posUpdateChange(){const pay=document.getElementById('posPay')?.value||'
     }else cb.style.display='none';}
   const insufficient=rcv&&rcv.value!==''&&change<0;
   if(btn){btn.disabled=insufficient;btn.style.opacity=insufficient?.5:1;}}
-function posStockAvailable(lines){
-  const needed=new Map();
+function snsSaleStockQuantities(lines){
+  const quantities=new Map();
   for(const line of lines){
     const product=findProduct(line.pid);
     if(!product||!Number.isFinite(line.qty)||line.qty<=0){
-      toast(L('راجع الأصناف والكميات في السلة','Check cart items and quantities'),'err');
-      return false;
+      toast(L('راجع الأصناف والكميات','Check items and quantities'),'err');
+      return null;
     }
     const components=product.components?.length?product.components:[{pid:product.id,qty:1}];
     for(const component of components){
       const stockItem=findProduct(component.pid);
-      const units=+component.qty*line.qty;
+      const units=Number(component.qty)*line.qty;
       if(!stockItem||!Number.isFinite(units)||units<=0){
         toast(L('راجع مكونات الصنف','Check the item components')+' — '+product.name,'err');
-        return false;
+        return null;
       }
-      needed.set(stockItem,(needed.get(stockItem)||0)+units);
+      quantities.set(stockItem,(quantities.get(stockItem)||0)+units);
     }
   }
+  return quantities;
+}
+function posStockAvailable(lines,branch=activeBranch(),restored=[]){
+  const needed=snsSaleStockQuantities(lines);
+  const previous=snsSaleStockQuantities(restored);
+  if(!needed||!previous)return false;
   for(const [product,qty] of needed){
-    if(qty<=Number(product.qty)+1e-9)continue;
-    toast(L('الكمية أكبر من المتاح','Exceeds stock')+' — '+product.name+' ('+fmtStock(product)+')','err');
+    const stock=Number(branch&&db.branches.some(row=>row.id===branch)&&typeof fatBQOf==='function'
+      ?fatBQOf(product,branch):product.qty);
+    const available=stock+(previous.get(product)||0);
+    if(Number.isFinite(available)&&qty<=available+1e-9)continue;
+    toast(L('الكمية أكبر من المتاح في الفرع','Quantity exceeds branch stock')+' — '+product.name+' ('+available+')','err');
     return false;
   }
   return true;
@@ -4836,7 +4915,7 @@ function posCheckout(){
     if(CURRENT_UID&&CURRENT_ORG&&!V2_READY)return toast(L('بيانات المحل مش جاهزة للمزامنة. أعد فتح النظام بعد رجوع الاتصال.','Shop is not ready to sync. Reopen the app when connected.'),'err');
     try{if(CURRENT_UID&&CURRENT_ORG)snsSaveOutbox(V2_PENDING_BATCH);}
     catch(e){return toast(L('مساحة التخزين غير كافية لحفظ البيع','Not enough device storage to save this sale'),'err');}
-    if(!upholsteryStockCheck(cart)||!posStockAvailable(cart))return;
+    if(!upholsteryStockCheck(cart)||!posStockAvailable(cart,branch))return;
     const sourceQuotes=db.quotes.filter(q=>cart.some(c=>c.quoteId===q.id));
     if(sourceQuotes.some(q=>q.status==='converted'))return toast(L('عرض السعر اتحوّل لفاتورة بالفعل','This quote already has an invoice'),'err');
     var _zero=cart.find(function(c){return lineUnit(c)<=0;});
@@ -6317,47 +6396,102 @@ function stockHistory(id){const p=findProduct(id);const moves=db.stockMoves.filt
 
 
 /* Sales / Purchases */
-views.sales=()=>{document.getElementById('topActions').innerHTML=`<button class="btn btn-ghost" onclick="exportSalesExcel()">📊 ${L('Excel','Excel')}</button><button class="btn btn-ghost" onclick="recurringPanel()">🔁 ${L('متكررة','Recurring')}${db.recurring.length?` (${db.recurring.length})`:''}</button><button class="btn btn-primary" onclick="invoiceForm('sale')">+ ${L('فاتورة بيع','Sale Invoice')}</button>`;
-  const activeSales=db.sales.filter(s=>!s.voided);
-  const total=activeSales.reduce((s,i)=>s+i.total,0),profit=activeSales.reduce((s,i)=>s+i.profit,0),due=activeSales.reduce((s,i)=>s+(i.dueAmount||0),0);
-  document.getElementById('content').innerHTML=`<div class="cards">
-    <div class="card kpi-1"><div class="lbl">${L('إجمالي المبيعات','Total Sales')}</div><div class="val" style="font-size:21px">${money(total)}</div></div>
-    <div class="card kpi-2"><div class="lbl">${L('إجمالي الأرباح','Total Profit')}</div><div class="val" style="font-size:21px;color:var(--accent)">${money(profit)}</div></div>
-    <div class="card kpi-3"><div class="lbl">${L('آجل (غير محصّل)','Outstanding')}</div><div class="val" style="font-size:21px;color:var(--gold)">${money(due)}</div></div>
-    <div class="card kpi-4"><div class="lbl">${L('عدد الفواتير','Invoices')}</div><div class="val">${db.sales.length}</div></div></div>
-    <div class="panel"><div class="panel-h" style="flex-wrap:wrap;gap:10px"><h3>${L('فواتير البيع','Sales Invoices')}</h3>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input type="date" id="salesFrom" style="padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font-size:12px">
-      <span style="color:var(--muted)">→</span>
-      <input type="date" id="salesTo" style="padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font-size:12px">
-      <button class="btn btn-ghost btn-sm" onclick="renderSales('')">${L('فلتر','Filter')}</button>
-      <div class="search"><input placeholder="${L('بحث…','Search…')}" oninput="renderSales(this.value)"><span class="si">🔍</span></div>
-    </div></div><div class="panel-b" id="salesTbl"></div></div>`;renderSales('');};
+views.sales=()=>snsInvoiceListView('sales');
+views.purchases=()=>snsInvoiceListView('purchases');
 
-/* ===== Large-list performance: render capping + show more ===== */
+/* Large lists render a bounded page; search still includes the whole branch history. */
 var _rowLim={}, _rowQ={};
 function _cap(k){return _rowLim[k]||300;}
-function _moreBtn(k,total){var lim=_cap(k);return total>lim?'<div style="text-align:center;padding:14px 0"><button class="btn btn-ghost" onclick="showMore(\''+k+'\')">'+L('\u0639\u0631\u0636 \u0627\u0644\u0645\u0632\u064a\u062f','Show more')+' ('+(total-lim)+' '+L('\u0645\u062a\u0628\u0642\u064a','more')+')</button></div>':'';}
-function showMore(k){_rowLim[k]=_cap(k)+500;var f={sales:function(){renderSales(_rowQ.sales||'');},purchases:function(){views.purchases();},products:function(){renderProductsTab(_rowQ.products||'');},customers:function(){views.customers();},suppliers:function(){views.suppliers();}}[k];if(f)f();}
-
-function renderSales(q){_rowQ.sales=q;
-  const from=document.getElementById('salesFrom')?.value||'';
-  const to=document.getElementById('salesTo')?.value||'';
-  const list=[...db.sales].reverse()
-    .filter(s=>('#'+s.no).includes(q)||matches(s.customerName,q))
-    .filter(s=>inRange(s.date,from,to));
-  const subTag=s=>s.source==='subscription'?` <span class="badge ok" style="font-size:10px" title="${L('فاتورة اشتراك','Subscription invoice')}">🟢 ${s.subKind==='renew'?L('تجديد','Renewal'):s.subKind==='delivery'?L('تسليم','Delivery'):L('اشتراك','Subscription')}</span>`:'';
-  document.getElementById('salesTbl').innerHTML=list.length?`<table><thead><tr><th>#</th><th>${L('التاريخ','Date')}</th><th>${L('العميل','Customer')}</th><th>${L('الإجمالي','Total')}</th><th>${L('الربح','Profit')}</th><th>${L('الحالة','Status')}</th><th>${L('الإجراءات','Actions')}</th></tr></thead><tbody>
-  ${list.slice(0,_cap('sales')).map(s=>`<tr><td><b>${invNo(s)}</b>${subTag(s)} ${snsInvoiceSyncBadge(s)}</td><td>${dsp(s.date)}</td><td>${esc(s.customerName)||L('نقدي','Cash')}</td><td class="t-num">${money(s.total)}</td><td class="t-num" style="color:var(--ok)">${money(s.profit)}</td><td>${payBadge(s)}</td><td>${snsInvoiceRowButtons('sale',s.id)}</td></tr>`).join('')}</tbody></table>${_moreBtn('sales',list.length)}`:`<div class="empty"><span class="big">🧾</span>${L('لا توجد فواتير','No invoices')}</div>`;}
-views.purchases=()=>{document.getElementById('topActions').innerHTML=`<button class="btn btn-accent" onclick="invoiceForm('purchase')">+ ${L('فاتورة شراء','Purchase Invoice')}</button>`;
-  const total=db.purchases.reduce((s,i)=>s+i.total,0),due=db.purchases.reduce((s,i)=>s+(i.dueAmount||0),0);
-  document.getElementById('content').innerHTML=`<div class="cards" style="grid-template-columns:repeat(3,1fr)">
-    <div class="card kpi-2"><div class="lbl">${L('إجمالي المشتريات','Total Purchases')}</div><div class="val" style="font-size:21px">${money(total)}</div></div>
-    <div class="card kpi-3"><div class="lbl">${L('مستحق عليك','Payables')}</div><div class="val" style="font-size:21px;color:var(--danger)">${money(due)}</div></div>
-    <div class="card kpi-4"><div class="lbl">${L('عدد الفواتير','Invoices')}</div><div class="val">${db.purchases.length}</div></div></div>
-    <div class="panel"><div class="panel-h"><h3>${L('فواتير الشراء','Purchase Invoices')}</h3></div><div class="panel-b">
-    ${db.purchases.length?`<table><thead><tr><th>#</th><th>${L('التاريخ','Date')}</th><th>${L('المورد','Supplier')}</th><th>${L('الإجمالي','Total')}</th><th>${L('الحالة','Status')}</th><th>${L('الإجراءات','Actions')}</th></tr></thead><tbody>
-    ${[...db.purchases].reverse().slice(0,_cap('purchases')).map(s=>`<tr><td><b>${invNo(s)}</b></td><td>${dsp(s.date)}</td><td>${esc(s.supplierName)||'—'}</td><td class="t-num">${money(s.total)}</td><td>${payBadge(s)}</td><td>${snsInvoiceRowButtons('purchase',s.id)}</td></tr>`).join('')}</tbody></table>${_moreBtn('purchases',db.purchases.length)}`:`<div class="empty"><span class="big">📦</span>${L('لا توجد فواتير شراء','No purchases')}</div>`}</div></div>`;};
+function _moreBtn(k,total){
+  const limit=_cap(k);
+  return total>limit?`<div style="text-align:center;padding:14px 0"><button type="button" class="btn btn-ghost" onclick="showMore('${k}')">${L('عرض المزيد','Show more')} (${total-limit})</button></div>`:'';
+}
+function showMore(k){
+  _rowLim[k]=_cap(k)+(k==='sales'||k==='purchases'?300:500);
+  if(k==='sales'||k==='purchases')return snsRenderInvoiceList(k);
+  const refresh={products:()=>renderProductsTab(_rowQ.products||''),customers:()=>views.customers(),suppliers:()=>renderSuppliers(_rowQ.suppliers||'')};
+  refresh[k]?.();
+}
+const snsInvoiceFilters={sales:{query:'',from:'',to:''},purchases:{query:'',from:'',to:''}};
+function snsDigits(value){
+  return String(value??'').replace(/[٠-٩۰-۹]/g,digit=>String(digit.charCodeAt(0)%16));
+}
+function snsInvoiceListRecords(collection){
+  const {query,from,to}=snsInvoiceFilters[collection];
+  const terms=norm(snsDigits(query)).trim().split(/\s+/).filter(Boolean);
+  const branch=activeBranch(),sale=collection==='sales';
+  const records=[];
+  const source=db[collection];
+  for(let index=source.length-1;index>=0;index--){
+    const invoice=source[index];
+    if((db.branches.length>1&&branch!=='__ALL__'&&invoice.branch&&invoice.branch!==branch)||!inRange(invoice.date,from,to))continue;
+    if(terms.length){
+      const name=sale?invoice.customerName:invoice.supplierName;
+      const searchable=norm(snsDigits(`${invNo(invoice)} #${invoice.no} ${name||''}`));
+      if(!terms.every(term=>searchable.includes(term)))continue;
+    }
+    records.push(invoice);
+  }
+  return records;
+}
+function snsSetInvoiceFilter(input){
+  const collection=input.closest('[data-collection]').dataset.collection;
+  snsInvoiceFilters[collection][input.dataset.filter]=input.value;
+  _rowLim[collection]=300;
+  snsRenderInvoiceList(collection);
+}
+function snsInvoiceListView(collection){
+  const sale=collection==='sales';
+  const filters=snsInvoiceFilters[collection];
+  document.getElementById('topActions').innerHTML=sale
+    ?`<button type="button" class="btn btn-ghost" onclick="exportSalesExcel()">📊 ${L('Excel','Excel')}</button>
+      <button type="button" class="btn btn-ghost" onclick="recurringPanel()">🔁 ${L('متكررة','Recurring')}${db.recurring.length?` (${db.recurring.length})`:''}</button>
+      <button type="button" class="btn btn-primary" onclick="invoiceForm('sale')">+ ${L('فاتورة بيع','Sale Invoice')}</button>`
+    :`<button type="button" class="btn btn-accent" onclick="invoiceForm('purchase')">+ ${L('فاتورة شراء','Purchase Invoice')}</button>`;
+  document.getElementById('content').innerHTML=`
+    <div class="cards" id="snsInvoiceListTotals"></div>
+    <div class="panel" data-collection="${collection}"><div class="panel-h sns-list-tools sns-invoice-filters">
+      <div class="search"><input type="search" id="${collection}Search" data-filter="query" aria-label="${sale?L('بحث فواتير البيع','Search sales invoices'):L('بحث فواتير الشراء','Search purchase invoices')}" value="${esc(filters.query)}"
+        placeholder="${L('رقم الفاتورة أو الاسم','Invoice number or name')}" oninput="snsSetInvoiceFilter(this)"></div>
+      <label>${L('من','From')} <input type="date" id="${collection}From" data-filter="from" value="${esc(filters.from)}" onchange="snsSetInvoiceFilter(this)"></label>
+      <label>${L('إلى','To')} <input type="date" id="${collection}To" data-filter="to" value="${esc(filters.to)}" onchange="snsSetInvoiceFilter(this)"></label>
+    </div><div class="panel-b" id="${collection}Tbl"></div></div>`;
+  snsRenderInvoiceList(collection);
+}
+function renderSales(q){
+  if(q!==undefined)snsInvoiceFilters.sales.query=q;
+  snsRenderInvoiceList('sales');
+}
+function snsRenderInvoiceList(collection){
+  const target=document.getElementById(collection+'Tbl');
+  const summary=document.getElementById('snsInvoiceListTotals');
+  if(!target||!summary)return;
+  const sale=collection==='sales',kind=sale?'sale':'purchase';
+  const list=snsInvoiceListRecords(collection);
+  const totals=list.reduce((sum,invoice)=>{
+    if(invoice.voided)return sum;
+    sum.total+=+invoice.total||0;
+    sum.profit+=+invoice.profit||0;
+    sum.due+=+invoice.dueAmount||0;
+    return sum;
+  },{total:0,profit:0,due:0});
+  const metrics=[
+    [sale?L('إجمالي المبيعات','Total sales'):L('إجمالي المشتريات','Total purchases'),money(totals.total)],
+    [sale?L('آجل (غير محصّل)','Outstanding'):L('مستحق عليك','Payables'),money(totals.due)],
+    [L('عدد الفواتير','Invoices'),list.length],
+  ];
+  if(sale)metrics.splice(1,0,[L('إجمالي الأرباح','Total profit'),money(totals.profit)]);
+  summary.innerHTML=metrics.map(([label,value])=>`<div class="card"><div class="lbl">${label}</div><div class="val">${value}</div></div>`).join('');
+  const subTag=invoice=>invoice.source==='subscription'? ` <span class="badge ok">${invoice.subKind==='renew'?L('تجديد اشتراك','Subscription renewal'):L('اشتراك','Subscription')}</span>`:'';
+  target.innerHTML=list.length?`<div class="sns-table-scroll" tabindex="0" role="region" aria-label="${sale?L('نتائج البيع','Sales results'):L('نتائج الشراء','Purchase results')}">
+    <table><thead><tr><th>#</th><th>${L('التاريخ','Date')}</th><th>${sale?L('العميل','Customer'):L('المورد','Supplier')}</th><th>${L('الإجمالي','Total')}</th>${sale?`<th>${L('الربح','Profit')}</th>`:''}<th>${L('الحالة','Status')}</th><th>${L('الإجراءات','Actions')}</th></tr></thead>
+    <tbody>${list.slice(0,_cap(collection)).map(invoice=>`<tr>
+      <td><b>${invNo(invoice)}</b>${sale?subTag(invoice):''} ${snsInvoiceSyncBadge(invoice,collection)}</td>
+      <td>${dsp(invoice.date)}</td><td>${esc(sale?invoice.customerName:invoice.supplierName)||(sale?L('نقدي','Cash'):'—')}</td>
+      <td class="t-num">${money(invoice.total)}</td>${sale?`<td class="t-num">${money(invoice.profit)}</td>`:''}
+      <td>${payBadge(invoice)}</td><td>${snsInvoiceRowButtons(kind,invoice.id)}</td></tr>`).join('')}</tbody></table></div>${_moreBtn(collection,list.length)}`:
+    `<div class="empty">${L('مفيش فواتير مطابقة للبحث والفترة والفرع','No invoices match the search, dates and branch')}</div>`;
+}
 
 function snsInvoiceRowButtons(kind,id){
   return `<div class="sns-record-controls" data-id="${esc(id)}" data-kind="${kind}">
@@ -6378,8 +6512,8 @@ function snsInvoiceActions(trigger){
     }
   }
   if(!invoice.voided){
-    if(invoice.dueAmount>0)actions.push({label:sale?L('تحصيل','Collect'):L('سداد','Pay'),run:()=>collectInvoice(kind,id)});
-    actions.push({label:L('إنشاء مرتجع','Create return'),run:()=>returnForm(kind,id)});
+    if(invoice.dueAmount>0&&(sale||snsSupplierPaymentsAllowed()))actions.push({label:sale?L('تحصيل','Collect'):L('سداد','Pay'),run:()=>collectInvoice(kind,id)});
+    if(fatCan('refund'))actions.push({label:L('إنشاء مرتجع','Create return'),run:()=>returnForm(kind,id)});
     if(sale&&isManager())actions.push({label:L('إلغاء الفاتورة','Void invoice'),run:()=>delSale(id),danger:true});
     if(!sale)actions.push({label:L('حذف الفاتورة','Delete invoice'),run:()=>delPurchase(id),danger:true});
   }
@@ -6469,7 +6603,7 @@ function calcInv(){const sub=invLines.filter(snsInvoiceLineIncluded).reduce((s,l
   document.getElementById('invTotals').innerHTML=`<div class="row"><span>${L('الإجمالي الفرعي','Subtotal')}</span><span class="t-num">${money(sub)}</span></div><div class="row"><span>${L('الخصم','Discount')}</span><span class="t-num">- ${money(disc)}</span></div><div class="row"><span>${L('الضريبة','Tax')} (${vatP}%)</span><span class="t-num">${money(vat)}</span></div><div class="row grand"><span>${L('الإجمالي','Total')}</span><span>${money(total)}</span></div>`;
   document.getElementById('invBody').querySelectorAll('tr').forEach((tr,i)=>{if(invLines[i])tr.children[3].textContent=money(invLines[i].qty*invLines[i].price);});
   return {sub,disc,vat,vatP,total};}
-function saveInvoice(){const isSale=(invKind!=='purchase');const lines=invLines.filter(snsInvoiceLineIncluded);if(!lines.length)return toast(L('أضف صنفًا','Add an item'),'err');
+function saveInvoice(){if(!document.querySelector('#modalBg.open #inv_party'))return;const isSale=(invKind!=='purchase');const lines=invLines.filter(snsInvoiceLineIncluded);if(!lines.length)return toast(L('أضف صنفًا','Add an item'),'err');
   if(isSale&&lines.some(l=>upholsteryKind(findProduct(l.pid))))return upholsteryUsePicker();
   const T=calcInv();const partyId=document.getElementById('inv_party').value;const date=document.getElementById('inv_date').value||today();
   if(lines.some(line=>!Number.isFinite(line.qty)||!Number.isFinite(line.price)||line.price<0||(line.pid&&!findProduct(line.pid)))||
@@ -6477,18 +6611,22 @@ function saveInvoice(){const isSale=(invKind!=='purchase');const lines=invLines.
   const items=lines.map(l=>{const p=l.pid?findProduct(l.pid):null;return {pid:p?p.id:'',name:p?p.name:(l.name||'').trim(),qty:l.qty,price:l.price,cost:p?effCost(p):l.price,cat:p?(p.cat||''):(l.name||'').trim(),...(!isSale&&p?{stockFactor:fatUnitFactor(p)}:{})};});
   if(invKind==='quote'){const party=partyId?findCustomer(partyId):null;db.quotes.push({id:uid(),no:db.seq.quote++,date,customerId:partyId,customerName:party?party.name:'',items,sub:T.sub,disc:T.disc,vat:T.vat,vatP:T.vatP,total:T.total,status:'open'});save();closeModal();go('quotes');toast(L('تم حفظ العرض','Quote saved'));return;}
   if(!snsCanPost(date,editSaleCtx?.orig?.date))return;
+  const branch=activeBranch();
+  if(!db.branches.some(row=>row.id===branch))return toast(L('اختار فرع قبل حفظ الفاتورة','Select a branch before saving the invoice'),'err');
   const pm=document.getElementById('inv_pm').value;const paid=pm==='cash'?T.total:pm==='credit'?0:r2(Math.max(0,Math.min(T.total,+document.getElementById('inv_paid').value||0)));const due=r2(Math.max(0,T.total-paid));
   const acct=document.getElementById('inv_acct')?.value||'cash';const dueDate=due>0?(document.getElementById('inv_due')?.value||addDays(date,30)):'';
-  if(invKind==='sale'){const origMap={};if(editSaleCtx&&editSaleCtx.orig)editSaleCtx.orig.items.forEach(it=>{origMap[it.pid]=(origMap[it.pid]||0)+it.qty;});
-    for(const l of lines){const p=findProduct(l.pid);const allowed=p.qty+(origMap[l.pid]||0);if(l.qty>allowed)return toast(`${L('الكمية أكبر من المتاح','Qty exceeds stock')}: ${p.name} (${allowed})`,'err');}
+  if(invKind==='sale'){
+    const original=editSaleCtx?.orig;
+    if(original?.branch&&original.branch!==branch)return toast(L('افتح فرع الفاتورة الأصلية قبل التعديل','Switch to the original invoice branch before editing'),'err');
+    if(!posStockAvailable(lines,branch,original?.items||[]))return;
     const cost=items.reduce((s,i)=>s+i.cost*i.qty,0);const party=partyId?findCustomer(partyId):null;if(due>0&&!party)return toast(L('اختر عميلًا للآجل','Select a customer for credit'),'err');
     const origDue=editSaleCtx&&editSaleCtx.orig&&editSaleCtx.orig.customerId===partyId?(editSaleCtx.orig.dueAmount||0):0;
     if(due>0&&party&&party.creditLimit>0&&(party.balance-origDue+due)>party.creditLimit)return toast(`${L('تجاوز حد الائتمان','Credit limit exceeded')} (${money(party.creditLimit)})`,'err');
     let saleNo,saleId=uid(),src='invoice';
     if(editSaleCtx&&editSaleCtx.orig){const o=editSaleCtx.orig;reverseSaleEffects(o);db.sales=db.sales.filter(x=>x.id!==o.id);saleNo=o.no;src=o.source||'invoice';db.editLog.push({id:uid(),at:new Date().toISOString(),user:isManager()?'manager':'cashier',saleNo,oldTotal:o.total,newTotal:T.total});}
     else saleNo=db.seq.sale++;
-    const rec={id:saleId,no:saleNo,date,ts:new Date().toISOString(),customerId:partyId,customerName:party?party.name:'',items,sub:T.sub,disc:T.disc,vat:T.vat,vatP:T.vatP,total:T.total,cost,profit:T.total-T.vat-cost,paidAmount:paid,dueAmount:due,dueDate,payMethod:pm,acct,shiftSessionId:((typeof _activeShift!=='undefined'&&_activeShift)?_activeShift.id:''),...(!isSale?purchExtraRead():{}),invoiceImage:window._invImg||'',branch:activeBranch(),orderType:((document.getElementById('inv_channel')||{}).value)||((editSaleCtx&&editSaleCtx.orig&&editSaleCtx.orig.orderType)||'dinein'),cashier:(typeof fatInvoiceCashierName==='function'?fatInvoiceCashierName():currentUserName()),promoCode:((document.getElementById('inv_promo')||{}).value||'').trim().toUpperCase()||'',source:src,edited:!!editSaleCtx};
-    snsPostInvoice(rec,'sale');db.sales.push(rec);saleStockOut(items,`بيع #${rec.no}`,rec.id,date);addCash('in',paid,`بيع #${rec.no}`,rec.id,acct,date);if(due>0&&party)party.balance+=due;
+    const rec={id:saleId,no:saleNo,date,ts:new Date().toISOString(),customerId:partyId,customerName:party?party.name:'',items,sub:T.sub,disc:T.disc,vat:T.vat,vatP:T.vatP,total:T.total,cost,profit:T.total-T.vat-cost,paidAmount:paid,dueAmount:due,dueDate,payMethod:pm,acct,shiftSessionId:((typeof _activeShift!=='undefined'&&_activeShift)?_activeShift.id:''),...(!isSale?purchExtraRead():{}),invoiceImage:window._invImg||'',branch,orderType:((document.getElementById('inv_channel')||{}).value)||((editSaleCtx&&editSaleCtx.orig&&editSaleCtx.orig.orderType)||'dinein'),cashier:(typeof fatInvoiceCashierName==='function'?fatInvoiceCashierName():currentUserName()),promoCode:((document.getElementById('inv_promo')||{}).value||'').trim().toUpperCase()||'',source:src,edited:!!editSaleCtx};
+    snsPostInvoice(rec,'sale');db.sales.push(rec);saleStockOut(items,`بيع #${rec.no}`,rec.id,date);addCash('in',paid,`بيع #${rec.no}`,rec.id,acct,date);if(due>0&&party)party.balance=r2(Number(party.balance||0)+due);
     if(party)awardPoints(party,T.total);bumpOps();const wasEdit=!!editSaleCtx;editSaleCtx=null;
     logAudit(wasEdit?L('تعديل فاتورة بيع','Edit sale'):L('فاتورة بيع','Sale invoice'),`${invNo(rec)} — ${money(T.total)}`);save();closeModal();go('sales');toast(wasEdit?L('تم تعديل الفاتورة','Invoice updated'):L('تم حفظ الفاتورة','Invoice saved'));viewInvoice('sale',rec.id);
   }else{
@@ -6496,11 +6634,12 @@ function saveInvoice(){const isSale=(invKind!=='purchase');const lines=invLines.
     const party=partyId?findSupplier(partyId):null;if(due>0&&!party)return toast(L('اختر موردًا للآجل','Select a supplier for credit'),'err');
     const order=activePurchaseOrderId?db.purchaseOrders.find(o=>o.id===activePurchaseOrderId):null;
     const remaining=order?purchaseOrderRemaining(order):null;
+    if(order?.branch&&order.branch!==branch)return toast(L('اختار فرع أمر الشراء قبل حفظ الاستلام','Switch to the purchase order branch before saving receipt'),'err');
     if(activePurchaseOrderId&&(!order||!canReceivePO(order)||partyId!==(order.supplierId||'')||
       !purchaseReceiptFits(remaining,items))){
       return toast(L('راجع المورد والكميات المتبقية في أمر الشراء','Check the supplier and remaining quantities on the purchase order'),'err');
     }
-    const rec={id:uid(),no:db.seq.purchase++,date,...(order?{purchaseOrderId:order.id}:{}),supplierId:partyId,supplierName:party?party.name:'',items,sub:T.sub,disc:T.disc,vat:T.vat,vatP:T.vatP,total:T.total,paidAmount:paid,dueAmount:due,dueDate,payMethod:pm,acct,branch:activeBranch()};
+    const rec={id:uid(),no:db.seq.purchase++,date,...(order?{purchaseOrderId:order.id}:{}),supplierId:partyId,supplierName:party?party.name:'',items,sub:T.sub,disc:T.disc,vat:T.vat,vatP:T.vatP,total:T.total,paidAmount:paid,dueAmount:due,dueDate,payMethod:pm,acct,branch};
     const weightedCost=new Map();
     const net=r2(T.total-T.vat);
     let cumulative=0;
@@ -6559,13 +6698,18 @@ function snsApplyInvoicePayment(kind,invoice,amount,account,note){
       [snsPostingLine('2100',amount),snsPostingLine(snsCashAccount(account),-amount)];
   }
 }
+function snsSupplierPaymentsAllowed(){
+  return !CURRENT_UID||!CURRENT_ORG||CURRENT_ROLE!=='stockkeeper';
+}
 function snsCanPaySupplier(){
-  if(!CURRENT_UID||!CURRENT_ORG||CURRENT_ROLE!=='stockkeeper')return true;
+  if(snsSupplierPaymentsAllowed())return true;
   toast(L('سداد المورد من حساب الإدارة أو المحاسبة. تقدر تسجل الشراء آجلًا من حساب المخزون.','Supplier payments require a manager or accountant account. Stock staff can record purchases on credit.'),'err');
   return false;
 }
 async function collectInvoice(kind,id){
   if(kind==='purchase'&&!snsCanPaySupplier())return;
+  const preview=document.querySelector('#modalBg.open #snsInvoiceSyncStatus');
+  const reopenPreview=preview?.dataset.invoiceId===id;
   const invoices=kind==='sale'?db.sales:db.purchases;
   const invoice=invoices.find(row=>row.id===id);
   if(!snsCanSettleInvoice(invoice)||!(invoice.dueAmount>0))return;
@@ -6579,7 +6723,10 @@ async function collectInvoice(kind,id){
   if(!Number.isFinite(value)||value<=0)return;
   snsApplyInvoicePayment(kind,invoice,value,account,action+' #'+invoice.no);
   logAudit(kind==='sale'?L('تحصيل','Collection'):L('سداد','Payment'),`#${invoice.no} — ${money(value)}`);
-  save();go(kind==='sale'?'sales':'purchases');toast(L('تم تسجيل الدفعة','Payment recorded'));
+  save();
+  if(reopenPreview)viewInvoice(kind,id);
+  else go(kind==='sale'?'sales':'purchases');
+  toast(CURRENT_ORG&&CURRENT_UID?L('اتسجلت الدفعة على الجهاز. تابع حالة المزامنة.','Payment recorded on this device. Check sync status.'):L('تم تسجيل الدفعة','Payment recorded'));
 }
 function viewInvoice(kind,id){const isSale=kind==='sale';const collection=isSale?'sales':'purchases';const s=db[collection].find(x=>x.id===id);if(!s)return;const st=db.settings;
   openModal(`<div class="modal-h no-print"><div class="sns-invoice-heading"><h3>${L('فاتورة','Invoice')} ${invNo(s)}</h3>
@@ -6597,7 +6744,10 @@ function viewInvoice(kind,id){const isSale=kind==='sale';const collection=isSale
       <div style="text-align:center"><div id="invQR" style="padding:6px;background:#fff;border-radius:8px;display:inline-block"></div><div style="font-size:10px;color:var(--muted);margin-top:4px">${L('امسح للتحقق','Scan to verify')}</div></div>
       <div class="inv-totals" style="margin:0"><div class="row"><span>${L('الإجمالي الفرعي','Subtotal')}</span><span class="t-num">${money(s.sub)}</span></div><div class="row"><span>${L('الخصم','Discount')}</span><span class="t-num">- ${money(s.disc)}</span></div><div class="row"><span>${L('الضريبة','Tax')} (${s.vatP}%)</span><span class="t-num">${money(s.vat)}</span></div>${(s.deliveryFee||0)>0?`<div class="row"><span>🛵 ${L('رسوم التوصيل','Delivery')}</span><span class="t-num">${money(s.deliveryFee)}</span></div>`:''}<div class="row grand"><span>${L('الإجمالي','Total')}</span><span>${s.subKind==='delivery'?money(0):money(s.total)}</span></div>${s.subKind==='delivery'?`<div class="row" style="color:var(--ok);font-size:12.5px"><span>🟢 ${L('قيمة ضمن الاشتراك (مدفوعة مقدمًا)','Subscription value (prepaid)')}</span><span class="t-num">${money(s.prepaidValue||0)}</span></div>`:''}<div class="row"><span>${L('المدفوع','Paid')}</span><span class="t-num">${money(s.paidAmount||0)}</span></div>${s.payMethod==='split'?`<div class="row" style="font-size:12px;color:var(--muted)"><span>💵 ${L('نقدي','Cash')}</span><span class="t-num">${money(s.splitCash||0)}</span></div><div class="row" style="font-size:12px;color:var(--muted)"><span>💳 ${L('بطاقة','Card')}</span><span class="t-num">${money(s.splitCard||0)}</span></div>`:''}${(s.received!=null&&s.payMethod==='cash'&&(s.change||0)>0)?`<div class="row"><span>${L('المستلم','Received')}</span><span class="t-num">${money(s.received)}</span></div><div class="row" style="color:var(--primary-d)"><span>${L('الباقي','Change')}</span><span class="t-num">${money(s.change)}</span></div>`:''}${(s.dueAmount||0)>0?`<div class="row" style="color:var(--danger)"><span>${L('المتبقي','Due')}</span><span class="t-num">${money(s.dueAmount)}</span></div>${s.dueDate?`<div class="row" style="color:var(--danger)"><span>${L('تاريخ الاستحقاق','Due date')}</span><span class="t-num">${s.dueDate}</span></div>`:''}`:''}</div></div>
     <div style="text-align:center;color:var(--muted);font-size:12px;margin-top:20px">${L('شكرًا لتعاملكم معنا 🌿','Thank you for your business 🌿')}</div></div>
-  <div class="modal-f"><button class="btn btn-ghost" onclick="printThermal('${kind}','${id}')">🧾 ${L('إيصال حراري','Thermal receipt')}</button>${(kind==='sale'&&fatBizHasOrderTypes())?`<button class="btn btn-ghost" onclick="printKitchen('${id}')">🍳 ${L('أمر تجهيز','Prep ticket')}</button>`:''}<button class="btn btn-ghost" onclick="window.print()">🖨️ ${L('طباعة A4','Print A4')}</button><button class="btn" style="background:#25D366;color:#fff" onclick="waSend('${kind}','${id}')">📱 ${L('واتساب','WhatsApp')}</button>${kind==='sale'?`<button class="btn btn-ghost" onclick="saveAsRecurring('${id}')">🔁 ${L('حفظ كمتكررة','Save recurring')}</button>`:''}<button class="btn btn-primary" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`,true);
+  <div class="modal-f" data-invoice-id="${esc(id)}" data-invoice-kind="${kind}">
+    ${!s.voided&&s.dueAmount>0&&(isSale||snsSupplierPaymentsAllowed())?`<button type="button" class="btn btn-primary btn-sm" onclick="collectInvoice(this.parentElement.dataset.invoiceKind,this.parentElement.dataset.invoiceId)">${isSale?L('تحصيل','Collect'):L('سداد','Pay')}</button>`:''}
+    ${!s.voided&&fatCan('refund')?`<button type="button" class="btn btn-ghost btn-sm" onclick="returnForm(this.parentElement.dataset.invoiceKind,this.parentElement.dataset.invoiceId)">${L('مرتجع','Return')}</button>`:''}
+    <button class="btn btn-ghost" onclick="printThermal('${kind}','${id}')">🧾 ${L('إيصال حراري','Thermal receipt')}</button>${(kind==='sale'&&fatBizHasOrderTypes())?`<button class="btn btn-ghost" onclick="printKitchen('${id}')">🍳 ${L('أمر تجهيز','Prep ticket')}</button>`:''}<button class="btn btn-ghost" onclick="window.print()">🖨️ ${L('طباعة A4','Print A4')}</button><button class="btn" style="background:#25D366;color:#fff" onclick="waSend('${kind}','${id}')">📱 ${L('واتساب','WhatsApp')}</button>${kind==='sale'?`<button class="btn btn-ghost" onclick="saveAsRecurring('${id}')">🔁 ${L('حفظ كمتكررة','Save recurring')}</button>`:''}<button class="btn btn-primary" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`,true);
   document.getElementById('modal').classList.add('sns-invoice-preview');
   snsRefreshInvoiceSyncStatus();
   renderQR('invQR',`${esc(st.company)}|INV#${s.no}|${dsp(s.date)}|${L('إجمالي','Total')}:${fmt(s.total)} ${cur()}|${st.taxNumber||''}`);}
@@ -7192,8 +7342,8 @@ views.customers=()=>{
       <div class="panel-h sns-list-tools">
         <div class="search"><input type="search" id="snsCustomerSearch" aria-label="${L('بحث في العملاء','Search customers')}" placeholder="${L('ابحث بالاسم أو الهاتف','Search name or phone')}" value="${esc(custQuery)}" oninput="custQuery=this.value;renderCustomersList()"><span class="si" aria-hidden="true">🔍</span></div>
         <div class="sns-filter-row" role="group" aria-label="${L('تصنيف العملاء','Customer tier')}">
-          ${[['',L('الكل','All')],['vip',snsTierName('online')],['wholesale',snsTierName('wholesale')],['regular',snsTierName('default')]].map(([tier,label])=>
-            `<button type="button" class="cat-chip" data-tier="${tier}" onclick="custTierFilter=this.dataset.tier;renderCustomersList()">${esc(label)}</button>`).join('')}
+          ${[['all',L('الكل','All')],...snsCustomerGroups()].map(([tier,label])=>
+            `<button type="button" class="cat-chip" data-tier="${tier==='all'?'':tier||'regular'}" onclick="custTierFilter=this.dataset.tier;renderCustomersList()">${esc(label)}</button>`).join('')}
         </div>
       </div>
       <div class="panel-b" id="snsCustomersList"></div>
@@ -7203,7 +7353,7 @@ views.customers=()=>{
 function renderCustomersList(){
   const loyOn=db.settings.loyaltyOn;
   const list=db.customers.filter(c=>{
-    const inTier=!custTierFilter||(custTierFilter==='regular'?!c.tier:c.tier===custTierFilter);
+    const inTier=snsCustomerTierMatches(c);
     return inTier&&matches([c.name,c.phone,c.phone2].join(' '),custQuery);
   });
   document.querySelectorAll('#content button[data-tier]').forEach(button=>{
@@ -7227,6 +7377,7 @@ function renderCustomersList(){
         ${loyOn?`<td class="t-num">${c.points||0}</td>`:''}<td><span class="badge ${style}">${status}</span></td>
         <td><div class="sns-record-controls" data-id="${esc(c.id)}">
           <button type="button" class="btn btn-ghost btn-sm" onclick="fatCustProfile(this.parentElement.dataset.id)">${L('عرض','View')}</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="statement('customer',this.parentElement.dataset.id)">${L('كشف حساب','Statement')}</button>
           ${balance>0?`<button type="button" class="btn btn-ghost btn-sm" onclick="collect(this.parentElement.dataset.id)">${L('تحصيل','Collect')}</button>`:''}
           <button type="button" class="btn btn-ghost btn-sm sns-record-more" onclick="snsCustomerActions(this)">${L('المزيد','More')}</button>
         </div></td></tr>`;
@@ -7259,7 +7410,7 @@ function snsCustomerTools(button){
 }
 function exportCustomersCSV(){if(!db.customers.length)return toast(L('لا يوجد عملاء','No customers'),'err');
   const rows=[[L('الاسم','Name'),L('الهاتف','Phone'),L('رقم إضافي','Extra phone'),L('العنوان','Address'),L('التصنيف','Category'),L('تاريخ ميلاد','Birthday'),L('الرصيد','Balance'),L('حد الائتمان','Credit limit'),L('النقاط','Points')]];
-  db.customers.forEach(c=>rows.push([c.name,c.phone||'',c.phone2||'',c.address||'',snsTierName(c.tier==='vip'?'online':c.tier==='wholesale'?'wholesale':'default'),c.bday||'',c.balance,c.creditLimit||0,c.points||0]));
+  db.customers.forEach(c=>rows.push([c.name,c.phone||'',c.phone2||'',c.address||'',snsCustomerGroup(c),c.bday||'',c.balance,c.creditLimit||0,c.points||0]));
   downloadCSV('customers-'+today()+'.csv',rows);}
 async function waCustomer(id){const c=findCustomer(id);if(!c)return;const num=waNumber(c.phone);if(!num)return toast(L('لا يوجد رقم','No phone number'),'err');
   const msg=await promptBox(L('الرسالة للعميل:','Message to customer:'),{value:L(`مرحبًا ${c.name}،`,`Hello ${c.name},`)});if(msg===null)return;
@@ -7268,7 +7419,7 @@ async function waSupp(id){const s=findSupplier(id);if(!s)return;const num=waNumb
   const msg=await promptBox(L('الرسالة للمورد:','Message to supplier:'),{value:L(`مرحبًا ${s.name}،`,`Hello ${s.name},`)});if(msg===null)return;
   waSendMsg(num,msg,{title:L('رسالة للمورد','Message to supplier')});}
 function bulkMessage(){
-  const targets=db.customers.filter(c=>waNumber(c.phone)&&(!custTierFilter||(custTierFilter==='regular'?!c.tier:c.tier===custTierFilter)));
+  const targets=db.customers.filter(c=>waNumber(c.phone)&&(snsCustomerTierMatches(c)));
   if(!targets.length)return toast(L('لا يوجد عملاء بأرقام في هذا التصنيف','No customers with phones in this filter'),'err');
   openModal(`<div class="modal-h"><h3>📢 ${L('رسالة جماعية (واتساب)','Bulk Message (WhatsApp)')}</h3><button class="x" onclick="closeModal()">×</button></div>
   <div class="modal-b"><div class="hint">${L('سيتم فتح نافذة واتساب لكل عميل بالترتيب (واحد تلو الآخر). استخدم {name} لإدراج اسم العميل.','A WhatsApp tab opens for each customer in turn. Use {name} to insert the customer name.')}</div>
@@ -7276,7 +7427,7 @@ function bulkMessage(){
     <div class="hint" style="color:var(--gold)">⚠️ ${L('المتصفح قد يحجب فتح نوافذ متعددة — اسمح بالنوافذ المنبثقة. للأعداد الكبيرة أرسل على دفعات.','Your browser may block multiple pop-ups — allow them. For large lists, send in batches.')}</div></div>
   <div class="modal-f"><button class="btn btn-primary" onclick="runBulkMessage()">📤 ${L('فتح الرسائل','Open messages')}</button><button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button></div>`);}
 function runBulkMessage(){const tmpl=document.getElementById('bulk_msg').value;if(!tmpl.trim())return toast(L('اكتب الرسالة','Enter a message'),'err');
-  const targets=db.customers.filter(c=>waNumber(c.phone)&&(!custTierFilter||(custTierFilter==='regular'?!c.tier:c.tier===custTierFilter)));
+  const targets=db.customers.filter(c=>waNumber(c.phone)&&(snsCustomerTierMatches(c)));
   closeModal();let i=0;
   const openNext=()=>{if(i>=targets.length){toast(L('تم فتح كل الرسائل','All messages opened'));return;}const c=targets[i++];const msg=tmpl.replace(/\{name\}/g,c.name);window.open(`https://wa.me/${waNumber(c.phone)}?text=${encodeURIComponent(msg)}`,'_blank');setTimeout(openNext,1200);};
   openNext();}
@@ -7304,7 +7455,7 @@ async function delRecurring(id){if(!await confirmBox(L('حذف القالب ال
 async function redeemPoints(id){const c=findCustomer(id);const pts=c.points||0;if(pts<=0)return;const val=pts*db.settings.loyaltyValue;
   if(!await confirmBox(L(`استبدال ${pts} نقطة بخصم ${money(val)}؟ (يُضاف كرصيد مقدّم للعميل)`,`Redeem ${pts} points for ${money(val)} credit?`)))return;
   c.points=0;c.balance-=val;addCash('out',0,`استبدال نقاط ${c.name}`);save();views.customers();toast(L('تم الاستبدال','Redeemed'));}
-async function snsSettleParty(kind,id){
+async function snsSettleParty(kind,id,{fromPos=false}={}){
   const isSale=kind==='sale';
   if(!isSale&&!snsCanPaySupplier())return;
   const findParty=isSale?findCustomer:findSupplier;
@@ -7345,16 +7496,28 @@ async function snsSettleParty(kind,id){
   }
   logAudit(action,party.name+' — '+money(value));
   save();
-  if(isSale)views.customers();else views.suppliers();
+  if(fromPos){
+    if(current==='pos')renderPosMemberCard();
+  }else if(isSale)views.customers();else views.suppliers();
   toast(L('تم تسجيل الدفعة','Payment recorded'));
 }
 function collect(id){return snsSettleParty('sale',id);}
 views.suppliers=()=>{document.getElementById('topActions').innerHTML=`<button class="btn btn-accent" onclick="partyForm('supplier')">+ ${L('مورد','Supplier')}</button> <button class="btn btn-ghost" onclick="snsImportOptions('suppliers')">📥 ${L('استيراد الموردين CSV','Import suppliers CSV')}</button>`;
   const due=db.suppliers.reduce((s,c)=>s+Math.max(0,c.balance),0);
   document.getElementById('content').innerHTML=`<div class="cards" style="grid-template-columns:repeat(2,1fr)"><div class="card kpi-2"><div class="lbl">${L('عدد الموردين','Suppliers')}</div><div class="val">${db.suppliers.length}</div></div><div class="card kpi-4"><div class="lbl">${L('المستحق عليك','Payables')}</div><div class="val" style="font-size:22px;color:var(--danger)">${money(due)}</div></div></div>
-    <div class="panel"><div class="panel-h"><h3>${L('الموردون','Suppliers')}</h3></div><div class="panel-b">
-    ${db.suppliers.length?`<table><thead><tr><th>${L('الاسم','Name')}</th><th>${L('الهاتف','Phone')}</th><th>${L('الرصيد','Balance')}</th><th>${L('الحالة','Status')}</th><th></th></tr></thead><tbody>
-    ${db.suppliers.slice(0,_cap('suppliers')).map(c=>`<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.phone)||'—'}</td><td class="t-num">${money(Math.abs(c.balance))}</td><td>${c.balance>0?`<span class="badge danger">${L('مستحق عليك','You owe')}</span>`:`<span class="badge ok">${L('مسدد','Settled')}</span>`}</td><td><div class="row-acts"><button class="iconbtn" onclick="statement('supplier','${c.id}')">📄</button>${c.balance>0?`<button class="btn btn-ghost btn-sm" onclick="payy('${c.id}')">${L('سداد','Pay')}</button>`:''}<button class="iconbtn" onclick="partyForm('supplier','${c.id}')">✏️</button><button class="iconbtn del" onclick="delParty('supplier','${c.id}')">🗑️</button></div></td></tr>`).join('')}</tbody></table>${_moreBtn('suppliers',db.suppliers.length)}`:`<div class="empty"><span class="big">🚚</span>${L('لا يوجد موردون','No suppliers')}</div>`}</div></div>`;};
+    <div class="panel"><div class="panel-h sns-list-tools"><h3>${L('الموردون','Suppliers')}</h3>
+      <input type="search" aria-label="${L('بحث في الموردين','Search suppliers')}" placeholder="${L('الاسم أو الهاتف','Name or phone')}" value="${esc(_rowQ.suppliers||'')}" oninput="renderSuppliers(this.value)">
+    </div><div class="panel-b" id="snsSupplierList"></div></div>`;
+  renderSuppliers(_rowQ.suppliers||'');
+};
+function renderSuppliers(query){
+  _rowQ.suppliers=query;
+  const list=db.suppliers.filter(supplier=>matches([supplier.name,supplier.phone].join(' '),query));
+  document.getElementById('snsSupplierList').innerHTML=`
+    ${list.length?`<table><thead><tr><th>${L('الاسم','Name')}</th><th>${L('الهاتف','Phone')}</th><th>${L('الرصيد','Balance')}</th><th>${L('الحالة','Status')}</th><th></th></tr></thead><tbody>
+    ${list.slice(0,_cap('suppliers')).map(c=>`<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.phone)||'—'}</td><td class="t-num">${money(Math.abs(c.balance))}</td><td>${c.balance>0?`<span class="badge danger">${L('مستحق عليك','You owe')}</span>`:`<span class="badge ok">${L('مسدد','Settled')}</span>`}</td><td><div class="row-acts"><button type="button" class="btn btn-ghost btn-sm" onclick="statement('supplier','${c.id}')">${L('كشف حساب','Statement')}</button>${c.balance>0&&snsSupplierPaymentsAllowed()?`<button class="btn btn-ghost btn-sm" onclick="payy('${c.id}')">${L('سداد','Pay')}</button>`:''}<button class="iconbtn" onclick="partyForm('supplier','${c.id}')">✏️</button><button class="iconbtn del" onclick="delParty('supplier','${c.id}')">🗑️</button></div></td></tr>`).join('')}</tbody></table>${_moreBtn('suppliers',list.length)}`:`<div class="empty"><span class="big">🚚</span>${L('مفيش موردين مطابقين','No matching suppliers')}</div>`}`;
+}
+
 function payy(id){return snsSettleParty('purchase',id);}
 function partyForm(kind,id){const isC=kind==='customer';const list=isC?db.customers:db.suppliers;const p=id?list.find(x=>x.id===id):{name:'',phone:'',address:'',balance:0,points:0,creditLimit:0};
   openModal(`<div class="modal-h"><h3>${id?L('تعديل','Edit'):L('إضافة','Add')} ${isC?L('عميل','Customer'):L('مورد','Supplier')}</h3><button class="x" onclick="closeModal()">×</button></div>
@@ -7365,7 +7528,9 @@ function partyForm(kind,id){const isC=kind==='customer';const list=isC?db.custom
     <span title="${L('موجب (+) = العميل مدين لك (عليه فلوس). سالب (-) = دفع مقدم (له رصيد عندك). مثال: 500 = العميل عليه 500 ليك','Positive = customer owes you. Negative = customer pre-paid. Example: 500 means customer owes you 500')}" style="cursor:help;color:var(--primary);font-size:11px;font-weight:400;margin-right:4px">ℹ️ ${L('(+ عليه / - له)','(+ owes / - credit)')}</span>
     </label><input id="p_bal" ${id?'readonly':''} type="number" inputmode="decimal" value="${p.balance||0}" placeholder="0"></div>
   ${isC?`<div class="field"><label>${L('حد الائتمان (0 = بدون حد)','Credit limit (0 = none)')}</label><input id="p_climit" type="number" inputmode="decimal" value="${p.creditLimit||0}"></div>`:'<div class="field"></div>'}</div>
-  ${isC?`<div class="grid2"><div class="field"><label>${L('التصنيف','Category')}</label><select id="p_tier"><option value="" ${!p.tier?'selected':''}>${snsTierHtml('default')}</option><option value="vip" ${p.tier==='vip'?'selected':''}>${snsTierHtml('online')}</option><option value="wholesale" ${p.tier==='wholesale'?'selected':''}>${snsTierHtml('wholesale')}</option></select></div>
+  ${isC?`<div class="grid2"><div class="field"><label>${L('التصنيف','Category')}</label><select id="p_tier" aria-label="${L('تصنيف العميل','Customer category')}">
+    ${snsCustomerGroups().map(([tier,label])=>`<option value="${tier}" ${(p.tier||'')===tier?'selected':''}>${esc(label)}</option>`).join('')}
+    ${p.tier&&!snsCustomerGroups().some(([tier])=>tier===p.tier)?`<option value="${esc(p.tier)}" selected>${esc(p.tier)}</option>`:''}</select></div>
   <div class="field"><label>${L('تاريخ ميلاد / مناسبة','Birthday / occasion')}</label><input id="p_bday" type="date" value="${esc(p.bday||'')}"></div></div>`:''}
   ${isC&&id?`<div class="hint">⭐ ${L('نقاط الولاء الحالية','Loyalty points')}: <b>${p.points||0}</b></div>`:''}</div>
   <div class="modal-f"><button class="btn btn-primary" onclick="saveParty('${kind}','${id||''}')">${L('حفظ','Save')}</button><button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button></div>`);}
@@ -7449,13 +7614,21 @@ function statement(kind,id){
   const p=(isC?db.customers:db.suppliers).find(x=>x.id===id);
   if(!p)return;
   const rows=snsPartyStatementRows(kind,p);
+  const balance=r2(p.balance);
+  const balanceLabel=balance===0?L('الحساب مسدّد','Settled balance'):
+    (isC?(balance>0?L('مستحق لك من العميل','Customer owes you'):L('رصيد للعميل عندك','Customer credit')):
+      (balance>0?L('مستحق للمورد','Payable to supplier'):L('رصيد مقدّم للمورد','Supplier advance')));
   let bal=0;const body=rows.map(r=>{bal=r2(bal+r.debit-r.credit);return `<tr><td>${dsp(r.date)}</td><td>${esc(r.desc)}</td><td class="t-num">${money(r.debit)}</td><td class="t-num">${money(r.credit)}</td><td class="t-num">${money(bal)}</td></tr>`}).join('');
   openModal(`<div class="modal-h no-print"><h3>📄 ${L('كشف حساب','Statement')}: ${esc(p.name)}</h3><button class="x" onclick="closeModal()">×</button></div>
   <div class="modal-b" id="printArea"><div style="border-bottom:2px solid var(--primary);padding-bottom:10px;margin-bottom:14px"><h2 style="color:var(--primary-d)">${esc(db.settings.company)}</h2><div style="font-size:13px">${L('كشف حساب','Statement')}: <b>${esc(p.name)}</b> ${p.phone?'• '+esc(p.phone):''}</div></div>
   ${rows.length?`<table><thead><tr><th>${L('التاريخ','Date')}</th><th>${L('البيان','Description')}</th><th>${isC?L('عليه','Debit'):L('له','Credit')}</th><th>${isC?L('له','Credit'):L('عليه','Debit')}</th><th>${L('الرصيد','Balance')}</th></tr></thead><tbody>${body}</tbody></table>`:`<div class="empty">${L('لا حركات','No transactions')}</div>`}
   ${Math.abs(r2((isC?bal:-bal)-p.balance))>0.009?`<p class="hint">${L('فيه فرق بين كشف الحساب والرصيد المسجّل. راجع الأرصدة الافتتاحية والحركات القديمة.','The statement differs from the recorded balance. Review opening balances and legacy movements.')}</p>`:''}
-  <div class="inv-totals" style="margin-top:14px"><div class="row grand"><span>${L('الرصيد الحالي','Current balance')}</span><span>${money(Math.abs(p.balance))}</span></div></div></div>
-  <div class="modal-f"><button class="btn btn-ghost" onclick="window.print()">🖨️ ${L('طباعة','Print')}</button><button class="btn btn-primary" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`,true);}
+  <div class="inv-totals" style="margin-top:14px"><div class="row grand"><span>${balanceLabel}</span><span>${money(Math.abs(balance))}</span></div></div></div>
+  <div class="modal-f" data-party-id="${esc(p.id)}">
+    ${balance>0&&(isC||snsSupplierPaymentsAllowed())?`<button type="button" class="btn btn-primary" onclick="snsSettleParty('${isC?'sale':'purchase'}',this.parentElement.dataset.partyId)">${isC?L('تحصيل','Collect'):L('سداد','Pay')}</button>`:''}
+    <button class="btn btn-ghost" onclick="window.print()">🖨️ ${L('طباعة','Print')}</button><button class="btn btn-primary" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`,true);
+  document.getElementById('modal').classList.add('sns-invoice-preview');
+}
 
 /* Treasury */
 views.treasury=()=>{document.getElementById('topActions').innerHTML=`<button class="btn btn-primary" onclick="cashForm('in')">+ ${L('إيداع','Deposit')}</button><button class="btn btn-accent" onclick="cashForm('out')">- ${L('صرف','Withdraw')}</button><button class="btn btn-blue" onclick="transferForm()">🔁 ${L('تحويل','Transfer')}</button><button class="btn btn-ghost" onclick="bankForm()">🏦 ${L('حساب بنكي','Bank account')}</button>`;
@@ -7971,11 +8144,13 @@ views.settings=()=>{const st=db.settings;
       </div></div>
     <div class="card" style="grid-column:1/-1;padding:16px;margin:10px 0;border:1px solid var(--line);border-radius:12px">
   <div style="font-weight:800;margin-bottom:7px">🏷️ ${L('تسمية مستويات الأسعار وتصنيفات العملاء','Price levels & customer names')}</div>
-  <div class="hint" style="margin-bottom:10px">${L('غيّر الاسم الظاهر فقط حسب نشاط المنشأة؛ الأسعار والبيانات القديمة لن تتغير.','Change display names only; pricing stays the same.')}</div>
+  <div class="hint" style="margin-bottom:10px">${L('مستويات الأسعار الحالية تفضل زي ما هي. تصنيف زبون والتصنيف الخامس لتنظيم العملاء.','Price levels stay the same. The regular and fifth categories classify customers.')}</div>
   <div class="grid3">
     <div class="field"><label>${L('المستوى الأول (قطاعي)','First level')}</label><input id="s_tier_default" maxlength="40" value="${esc(snsTierName('default'))}"></div>
-    <div class="field"><label>${L('المستوى الثاني (أونلاين)','Second level')}</label><input id="s_tier_online" maxlength="40" value="${esc(snsTierName('online'))}"></div>
-    <div class="field"><label>${L('المستوى الثالث (جملة)','Third level')}</label><input id="s_tier_wholesale" maxlength="40" value="${esc(snsTierName('wholesale'))}"></div>
+    <div class="field"><label>${L('المستوى الثاني (أونلاين)','Second level')}</label><input id="s_tier_online" maxlength="40" value="${esc(db.settings.priceTierNames?.online||'')}" placeholder="${esc(snsTierName('online'))}"></div>
+    <div class="field"><label>${L('المستوى الثالث (جملة)','Third level')}</label><input id="s_tier_wholesale" maxlength="40" value="${esc(db.settings.priceTierNames?.wholesale||'')}" placeholder="${esc(snsTierName('wholesale'))}"></div>
+    <div class="field"><label for="s_tier_shopper">${L('تصنيف زبون','Regular customer category')}</label><input id="s_tier_shopper" maxlength="40" value="${esc(snsTierName('shopper'))}"></div>
+    <div class="field"><label for="s_tier_custom">${L('اسم تصنيف خامس (اختياري)','Optional fifth category name')}</label><input id="s_tier_custom" maxlength="40" value="${esc(db.settings.priceTierNames?.custom||'')}"></div>
   </div>
   <div class="hint">${L('اضغط «حفظ» في نهاية إعدادات المنشأة لتطبيق الأسماء.','Use the business settings Save button to apply.')}</div>
 </div>
@@ -8457,7 +8632,7 @@ function emailLogin(){if(window._loginLockUntil&&Date.now()<window._loginLockUnt
   db.settings.role=u.role;db.settings.currentUser=u.name||u.email;logAudit(L('تسجيل دخول','Login'),u.email);save();
   document.getElementById('loginScreen').style.display='none';applyLang();go(defaultView());toast(L('مرحبًا','Welcome')+' '+(u.name||u.email));}
 function logoutUser(){db.settings.currentUser='';save();location.reload();}
-function saveSettings(){if(typeof fatCan==='function'&&!fatCan('editSettings'))return toast(L('مالكش صلاحية تعديل الإعدادات','No permission to edit settings'),'err');const g=x=>document.getElementById(x).value;Object.assign(db.settings,{company:g('s_company').trim()||'مشروعي',phone:g('s_phone').trim(),activity:g('s_activity').trim(),address:g('s_address').trim(),currency:g('s_currency').trim()||'ج.م',vat:+g('s_vat')||0,taxNumber:g('s_tax').trim(),posVat:document.getElementById('s_posvat').checked,invNumOn:document.getElementById('s_invnum_on').checked,invPrefix:g('s_invprefix').trim()||'INV',invYear:document.getElementById('s_invyear').checked,invPad:Math.min(8,Math.max(1,+g('s_invpad')||3)),priceTierNames:{default:g('s_tier_default').trim().slice(0,40)||'قطاعي',online:g('s_tier_online').trim().slice(0,40)||'أونلاين (نص جملة)',wholesale:g('s_tier_wholesale').trim().slice(0,40)||'جملة (كميات)'}});applyBrand();save();views.settings();toast(L('تم الحفظ','Saved'));}
+function saveSettings(){if(typeof fatCan==='function'&&!fatCan('editSettings'))return toast(L('مالكش صلاحية تعديل الإعدادات','No permission to edit settings'),'err');const g=x=>document.getElementById(x).value;Object.assign(db.settings,{company:g('s_company').trim()||'مشروعي',phone:g('s_phone').trim(),activity:g('s_activity').trim(),address:g('s_address').trim(),currency:g('s_currency').trim()||'ج.م',vat:+g('s_vat')||0,taxNumber:g('s_tax').trim(),posVat:document.getElementById('s_posvat').checked,invNumOn:document.getElementById('s_invnum_on').checked,invPrefix:g('s_invprefix').trim()||'INV',invYear:document.getElementById('s_invyear').checked,invPad:Math.min(8,Math.max(1,+g('s_invpad')||3)),priceTierNames:{default:g('s_tier_default').trim().slice(0,40)||'قطاعي',online:g('s_tier_online').trim().slice(0,40),wholesale:g('s_tier_wholesale').trim().slice(0,40),shopper:g('s_tier_shopper').trim().slice(0,40),custom:g('s_tier_custom').trim().slice(0,40)}});applyBrand();save();views.settings();toast(L('تم الحفظ','Saved'));}
 function saveBrand(){
   const color=document.getElementById('s_color')?.value||'#0a2c56';
   const logoText=document.getElementById('s_logo_text')?.value.trim()||'';
@@ -9091,11 +9266,19 @@ function renderPOLines(){
 function addPOLine(){poLines.push({pid:'',name:'',qty:1,estCost:0});renderPOLines();}
 
 function savePO(){
+  if(!document.querySelector('#modalBg.open #po_sup')||!snsCanPost(today()))return;
   const sid=document.getElementById('po_sup').value;
   const sup=sid?db.suppliers.find(x=>x.id===sid):null;
-  const lines=poLines.filter(l=>l.pid||l.name);
+  const lines=poLines.filter(line=>line.pid||line.name).map(line=>({
+    ...line,pid:line.pid==='__custom__'?'':line.pid,name:String(line.name||'').trim(),estCost:Number(line.estCost||0)
+  }));
   if(!lines.length)return toast(L('أضف بنود','Add items'),'err');
-  const o={id:uid(),no:(db.purchaseOrders.length+1),date:today(),supplierId:sid,supplierName:sup?sup.name:'',expectedDate:document.getElementById('po_date').value,notes:document.getElementById('po_notes').value.trim(),items:lines,status:'pending'};
+  if(lines.some(line=>!Number.isFinite(line.qty)||line.qty<=0||!Number.isFinite(line.estCost)||line.estCost<0||
+    (line.pid?!findProduct(line.pid):!line.name)))return toast(L('راجع الأصناف والكميات والتكلفة التقديرية','Check items, quantities, and estimated costs'),'err');
+  const branch=activeBranch();
+  if(!db.branches.some(row=>row.id===branch))return toast(L('اختار فرع لأمر الشراء','Select a branch for the purchase order'),'err');
+  const number=db.purchaseOrders.reduce((highest,order)=>Math.max(highest,Number(order.no)||0),0)+1;
+  const o={id:uid(),no:number,date:today(),branch,supplierId:sid,supplierName:sup?sup.name:'',expectedDate:document.getElementById('po_date').value,notes:document.getElementById('po_notes').value.trim(),items:lines,status:'pending'};
   db.purchaseOrders.push(o);save();closeModal();views.purchaseOrders();toast(L('تم حفظ الأمر','Order saved'));}
 
 function viewPO(id){
@@ -9112,16 +9295,20 @@ function viewPO(id){
     </tbody></table>
     ${remaining.length?`<p class="hint"><b>${L('الكميات المتبقية','Remaining quantities')}</b> · ${remaining.map(line=>esc(line.name||findProduct(line.pid)?.name||'—')+' × '+line.qty).join(' · ')}</p>`:''}
     ${invoices.length?`<p class="hint"><b>${L('فواتير الشراء المرتبطة','Linked purchase invoices')}</b> · ${invoices.map(invoice=>`<button type="button" class="btn btn-ghost btn-sm" onclick="viewInvoice('purchase','${esc(invoice.id)}')">${esc(invNo(invoice))} · ${money(invoice.total)} · ${L('المتبقي','Due')} ${money(invoice.dueAmount||0)}</button>`).join(' ')}</p>`:''}
-    <div class="inv-totals"><div class="row grand"><span>${L('الإجمالي التقديري','Estimated Total')}</span><span>${money(total)}</span></div></div>
+    <div class="inv-totals">
+      ${o.branch?`<div class="row"><span>${L('فرع الاستلام','Receiving branch')}</span><span>${esc(db.branches.find(branch=>branch.id===o.branch)?.name||'—')}</span></div>`:''}
+      <div class="row grand"><span>${L('الإجمالي التقديري','Estimated Total')}</span><span>${money(total)}</span></div>
+      ${invoices.length?`<div class="row"><span>${L('المتبقي للمورد في الفواتير المرتبطة','Open balance on linked invoices')}</span><span>${money(invoices.reduce((sum,invoice)=>sum+Number(invoice.dueAmount||0),0))}</span></div>`:''}
+    </div>
   </div>
   <div class="modal-f">
-    ${canReceivePO(o)?`<button class="btn btn-primary" onclick="closeModal();receivePO('${o.id}')">${L('استلام وتحويل لفاتورة شراء','Receive & Convert to Invoice')}</button>`:''}
+    ${canReceivePO(o)?`<button class="btn btn-primary" onclick="receivePO('${o.id}')">${L('استلام وتحويل لفاتورة شراء','Receive & Convert to Invoice')}</button>`:''}
     <button class="btn btn-ghost" onclick="closeModal()">${L('إغلاق','Close')}</button>
   </div>`,true);}
 
 let pendingPurchaseOrderId=null, activePurchaseOrderId=null;
 function canReceivePO(order){return order.status==='pending'||order.status==='partial';}
-function purchaseLineKey(line){return line.pid?'id:'+line.pid:'name:'+norm(line.name||'');}
+function purchaseLineKey(line){return line.pid&&line.pid!=='__custom__'?'id:'+line.pid:'name:'+norm(line.name||'');}
 function purchaseOrderRemaining(order){
   const remaining=new Map();
   for(const line of order.items){
@@ -9148,15 +9335,15 @@ function purchaseReceiptFits(remaining,items){
   }
   return true;
 }
-async function receivePO(id){
-  if(!canView('purchaseOrders')||!canView('purchases'))return;
-  if(!await confirmBox(L('فتح فاتورة للكميات المتبقية؟','Open an invoice for the remaining quantities?')))return;
+function receivePO(id){
+  if(!canView('purchaseOrders')||!canView('purchases')||!snsCanPost(today()))return;
   const order=db.purchaseOrders.find(o=>o.id===id);
   if(!order||!canReceivePO(order))return;
+  if(order.branch&&order.branch!==activeBranch())return toast(L('اختار فرع أمر الشراء قبل الاستلام','Switch to the purchase order branch before receiving'),'err');
   const remaining=purchaseOrderRemaining(order);
   if(!remaining.length)return;
   window._poPrefill=remaining.map(line=>({
-    pid:line.pid||'',qty:line.qty,price:line.estCost||0,name:line.name||findProduct(line.pid)?.name||''
+    pid:line.pid==='__custom__'?'':line.pid||'',qty:line.qty,price:line.estCost||0,name:line.name||findProduct(line.pid)?.name||''
   }));
   closeModal();
   pendingPurchaseOrderId=order.id;
@@ -9433,20 +9620,21 @@ function maybeOnboard(){
 /* Full-screen lock when the shop's subscription has expired (admins are exempt). */
 function enforceSubLock(){
   let ov=document.getElementById('subLock');
-  const expired = !!SUB && subDaysLeft()!==null && subDaysLeft()<0 && !IS_ADMIN;
-  if(!expired){ if(ov)ov.remove(); return; }
+  if(!snsSubscriptionLocked()){if(ov)ov.remove();return;}
   if(ov)return; // already shown
   ov=document.createElement('div');
   ov.id='subLock';
   ov.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(8,16,28,.97);display:flex;align-items:center;justify-content:center;padding:20px;text-align:center';
-  const phone=esc(db.settings.phone||'');
+  ov.setAttribute('role','region');
+  ov.setAttribute('aria-labelledby','snsSubLockTitle');
   ov.innerHTML=`<div style="max-width:380px;background:var(--card,#0d1b30);border:1px solid var(--line,#243b5c);border-radius:16px;padding:28px 22px;color:#eaf2fa">
     <div style="font-size:46px">🔒</div>
-    <h2 style="margin:10px 0 6px;letter-spacing:normal">${L('انتهى اشتراكك','Subscription expired')}</h2>
-    <p style="color:#9fb0c8;font-size:13.5px;line-height:1.7;letter-spacing:normal">${L('عشان تكمّل استخدام النظام، لازم تجدّد اشتراكك. حوّل قيمة الباقة وكلّمنا بإثبات التحويل، وهنفعّلك فورًا.','To keep using the system, please renew your subscription. Send your payment and contact us with the receipt, and we will reactivate you right away.')}</p>
+    <h2 id="snsSubLockTitle" style="margin:10px 0 6px;letter-spacing:normal">${L('الاشتراك غير نشط','Subscription inactive')}</h2>
+    <p style="color:#9fb0c8;font-size:13.5px;line-height:1.7;letter-spacing:normal">${L('العمليات الجديدة والمزامنة متوقفة. راجع التجديد، أو كلّم الدعم لو كنت حوّلت بالفعل.','New transactions and sync are paused. Review renewal options or contact support if you have already transferred payment.')}</p>
     <div style="margin-top:14px;display:flex;flex-direction:column;gap:8px">
-      <button class="btn btn-primary" style="justify-content:center" onclick="showPricing()">💎 ${L('شوف الباقات والأسعار','See plans & pricing')}</button>
-      <button class="btn btn-ghost" style="justify-content:center" onclick="location.reload()">↻ ${L('جدّدت بالفعل؟ أعد التحميل','Already renewed? Reload')}</button>
+      <button class="btn btn-primary" style="justify-content:center" onclick="fatRenewModal()">💎 ${L('الباقات والتجديد','Plans and renewal')}</button>
+      <button class="btn btn-ghost" style="justify-content:center" onclick="fatRenewWA()">${L('تواصل مع دعم الاشتراكات','Contact subscription support')}</button>
+      <button class="btn btn-ghost" style="justify-content:center" onclick="snsCheckSubscriptionRecovery(this)">↻ ${L('تحقّق من التفعيل','Check activation')}</button>
       <button class="btn btn-danger" style="justify-content:center" onclick="authSignOut()">🚪 ${L('تسجيل الخروج','Sign out')}</button>
     </div>
   </div>`;
@@ -10936,11 +11124,11 @@ function autoTier(c){
   if(sp>=500||vi>=3)return {k:'silver',icon:'🥈',label:L('فضي','Silver'),bg:'rgba(140,150,160,.16)',fg:'#5f6b76'};
   return {k:'bronze',icon:'🥉',label:L('برونزي','Bronze'),bg:'rgba(176,121,80,.14)',fg:'#8a5a3b'};}
 function tierBadge(c){
-  if(c.tier==='vip')return ' <span class="badge" style="background:#EFF4FF;color:#2563EB;border:1px solid #BFDBFE">'+snsTierHtml('online')+'</span>';
-  if(c.tier==='wholesale')return ' <span class="badge info">'+snsTierHtml('wholesale')+'</span>';
+  const group=' <span class="badge info">'+esc(snsCustomerGroup(c))+'</span>';
+  if(c.tier)return group;
   var a=autoTier(c);
-  if(!a)return '';
-  return ' <span class="badge" title="'+L('تصنيف تلقائي حسب الإنفاق والزيارات','Auto tier by spend & visits')+'" style="background:'+a.bg+';color:'+a.fg+';font-size:10px">'+a.icon+' '+a.label+'</span>';}
+  if(!a)return group;
+  return group+' <span class="badge" title="'+L('تصنيف تلقائي حسب الإنفاق والزيارات','Auto tier by spend & visits')+'" style="background:'+a.bg+';color:'+a.fg+';font-size:10px">'+a.icon+' '+a.label+'</span>';}
 
 /* ===== Batch-5: Recipes/Components + Permissions + Extra fields + Print + Pay methods + Loyalty extras ===== */
 /* --- 1) Components (مكونات الصنف) — generic BOM --- */
@@ -12627,21 +12815,25 @@ function restoreFullBackup(input){
   const file=input?.files?.[0];
   if(!file)return;
   if(!isManager())return toast(L('الاسترجاع متاح للمدير','Restore is available to managers'),'err');
+  const org=CURRENT_ORG,user=CURRENT_UID;
+  const sameAccount=()=>CURRENT_ORG===org&&CURRENT_UID===user&&isManager();
+  const hasRecords=()=>['sales','purchases','products','customers','suppliers','cash','expenses','returns','stockMoves','journal','purchaseOrders','quotes','serviceOrders','heldSales','shifts','shiftSessions','transfers','banks']
+    .some(kind=>db[kind]?.length);
+  const mayRestore=()=>{
+    if(!sameAccount()||window._syncLock)return toast(L('استنى المزامنة تخلص وجرّب تاني من نفس الحساب','Wait for sync and retry from the same account'),'err');
+    if(org&&hasRecords())return toast(L('جرّب استرجاع الملف في محل تجريبي فاضي.','Restore this file in an empty staging shop.'),'err');
+    if(snsReadOutbox())return toast(L('راجع الحركات المعلّقة قبل الاسترجاع','Review pending changes before restoring'),'err');
+    return true;
+  };
   const reader=new FileReader();
   reader.onerror=()=>toast(L('تعذّر قراءة ملف النسخة','Could not read backup file'),'err');
   reader.onload=async()=>{
     try{
       const data=JSON.parse(reader.result);
       if(!data||!['sales','products','customers'].every(key=>Array.isArray(data[key])))throw new Error(L('ملف نسخة غير صالح','Invalid backup'));
-      const org=CURRENT_ORG;
-      if(org&&(db.sales.length||db.purchases.length||db.products.length||db.customers.length)){
-        return toast(L('جرّب استرجاع الملف في محل تجريبي فاضي.','Restore this file in an empty staging shop.'),'err');
-      }
-      if(snsReadOutbox())return toast(L('راجع الحركات المعلّقة قبل الاسترجاع','Review pending changes before restoring'),'err');
-      if(!await confirmBox(L('استرجاع بيانات النسخة الاحتياطية؟','Restore this backup?')))return;
-      if(CURRENT_ORG!==org||window._syncLock)return toast(L('استنى المزامنة تخلص وجرّب تاني','Wait for sync and try again'),'err');
+      if(!mayRestore()||!await confirmBox(L('استرجاع بيانات النسخة الاحتياطية؟','Restore this backup?'))||!mayRestore())return;
       if(!await makeSnapshot('before-full-restore'))return toast(L('تعذّر حفظ لقطة قبل الاسترجاع','Could not create a pre-restore snapshot'),'err');
-      if(CURRENT_ORG!==org||window._syncLock)return;
+      if(!mayRestore())return;
       const next={...db};
       for(const kind of V2_KINDS){
         if(!Object.hasOwn(data,kind))continue;
@@ -12887,7 +13079,7 @@ function exportToExcel(rows, filename, headers){
   toast('✅ '+L('تم التصدير لـ Excel','Exported to Excel'));}
 
 function exportSalesExcel(){
-  var rows=bf(db.sales).filter(function(s){return s.subKind!=='delivery';}).map(function(s){
+  var rows=snsInvoiceListRecords('sales').filter(s=>!s.voided&&s.subKind!=='delivery').map(function(s){
     return {[L('رقم الفاتورة','Inv#')]:invNo(s),[L('التاريخ','Date')]:s.date,[L('العميل','Customer')]:s.customerName||L('نقدي','Cash'),[L('القناة','Channel')]:s.orderType||'',[L('مستوى السعر','Price tier')]:s.priceTier?priceTierLabel(s.priceTier):L('افتراضي','Default'),[L('الإجمالي الفرعي','Subtotal')]:s.sub||0,[L('الخصم','Disc')]:s.disc||0,[L('الضريبة','Tax')]:s.vat||0,[L('الإجمالي','Total')]:s.total||0,[L('التكلفة','Cost')]:s.cost||0,[L('الربح','Profit')]:s.profit||0,[L('طريقة الدفع','Pay method')]:s.payMethod||'',[L('الكاشير','Cashier')]:s.cashier||'',[L('ملاحظة','Note')]:s.notes||''};});
   exportToExcel(rows,L('المبيعات','Sales'));}
 
@@ -12899,7 +13091,7 @@ function exportProductsExcel(){
 function exportCustomersExcel(){
   var rows=db.customers.map(function(c){
     var ws=walletState(c);
-    return {[L('الاسم','Name')]:c.name,[L('الهاتف','Phone')]:c.phone||'',[L('العنوان','Address')]:c.address||'',[L('الرصيد','Balance')]:c.balance||0,[L('النقاط','Points')]:c.points||0,[L('رصيد المحفظة','Wallet')]:ws.balance||0,[L('تاريخ الميلاد','Birthday')]:c.bday||'',[L('التصنيف','Tier')]:autoTier(c)?(autoTier(c).label):'',[L('المصدر','Source')]:c.source||'',[L('أول زيارة','First visit')]:c.firstVisit||''};});
+    return {[L('الاسم','Name')]:c.name,[L('الهاتف','Phone')]:c.phone||'',[L('العنوان','Address')]:c.address||'',[L('التصنيف','Category')]:snsCustomerGroup(c),[L('الرصيد','Balance')]:c.balance||0,[L('النقاط','Points')]:c.points||0,[L('رصيد المحفظة','Wallet')]:ws.balance||0,[L('تاريخ الميلاد','Birthday')]:c.bday||'',[L('التصنيف','Tier')]:autoTier(c)?(autoTier(c).label):'',[L('المصدر','Source')]:c.source||'',[L('أول زيارة','First visit')]:c.firstVisit||''};});
   exportToExcel(rows,L('العملاء','Customers'));}
 
 function exportExpensesExcel(){
@@ -12979,7 +13171,7 @@ function csvPreview(type,text){
     openModal(`<div class="modal-h"><h3>${L('استيراد أصناف ومخزون افتتاحي','Import items and opening stock')}</h3>
       <button type="button" class="x" onclick="closeModal()" aria-label="${L('إغلاق','Close')}">×</button></div>
       <div class="modal-b">${snsOpeningStockPreview(review,branch)}</div>
-      <div class="modal-f"><button type="button" class="btn btn-primary" onclick="csvDoImport()" ${review.ready.length?'':'disabled'}>
+      <div class="modal-f"><button type="button" class="btn btn-primary" onclick="csvDoImport(undefined,undefined,undefined,this)" ${review.ready.length?'':'disabled'}>
         ${L('استيراد','Import')} ${review.ready.length} ${L('سجل','records')}</button>
         <button type="button" class="btn btn-ghost" onclick="csvImportModal()">${L('اختيار ملف تاني','Choose another file')}</button></div>`,true);
     return;
@@ -13057,8 +13249,9 @@ function snsOpeningStockPreview(review,branch){
     ${issueRows?`<h4>${L('مراجعة الصفوف','Review rows')}</h4><div style="max-height:220px;overflow:auto" tabindex="0"><table><thead><tr><th>${L('سطر','Row')}</th><th>${L('الصنف','Item')}</th><th>${L('الحالة','Status')}</th><th>${L('التفاصيل','Details')}</th></tr></thead><tbody>${issueRows}</tbody></table></div>
       ${review.issues.length>50?`<p class="hint">${L('عرض أول 50 مشكلة من','Showing first 50 issues out of')} ${review.issues.length}</p>`:''}`:''}`;
 }
-async function csvDoImport(type,rows,colMap){
-  if(!snsCanPost(today()))return;
+let snsOpeningImportPending=false;
+async function csvDoImport(type,rows,colMap,button){
+  if(snsOpeningImportPending||!snsCanPost(today()))return;
   type=type||window._csvType;rows=rows||window._csvRows;colMap=colMap||window._csvColMap;
   if(!rows||!colMap)return toast(L('مفيش بيانات للاستيراد — اختر الملف تاني','No data to import — choose the file again'),'err');
   const isProduct=csvIsProduct(type);
@@ -13066,9 +13259,30 @@ async function csvDoImport(type,rows,colMap){
   let added=0,skipped=0;
   if(isProduct){
     if(snsViewAccess('products')!=='open')return;
+    const org=CURRENT_ORG,user=CURRENT_UID,branch=activeBranch();
+    if(!db.branches.some(item=>item.id===branch))return toast(L('اختار فرع للاستيراد','Select a branch for import'),'err');
+    const originalLabel=button?.textContent;
+    snsOpeningImportPending=true;
+    if(button){
+      button.disabled=true;
+      button.textContent=L('جارٍ التحقق من الباقة…','Checking plan…');
+    }
+    try{
+      if(!await snsRefreshSubscriptionForImport())return;
+      if(CURRENT_ORG!==org||CURRENT_UID!==user||activeBranch()!==branch||
+        (button&&(!button.isConnected||!document.getElementById('modalBg').classList.contains('open')))){
+        return toast(L('الفرع أو شاشة الاستيراد اتغيّرت. راجع الملف من جديد.','The branch or import screen changed. Review the file again.'),'err');
+      }
+      if(snsViewAccess('products')!=='open'||!snsCanPost(today()))return;
+    }finally{
+      snsOpeningImportPending=false;
+      if(button){
+        button.disabled=false;
+        button.textContent=originalLabel;
+      }
+    }
     const review=snsReviewOpeningStock(rows,colMap);
     if(!review.ready.length)return toast(L('مفيش أصناف صالحة للاستيراد','No valid items to import'),'err');
-    if(!await snsRefreshSubscriptionForImport())return;
     const max=maxProducts();
     if(max>=0&&db.products.length+review.ready.length>max)return toast(L('الاستيراد هيتجاوز حد الأصناف في باقتك','Import exceeds your plan’s item limit'),'err');
     const fallbackCategory=(typeof db.categories[0]==='string'?db.categories[0]:db.categories[0]?.name)||'';
@@ -13131,7 +13345,7 @@ function csvImportModal(){
   '<div class="modal-f"><button type="button" class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>');
   window._csvMode=isProduct?'products':(isSupplier?'suppliers':'customers');window._csvRows=null;}
 
-const SNS_RELEASE_ID='2026.11.20-r9';
+const SNS_RELEASE_ID='2026.11.21-r11';
 
 function setSyncStatus(state){
   var el=document.getElementById('syncDot');if(!el)return;
@@ -16608,9 +16822,15 @@ window.saveParty=async function(kind,id){
   var name=(document.getElementById('p_name')||{value:''}).value.trim();
   var phone=(document.getElementById('p_phone')||{value:''}).value;
   if(kind==='customer'){
-    if(!phone.trim())return toast(L('رقم الهاتف الأول إجباري للعميل','Primary phone is required'),'err');
-    var _addr=((document.getElementById('p_addr')||{value:''}).value||'').trim();
-    if(!_addr)return toast(L('العنوان الأول إجباري للعميل','Primary address is required'),'err');
+    // Existing CSV records may be incomplete. Do not force a fake address or phone during an edit.
+    const existing=id?findCustomer(id):null;
+    if(!phone.trim()&&(!existing||String(existing.phone||'').trim())){
+      return toast(L('رقم الهاتف الأول إجباري للعميل','Primary phone is required'),'err');
+    }
+    const address=(document.getElementById('p_addr')?.value||'').trim();
+    if(!address&&(!existing||String(existing.address||'').trim())){
+      return toast(L('العنوان الأول إجباري للعميل','Primary address is required'),'err');
+    }
   }
   var list=kind==='customer'?db.customers:db.suppliers;
   var d=fatDupCheck(list,name,phone,id);
@@ -20965,7 +21185,10 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     var from = (document.getElementById('tf_from') || {}).value || '';
     var to = (document.getElementById('tf_to') || {}).value || '';
     var note = ((document.getElementById('tf_note') || {}).value || '').trim();
-    if (!from || !to) return;
+    if(!snsCanPost(today()))return;
+    if(!db.branches.some(branch=>branch.id===from)||!db.branches.some(branch=>branch.id===to)){
+      return toast(L('اختار فرعين متاحين للتحويل','Choose two available branches'),'err');
+    }
     if (from === to) return toast(L('اختار فرعين مختلفين', 'Pick two different branches'), 'err');
 
     var rows = (window._tfRows || []).filter(function (r) { return r.pid && (+r.qty || 0) > 0; });
@@ -21468,8 +21691,25 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     window.fatRenewRender();
   };
 
+  function renewalField(id){
+    const modal=document.querySelector('#modalBg.open #rnModalBody');
+    return modal?modal.querySelector('#'+id):document.getElementById(id);
+  }
+
+  function openRenewalWhatsApp(message){
+    let draft;
+    try{draft=window.open('about:blank','_blank');}catch(e){}
+    if(!draft){
+      toast(L('المتصفح منع فتح واتساب. اسمح بفتح نافذة جديدة وحاول تاني.','Your browser blocked WhatsApp. Allow pop-ups and retry.'),'err');
+      return false;
+    }
+    draft.opener=null;
+    draft.location.href='https://wa.me/'+window.fatSalesWA()+'?text='+encodeURIComponent(message);
+    return true;
+  }
+
   window.fatRenewRender = function () {
-    var box = document.getElementById('rnCalc');
+    var box = renewalField('rnCalc');
     if (!box) return;
     var c = window.fatRenewCalc();
     var plans = window.fatPlans();
@@ -21506,15 +21746,15 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       '<b style="font-size:14px">' + L('المبلغ المطلوب', 'Amount due') + '</b>' +
       '<b style="font-size:24px;color:var(--primary)">' + money(c.net) + '</b></div></div>';
 
-    var amt = document.getElementById('rn_amount');
+    var amt = renewalField('rn_amount');
     if (amt && !amt.dataset.touched) amt.value = c.net;
   };
 
   /* ═══════════ إرسال إثبات التحويل ═══════════ */
   window.fatRenewSubmit = function () {
-    var g = function (id) { var e = document.getElementById(id); return e ? String(e.value || '').trim() : ''; };
+    var g = function (id) { var e = renewalField(id); return e ? String(e.value || '').trim() : ''; };
     var method = g('rn_method'), amount = +g('rn_amount') || 0, ref = g('rn_ref'), date = g('rn_date') || today();
-    if (!amount) return toast(L('اكتب المبلغ اللي حوّلته', 'Enter the amount you transferred'), 'err');
+    if (!Number.isFinite(amount)||amount<=0) return toast(L('اكتب المبلغ اللي حوّلته', 'Enter the amount you transferred'), 'err');
     if (!ref) return toast(L('اكتب رقم العملية أو آخر ٤ أرقام من الرقم اللي حوّلت منه',
       'Enter the transaction reference or last 4 digits'), 'err');
 
@@ -21528,22 +21768,6 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
     var mLabel = method;
     window.fatPayMethods().forEach(function (m) { if (m.key === method) mLabel = L(m.label, m.labelEn); });
-
-    var claim = {
-      id: (typeof uid === 'function' ? uid() : String(Date.now())),
-      date: today(), ts: new Date().toISOString(),
-      shop: shop, email: email,
-      plan: c.plan.key, planName: c.planName, months: c.term.m,
-      amount: R2(amount), expected: c.net,
-      method: method, methodLabel: mLabel, ref: ref, transferDate: date,
-      status: 'sent'
-    };
-    try {
-      db.payClaims = db.payClaims || [];
-      db.payClaims.push(claim);
-      save();
-    } catch (e) {}
-    try { logAudit(L('إبلاغ بتحويل اشتراك', 'Subscription payment reported'), c.planName + ' — ' + money(amount) + ' — ' + ref); } catch (e) {}
 
     var msg =
       '💳 *' + L('إبلاغ بتحويل — تجديد اشتراك SNS', 'Payment notice — SNS subscription') + '*\n' +
@@ -21566,13 +21790,8 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
         : '') +
       L('برجاء تفعيل الاشتراك. شكرًا 🌿', 'Please activate the subscription. Thank you 🌿');
 
-    try {
-      window.open('https://wa.me/' + window.fatSalesWA() + '?text=' + encodeURIComponent(msg), '_blank');
-    } catch (e) {}
-
-    try { closeModal(); } catch (e) {}
-    toast('✅ ' + L('اتبعت! هنفعّل اشتراكك في أقرب وقت', 'Sent! We will activate shortly'));
-    try { if (current === 'renew') views.renew(); } catch (e) {}
+    if(!openRenewalWhatsApp(msg))return;
+    toast(L('راجع الرسالة واضغط إرسال داخل واتساب. التفعيل بعد مراجعة التحويل.','Review and send the draft in WhatsApp. Activation follows payment review.'));
   };
 
   /* ═══════════ الشاشة ═══════════ */
@@ -21651,10 +21870,10 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
         '<input id="rn_date" type="date" value="' + today() + '"></div>' +
         '</div>' +
         '<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:6px" onclick="fatRenewSubmit()">' +
-        '📤 ' + L('أبلغنا بالتحويل', 'Send payment notice') + '</button>' +
+        '📤 ' + L('افتح رسالة التحويل على واتساب', 'Open payment draft in WhatsApp') + '</button>' +
         '<div class="hint" style="margin-top:10px">' +
-        L('الرسالة هتتبعت على واتساب فيها كل بياناتك جاهزة — مش محتاج تكتب حاجة.',
-          'A WhatsApp message with all your details will be prepared automatically.') + '</div>' +
+        L('تأكد من تفاصيل الرسالة واضغط إرسال داخل واتساب. الدعم بيراجع التحويل قبل التفعيل.',
+          'Review the draft and send it in WhatsApp. Support verifies the transfer before activation.') + '</div>' +
         '</div></div>'
       : '';
 
@@ -21663,7 +21882,8 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       var pcs = (db.payClaims || []).slice().reverse().slice(0, 8);
       if (pcs.length) {
         hist = '<div class="panel" style="margin-top:16px"><div class="panel-h"><h3>📜 ' +
-          L('تحويلاتك السابقة', 'Your previous notices') + '</h3></div><div class="panel-b">' +
+          L('بلاغات تحويل سابقة', 'Previous transfer notices') + '</h3></div><div class="panel-b">' +
+          '<p class="hint">' + L('السجل ده مرجع للبلاغات القديمة. تأكيد الدفع من دعم الاشتراكات.', 'This is a reference for older notices. Subscription support confirms payment.') + '</p>' +
           '<table><thead><tr><th>' + L('التاريخ', 'Date') + '</th><th>' + L('الباقة', 'Plan') + '</th><th>' +
           L('المبلغ', 'Amount') + '</th><th>' + L('المرجع', 'Ref') + '</th></tr></thead><tbody>' +
           pcs.map(function (p) {
@@ -21691,7 +21911,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       '\n' + L('المحل', 'Shop') + ': ' + (shop || '—') +
       '\n' + L('الباقة', 'Plan') + ': ' + c.planName + ' — ' + c.termName +
       '\n' + L('المبلغ', 'Amount') + ': ' + money(c.net);
-    try { window.open('https://wa.me/' + window.fatSalesWA() + '?text=' + encodeURIComponent(msg), '_blank'); } catch (e) {}
+    openRenewalWhatsApp(msg);
   };
 
   // نافذة سريعة — بتشتغل حتى لو النظام مقفول بشاشة انتهاء الاشتراك
@@ -21724,7 +21944,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
           '<div class="field"><label>' + L('تاريخ التحويل', 'Date') + '</label>' +
           '<input id="rn_date" type="date" value="' + today() + '"></div></div>' +
           '<button class="btn btn-primary" style="width:100%;justify-content:center" onclick="fatRenewSubmit()">📤 ' +
-          L('أبلغنا بالتحويل', 'Send payment notice') + '</button></div>'
+          L('افتح رسالة التحويل على واتساب', 'Open payment draft in WhatsApp') + '</button></div>'
         : '<div class="hint" style="margin-top:12px">' +
           L('كلّمنا على واتساب وهنبعتلك بيانات التحويل.', 'Contact us on WhatsApp for payment details.') +
           '</div><button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:10px" onclick="fatRenewWA()">💬 ' +
@@ -21741,7 +21961,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       try {
         window._rnPlan = planKey;
         closeModal();
-        if (typeof canView === 'function' && canView('renew') && typeof go === 'function') { go('renew'); return; }
+        if (!snsSubscriptionLocked() && typeof canView === 'function' && canView('renew') && typeof go === 'function') { go('renew'); return; }
         window.fatRenewModal();
         return;
       } catch (e) {}
@@ -21804,21 +22024,6 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     setTimeout(fatInjectRenewNav, 4400);
   })();
 
-  // زرار سداد في شاشة انتهاء الاشتراك (اللي بتقفل النظام)
-  setInterval(function () {
-    try {
-      var ov = document.querySelector('[id*="expired"], [id*="Expired"], [id*="subLock"]');
-      if (!ov || ov.querySelector('.fat-pay-btn')) return;
-      var host = ov.querySelector('div');
-      if (!host) return;
-      var b = document.createElement('button');
-      b.className = 'btn btn-primary fat-pay-btn';
-      b.style.cssText = 'justify-content:center;width:100%;margin-top:8px';
-      b.innerHTML = '💳 ' + L('سدّد وجدّد دلوقتي', 'Pay & renew now');
-      b.onclick = function () { window.fatRenewModal(); };
-      host.appendChild(b);
-    } catch (e) {}
-  }, 3000);
 
 })();
 
@@ -36433,6 +36638,11 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
    ============================================================ */
 
 function snsCanPost(...dates){
+  if(snsSubscriptionLocked()){
+    enforceSubLock();
+    toast(L('راجع حالة الاشتراك قبل تسجيل حركة جديدة','Check the subscription before recording another transaction'),'err');
+    return false;
+  }
   if(CURRENT_ORG&&V2_CONFLICT_ORG===CURRENT_ORG){
     toast(L('راجع المزامنة قبل تسجيل حركة جديدة','Review sync before recording another movement'),'err');
     return false;

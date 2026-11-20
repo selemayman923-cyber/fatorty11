@@ -109,7 +109,8 @@ begin
     return;
   end if;
   if exists (select 1 from public.subscriptions
-    where org_id = p_org and expires_at < now()) then
+    where org_id = p_org and (expires_at <= now()
+      or status::text in ('suspended', 'expired', 'cancelled', 'canceled'))) then
     raise exception 'SUB_EXPIRED';
   end if;
 
@@ -179,9 +180,9 @@ begin
         is distinct from (next_data - array['updatedAt','_dev','paidAmount','dueAmount','settlementRefs','installments','salesEmp','salesEmpName','commRate','commAmt','promoApplied','promoVal','tierBonusPts','loyTier','tip']) then
       raise exception 'SNS_SYNC_FORBIDDEN' using errcode = '42501';
     end if;
-    if current_data is null and record_kind = 'sales' and next_data ? 'no'
+    if current_data is null and record_kind in ('sales','purchases') and next_data ? 'no'
       and exists (select 1 from public.v2_records v where v.org_id = p_org
-        and v.kind = 'sales' and v.data->>'no' = next_data->>'no') then
+        and v.kind = record_kind and v.data->>'no' = next_data->>'no') then
       raise exception 'SNS_SYNC_CONFLICT' using errcode = '40001';
     end if;
     if current_data is null and record_kind in ('products','branches') then

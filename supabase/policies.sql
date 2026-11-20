@@ -70,10 +70,7 @@ create policy org_invites_manager_all on public.org_invites
   );
 
 -- ───────── subscriptions / plan_limits ─────────
--- ملاحظة مهمة (اتلاحظت أثناء الفحص): مفيش أي error pattern زي SUB_EXPIRED بيتمسك في الكود
--- (بعكس PRODUCT_LIMIT اللي فعليًا بيتحقق منه سيرفر-سايد) — يعني احتمال إن انتهاء الاشتراك
--- بيتفرض كلاينت-ترست بس (enforceSubLock/renderSubBanner هي UI overlay قابلة للتخطي من DevTools).
--- ده تحسين يستاهل مراجعة منفصلة على الـ RPC الحقيقية، مش جزء من الخطة دي — مجرد ملاحظة.
+-- Checked sync enforces known inactive states. Compare the deployed RPC before release.
 alter table public.subscriptions enable row level security;
 drop policy if exists subscriptions_org_member_select on public.subscriptions;
 create policy subscriptions_org_member_select on public.subscriptions
