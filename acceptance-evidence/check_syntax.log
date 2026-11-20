@@ -1,0 +1,6 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> check:syntax
+> node tools/extract-inline-js.js
+
+OK — 2 inline script block(s), syntax valid.

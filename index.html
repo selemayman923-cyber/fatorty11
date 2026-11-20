@@ -6770,10 +6770,23 @@ function viewInvoice(kind,id){const isSale=kind==='sale';const collection=isSale
   <div class="modal-f" data-invoice-id="${esc(id)}" data-invoice-kind="${kind}">
     ${!s.voided&&s.dueAmount>0&&(isSale||snsSupplierPaymentsAllowed())?`<button type="button" class="btn btn-primary btn-sm" onclick="collectInvoice(this.parentElement.dataset.invoiceKind,this.parentElement.dataset.invoiceId)">${isSale?L('تحصيل','Collect'):L('سداد','Pay')}</button>`:''}
     ${!s.voided&&fatCan('refund')?`<button type="button" class="btn btn-ghost btn-sm" onclick="returnForm(this.parentElement.dataset.invoiceKind,this.parentElement.dataset.invoiceId)">${L('مرتجع','Return')}</button>`:''}
-    <button class="btn btn-ghost" onclick="printThermal('${kind}','${id}')">🧾 ${L('إيصال حراري','Thermal receipt')}</button>${(kind==='sale'&&fatBizHasOrderTypes())?`<button class="btn btn-ghost" onclick="printKitchen('${id}')">🍳 ${L('أمر تجهيز','Prep ticket')}</button>`:''}<button class="btn btn-ghost" onclick="window.print()">🖨️ ${L('طباعة A4','Print A4')}</button><button class="btn" style="background:#25D366;color:#fff" onclick="waSend('${kind}','${id}')">📱 ${L('واتساب','WhatsApp')}</button>${kind==='sale'?`<button class="btn btn-ghost" onclick="saveAsRecurring('${id}')">🔁 ${L('حفظ كمتكررة','Save recurring')}</button>`:''}<button class="btn btn-primary" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`,true);
+    <button class="btn btn-ghost" onclick="printThermal('${kind}','${id}')">🧾 ${L('إيصال حراري','Thermal receipt')}</button>${(kind==='sale'&&fatBizHasOrderTypes())?`<button class="btn btn-ghost" onclick="printKitchen('${id}')">🍳 ${L('أمر تجهيز','Prep ticket')}</button>`:''}<button class="btn btn-ghost" onclick="snsPrintInvoiceA4(this)">🖨️ ${L('طباعة A4','Print A4')}</button><button class="btn" style="background:#25D366;color:#fff" onclick="waSend('${kind}','${id}')">📱 ${L('واتساب','WhatsApp')}</button>${kind==='sale'?`<button class="btn btn-ghost" onclick="saveAsRecurring('${id}')">🔁 ${L('حفظ كمتكررة','Save recurring')}</button>`:''}<button class="btn btn-primary" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`,true);
   document.getElementById('modal').classList.add('sns-invoice-preview');
   snsRefreshInvoiceSyncStatus();
-  renderQR('invQR',`${esc(st.company)}|INV#${s.no}|${dsp(s.date)}|${L('إجمالي','Total')}:${fmt(s.total)} ${cur()}|${st.taxNumber||''}`);}
+  const qr=document.getElementById('invQR');
+  const compactQR=`SNS|INV#${Number(s.no)||0}|${String(s.date||'').slice(0,10)}|TOTAL:${Number(s.total)||0}`;
+  qr.readyToPrint=renderQR('invQR',`${esc(st.company)}|INV#${s.no}|${dsp(s.date)}|${L('إجمالي','Total')}:${fmt(s.total)} ${cur()}|${st.taxNumber||''}`,compactQR)
+    .then(ready=>{if(!ready&&qr.isConnected)qr.parentElement.hidden=true;});
+}
+async function snsPrintInvoiceA4(button){
+  const preview=button.closest('.sns-invoice-preview');
+  const qr=preview?.querySelector('#invQR');
+  button.disabled=true;
+  try {
+    await qr?.readyToPrint;
+    if(button.isConnected&&preview?.closest('#modalBg.open'))window.print();
+  } finally { button.disabled=false; }
+}
 function waNumber(raw){let d=(raw||'').replace(/\D/g,'');if(!d)return '';if(d.startsWith('00'))d=d.slice(2);else if(d.startsWith('0'))d='20'+d.slice(1);return d;}
 async function waSend(kind,id){const isSale=kind==='sale';const s=(isSale?db.sales:db.purchases).find(x=>x.id===id);if(!s)return;const st=db.settings;
   const party=isSale?findCustomer(s.customerId):findSupplier(s.supplierId);
@@ -13373,7 +13386,7 @@ function csvImportModal(){
   '<div class="modal-f"><button type="button" class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>');
   window._csvMode=isProduct?'products':(isSupplier?'suppliers':'customers');window._csvRows=null;}
 
-const SNS_RELEASE_ID='2026.11.21-r12';
+const SNS_RELEASE_ID='2026.11.21-r13';
 
 function setSyncStatus(state){
   var el=document.getElementById('syncDot');if(!el)return;
@@ -24817,16 +24830,20 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   };
 
   // renderQR كانت بتسكت لو المكتبة مش موجودة — دلوقتي بتحمّلها الأول
-  window.renderQR = function (elId, text) {
+  window.renderQR = function (elId, text, compactText) {
     var el = document.getElementById(elId);
     if (!el) return;
     el.innerHTML = '';
-    window.fatEnsureQRLib().then(function () {
-      try {
-        new window.QRCode(el, { text: text, width: 92, height: 92,
-                                correctLevel: window.QRCode.CorrectLevel.M });
-      } catch (e) { el.style.display = 'none'; }
-    })['catch'](function () { el.style.display = 'none'; });
+    return window.fatEnsureQRLib().then(function (QR) {
+      const options={text,width:92,height:92,correctLevel:QR.CorrectLevel.M};
+      try { new QR(el,options); }
+      catch(error) {
+        if(!compactText)throw error;
+        el.innerHTML='';
+        new QR(el,{...options,text:compactText});
+      }
+      return true;
+    }).catch(function () { el.style.display = 'none'; return false; });
   };
 
   // ارسم QR وارجّعه كـHTML جاهز — عشان نافذة الطباعة متحتاجش نت

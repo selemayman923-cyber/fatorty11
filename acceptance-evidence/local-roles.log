@@ -1,0 +1,7 @@
+PASS preflight, reference schema only
+{"role":"owner","visible":["qa-finance-secondary","qa-open-main","qa-open-secondary"],"ownWrite":"allowed","otherShopWrite":"denied"}
+{"role":"cashier","visible":["qa-finance-secondary","qa-open-main","qa-open-secondary"],"ownWrite":"allowed","otherShopWrite":"denied"}
+{"role":"inventory","visible":["qa-finance-secondary","qa-open-main","qa-open-secondary"],"ownWrite":"allowed","otherShopWrite":"denied"}
+{"role":"accountant","visible":["qa-finance-secondary","qa-open-main","qa-open-secondary"],"ownWrite":"allowed","otherShopWrite":"denied"}
+PASS assigned branch and finance write restrictions for cashier and inventory
+OBSERVATION fixture permits cross-branch and finance reads within the same shop; live grants and policies remain unverified.

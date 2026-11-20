@@ -436,7 +436,15 @@ test('an old purchase return is allocated once across duplicate lines and rechec
 test('a long POS invoice scrolls on mobile and keeps both print buttons reachable', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 720 });
   const errors = await openWorkspace(page, { activity: 'other' });
+  let releaseQR;
+  const qrGate = new Promise(resolve => { releaseQR = resolve; });
+  await page.route('**/vendor/qrcode.min.js', async route => {
+    await qrGate;
+    await route.continue();
+  });
   await page.evaluate(() => {
+    window.a4PrintCalls = 0;
+    window.print = () => { window.a4PrintCalls++; };
     Object.assign(db.settings, { autoPrintReceipt: false, waAutoReceipt: false, cashierMustShift: false });
     db.products = Array.from({ length: 26 }, (_, index) => ({
       id: 'item-' + index, name: 'صنف ' + index, price: 20, cost: 10, qty: 5,
@@ -458,6 +466,18 @@ test('a long POS invoice scrolls on mobile and keeps both print buttons reachabl
     return scrollable && element.scrollTop > 0;
   })).toBe(true);
   expect(await page.evaluate(() => db.sales.length)).toBe(1);
+  const printA4 = preview.getByRole('button', { name: /طباعة A4/ });
+  await printA4.click();
+  await expect(printA4).toBeDisabled();
+  expect(await page.evaluate(() => window.a4PrintCalls)).toBe(0);
+  releaseQR();
+  const qr = preview.locator('#invQR');
+  await expect(qr).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.a4PrintCalls)).toBe(1);
+  expect(await qr.locator('canvas').evaluate(canvas => {
+    const pixels = canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+    return pixels.some((channel,index) => index%4===0&&channel===0&&pixels[index+3]===255);
+  })).toBe(true);
   await page.emulateMedia({media:'print'});
   await expect(page.locator('.app')).toBeHidden();
   await expect(details.locator('tbody tr').last()).toBeVisible();
