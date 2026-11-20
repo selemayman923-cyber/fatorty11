@@ -40,7 +40,13 @@ async function mockAuth(page, recovery = false) {
 
 test('account creation keeps the confirmation visible and the reset uses the current origin', async ({ page }) => {
   await mockAuth(page);
-  await page.evaluate(() => landingStart());
+  await page.clock.install();
+  await page.evaluate(() => {
+    landingStart();
+    document.getElementById('authPass').focus();
+  });
+  await page.clock.runFor(100);
+  await expect(page.locator('#authPass')).toBeFocused();
   await expect(page.locator('#snsAuthEnvironment')).toBeHidden();
   await page.locator('#authEmail').fill('owner@example.test');
   await page.locator('#authPass').fill('sale-demo-789');

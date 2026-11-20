@@ -10,6 +10,7 @@ const ids = {
   cashier: '20000000-0000-4000-8000-000000000003',
   secondCashier: '20000000-0000-4000-8000-000000000004',
   otherOwner: '20000000-0000-4000-8000-000000000005',
+  stockkeeper: '20000000-0000-4000-8000-000000000006',
 };
 
 async function createAccountingDatabase({ migrate = true } = {}) {
@@ -39,9 +40,9 @@ async function createAccountingDatabase({ migrate = true } = {}) {
         user_id uuid primary key, org_id uuid references public.orgs(id),
         data jsonb not null, updated_at timestamptz not null default now()
       );
-      create table public.subscriptions (org_id uuid references public.orgs(id), expires_at timestamptz);
-      create table public.plan_limits (plan text primary key, max_branches int);
-      insert into public.plan_limits values ('trial',10);
+      create table public.subscriptions (org_id uuid references public.orgs(id), plan text, status text, expires_at timestamptz);
+      create table public.plan_limits (plan text primary key, max_branches int, max_users int, max_products int);
+      insert into public.plan_limits values ('trial',10,20,5000);
       create function public.org_plan(uuid) returns text language sql as $$ select 'trial'::text $$;
       create function public.org_max_products(uuid) returns int language sql as $$ select 5000 $$;
       create function public.v2_apply_changes(uuid,jsonb,uuid[],jsonb) returns void language plpgsql as
@@ -51,7 +52,11 @@ async function createAccountingDatabase({ migrate = true } = {}) {
       alter table public.v2_records enable row level security;
       alter table public.v2_settings enable row level security;
       grant select, insert, update, delete on public.v2_records, public.v2_settings to authenticated;
-      grant select on public.orgs, public.org_members to authenticated;
+      grant select on public.orgs, public.org_members, public.subscriptions, public.plan_limits to authenticated;
+      alter table public.subscriptions enable row level security;
+      create policy fixture_subscription_access on public.subscriptions for select to authenticated using (
+        exists (select 1 from public.org_members m where m.org_id = subscriptions.org_id)
+      );
       create policy fixture_self_membership on public.org_members for select to authenticated using (user_id = auth.uid());
       create policy fixture_org_access on public.orgs for select to authenticated using (
         owner_id = auth.uid() or exists (select 1 from public.org_members m where m.org_id = orgs.id)
@@ -73,9 +78,12 @@ async function createAccountingDatabase({ migrate = true } = {}) {
     ]);
     await pg.query(`insert into public.org_members values
       ($1,$2,'manager',null),($1,$3,'accountant',null),($1,$4,'cashier','main'),
-      ($1,$5,'cashier','main'),($6,$7,'manager',null)`, [
-      ids.mainShop, ids.owner, ids.accountant, ids.cashier, ids.secondCashier, ids.otherShop, ids.otherOwner,
+      ($1,$5,'cashier','main'),($6,$7,'manager',null),($1,$8,'stockkeeper','main')`, [
+      ids.mainShop, ids.owner, ids.accountant, ids.cashier, ids.secondCashier, ids.otherShop, ids.otherOwner, ids.stockkeeper,
     ]);
+    await pg.query(`insert into public.subscriptions (org_id, plan, status, expires_at)
+      values ($1,'trial','active','2027-12-31T23:59:59Z'),($2,'trial','active','2027-12-31T23:59:59Z')`,
+      [ids.mainShop, ids.otherShop]);
     return pg;
   } catch (error) {
     await pg.close();

@@ -23,24 +23,27 @@ function createShopApp(pg, actor, role) {
       onAuthStateChange: () => {},
     },
     from(table) {
-      let org;
+      let filter;
       const select = {
         select: () => select,
-        eq(column, value) { assert.equal(column, 'org_id'); org = value; return select; },
+        eq(column, value) { assert.equal(column, table === 'plan_limits' ? 'plan' : 'org_id'); filter = value; return select; },
         order() { return select; },
         async range(first, last) {
           assert.equal(table, 'v2_records');
           if (cloudReadError) return { error: cloudReadError };
           return asActor(pg, actor, async tx => ({ data: (await tx.query(
             'select id,kind,local_id,data from public.v2_records where org_id=$1 order by id limit $2 offset $3',
-            [org, last - first + 1, first],
+            [filter, last - first + 1, first],
           )).rows }));
         },
         async maybeSingle() {
-          assert.equal(table, 'v2_settings');
-          return asActor(pg, actor, async tx => ({ data: (await tx.query(
-            'select data from public.v2_settings where org_id=$1', [org],
-          )).rows[0] }));
+          const query = {
+            v2_settings: 'select data from public.v2_settings where org_id=$1',
+            subscriptions: 'select plan,status,expires_at from public.subscriptions where org_id=$1',
+            plan_limits: 'select max_users,max_products,max_branches from public.plan_limits where plan=$1',
+          }[table];
+          assert.ok(query, 'Unexpected table: ' + table);
+          return asActor(pg, actor, async tx => ({ data: (await tx.query(query, [filter])).rows[0] }));
         },
       };
       return select;
@@ -399,9 +402,9 @@ async function verifyPurchaseCostAndOpenings(pg) {
       Math.round((value - startingLedger[index]) * 100) / 100
     )), expected);
 
-    app.call(() => {
-      csvDoImport('product', [['صنف افتتاحي', 'OPENING-SKU', '10', '7', '4']], { name: 0, sku: 1, price: 2, cost: 3, qty: 4 });
-      csvDoImport('customer', [['عميل برصيد افتتاحي', '19']], { name: 0, balance: 1 });
+    await app.call(async () => {
+      await csvDoImport('product', [['صنف افتتاحي', 'OPENING-SKU', '10', '7', '4']], { name: 0, sku: 1, price: 2, cost: 3, qty: 4 });
+      await csvDoImport('customer', [['عميل برصيد افتتاحي', '19']], { name: 0, balance: 1 });
       partyForm('supplier');
     });
     app.setInput('p_name', 'مورد برصيد افتتاحي');
@@ -519,6 +522,16 @@ async function verifyTwoRegisters(pg) {
       await reopened.sync();
       assert.equal(reopened.sentBatches[0], batchId);
       assert.ok(reopened.evalJs("snsInvoiceSyncBadge(db.sales.at(-1)).includes('متزامنة')"));
+      const printedId=reopened.evalJs('db.sales.at(-1).id');
+      const beforePrint=reopened.evalJs('snapStr(db.sales.at(-1))');
+      reopened.call(id => fatReprintLog('sale',id),printedId);
+      await reopened.sync();
+      assert.equal(reopened.evalJs('snapStr(db.sales.at(-1))'),beforePrint);
+      const printed=(await databaseRecord(pg,ids.mainShop,'sales',printedId)).data;
+      assert.equal(printed.printCount,undefined);
+      const {rows:[{count}]}=await pg.query(`select count(*)::int as count from public.v2_records
+        where org_id=$1 and kind='audit' and data->'print'->>'invoiceId'=$2`,[ids.mainShop,printedId]);
+      assert.equal(count,1);
     } finally {
       reopened.close();
     }
@@ -531,6 +544,33 @@ async function verifyTwoRegisters(pg) {
   } finally {
     first.close();
     second.close();
+  }
+}
+
+async function verifyStockkeeperPurchase(pg) {
+  const stockkeeper=createShopApp(pg,ids.stockkeeper,'stockkeeper');
+  try {
+    stockkeeper.day('2026-11-05');
+    await stockkeeper.hydrateFromDatabase();
+    const before=stockkeeper.call(()=>({purchases:db.purchases.length,cash:db.cash.length,qty:findProduct('cloth').qty}));
+    stockkeeper.call(()=>{
+      invoiceForm('purchase',null,'supplier');
+      invLines=[{pid:'cloth',qty:2,price:11}];
+    });
+    stockkeeper.setInput('inv_pm','cash');
+    stockkeeper.evalJs('saveInvoice()');
+    assert.match(stockkeeper.window.document.getElementById('toast').textContent,/سداد المورد من حساب الإدارة أو المحاسبة/);
+    assert.equal(stockkeeper.evalJs('db.purchases.length'),before.purchases);
+    stockkeeper.setInput('inv_pm','credit');
+    stockkeeper.evalJs('saveInvoice()');
+    assert.equal(stockkeeper.evalJs('db.purchases.length'),before.purchases+1);
+    assert.equal(stockkeeper.evalJs('db.cash.length'),before.cash);
+    await stockkeeper.sync();
+    const invoice=stockkeeper.evalJs('db.purchases.at(-1)');
+    assert.equal((await databaseRecord(pg,ids.mainShop,'purchases',invoice.id)).data.dueAmount,22);
+    assert.equal((await databaseRecord(pg,ids.mainShop,'products','cloth')).data.qty,before.qty+2);
+  } finally {
+    stockkeeper.close();
   }
 }
 
@@ -641,7 +681,8 @@ async function main() {
     const { balances } = await monthEnd(pg);
     await verifyTwoRegisters(pg);
     await verifyPurchaseCostAndOpenings(pg);
-    process.stdout.write('PASS month close, invoice and return reload, cross-period settlements, backup restore, shop isolation, concurrent sale retry, opening balances, and purchase costing using PostgreSQL\n');
+    await verifyStockkeeperPurchase(pg);
+    process.stdout.write('PASS month close, invoice and return reload, cross-period settlements, backup restore, shop isolation, concurrent sale retry, print audit, opening balances, stockkeeper purchase and purchase costing using PostgreSQL\n');
     process.stdout.write(JSON.stringify(balances) + '\n');
   } finally {
     await pg.close();
