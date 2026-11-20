@@ -2661,6 +2661,31 @@ async function loadSubscription(){
     if(lim)LIMITS=lim;
   }catch(e){ console.warn('read limits',e); }
 }
+async function snsRefreshSubscriptionForImport(){
+  if(!sb||!CURRENT_ORG){
+    toast(L('لا يمكن التحقق من باقة المتجر حاليًا','Cannot verify shop plan right now'),'err');
+    return false;
+  }
+  try{
+    const {data:sub,error:subError}=await sb.from('subscriptions')
+      .select('plan,status,expires_at').eq('org_id',CURRENT_ORG).maybeSingle();
+    if(subError||!sub)throw subError||new Error('Subscription missing');
+    const {data:lim,error:limError}=await sb.from('plan_limits')
+      .select('max_users,max_products,max_branches').eq('plan',sub.plan).maybeSingle();
+    if(limError||!lim)throw limError||new Error('Plan limits missing');
+    if(!['active','trialing'].includes(sub.status)||!sub.expires_at||new Date(sub.expires_at).getTime()<=Date.now()){
+      toast(L('اشتراك المتجر غير نشط — راجع الباقة','Shop subscription is not active'),'err');
+      return false;
+    }
+    SUB=sub; LIMITS=lim;
+    renderPlanPanel(); renderSubBanner();
+    return true;
+  }catch(error){
+    console.warn('snsRefreshSubscriptionForImport',error);
+    toast(L('تعذّر تحديث حدود الباقة من Supabase؛ حاول مجددًا بعد الاتصال','Could not refresh limits from Supabase; retry online'),'err');
+    return false;
+  }
+}
 function maxProducts(){ return LIMITS?LIMITS.max_products:-1; }   // -1 = unlimited
 function maxUsers(){ return LIMITS?LIMITS.max_users:-1; }
 function maxBranches(){ return LIMITS?LIMITS.max_branches:-1; }
@@ -7157,7 +7182,7 @@ async function snsSettleParty(kind,id){
   toast(L('تم تسجيل الدفعة','Payment recorded'));
 }
 function collect(id){return snsSettleParty('sale',id);}
-views.suppliers=()=>{document.getElementById('topActions').innerHTML=`<button class="btn btn-accent" onclick="partyForm('supplier')">+ ${L('مورد','Supplier')}</button>`;
+views.suppliers=()=>{document.getElementById('topActions').innerHTML=`<button class="btn btn-accent" onclick="partyForm('supplier')">+ ${L('مورد','Supplier')}</button> <button class="btn btn-ghost" onclick="snsImportOptions('suppliers')">📥 ${L('استيراد الموردين CSV','Import suppliers CSV')}</button>`;
   const due=db.suppliers.reduce((s,c)=>s+Math.max(0,c.balance),0);
   document.getElementById('content').innerHTML=`<div class="cards" style="grid-template-columns:repeat(2,1fr)"><div class="card kpi-2"><div class="lbl">${L('عدد الموردين','Suppliers')}</div><div class="val">${db.suppliers.length}</div></div><div class="card kpi-4"><div class="lbl">${L('المستحق عليك','Payables')}</div><div class="val" style="font-size:22px;color:var(--danger)">${money(due)}</div></div></div>
     <div class="panel"><div class="panel-h"><h3>${L('الموردون','Suppliers')}</h3></div><div class="panel-b">
@@ -12716,11 +12741,11 @@ function csvPreview(type,text){
   if(!rows.length)return toast(L('الملف فارغ','File is empty'),'err');
   var isProduct=csvIsProduct(type);
   var fields=isProduct?['name','sku','price','cost','qty','min','cat','unit','expiry']:['name','phone','address','balance'];
-  var label=isProduct?L('أصناف','Products'):L('عملاء','Customers');
+  var label=isProduct?L('أصناف','Products'):(type==='suppliers'?L('موردين','Suppliers'):L('عملاء','Customers'));
   // map columns
   var colMap={};fields.forEach(function(f){colMap[f]=resolveCol(h,f);});
   if(colMap.name<0)return toast(L('لازم يكون فيه عمود "اسم"','Need a "name" column'),'err');
-  window._csvType=isProduct?'products':'customers';window._csvRows=rows;window._csvColMap=colMap;
+  window._csvType=isProduct?'products':(type==='suppliers'?'suppliers':'customers');window._csvRows=rows;window._csvColMap=colMap;
   if(isProduct){
     const review=snsReviewOpeningStock(rows,colMap,parsed.lineNumbers);
     const branch=activeBranch();
@@ -12799,16 +12824,18 @@ function snsOpeningStockPreview(review,branch){
     ${issueRows?`<h4>${L('مراجعة الصفوف','Review rows')}</h4><div style="max-height:220px;overflow:auto" tabindex="0"><table><thead><tr><th>${L('سطر','Row')}</th><th>${L('الصنف','Item')}</th><th>${L('الحالة','Status')}</th><th>${L('التفاصيل','Details')}</th></tr></thead><tbody>${issueRows}</tbody></table></div>
       ${review.issues.length>50?`<p class="hint">${L('عرض أول 50 مشكلة من','Showing first 50 issues out of')} ${review.issues.length}</p>`:''}`:''}`;
 }
-function csvDoImport(type,rows,colMap){
+async function csvDoImport(type,rows,colMap){
   if(!snsCanPost(today()))return;
   type=type||window._csvType;rows=rows||window._csvRows;colMap=colMap||window._csvColMap;
   if(!rows||!colMap)return toast(L('مفيش بيانات للاستيراد — اختر الملف تاني','No data to import — choose the file again'),'err');
   const isProduct=csvIsProduct(type);
+  const isSupplier=type==='suppliers'||type==='supplier';
   let added=0,skipped=0;
   if(isProduct){
     if(snsViewAccess('products')!=='open')return;
     const review=snsReviewOpeningStock(rows,colMap);
     if(!review.ready.length)return toast(L('مفيش أصناف صالحة للاستيراد','No valid items to import'),'err');
+    if(!await snsRefreshSubscriptionForImport())return;
     const max=maxProducts();
     if(max>=0&&db.products.length+review.ready.length>max)return toast(L('الاستيراد هيتجاوز حد الأصناف في باقتك','Import exceeds your plan’s item limit'),'err');
     const fallbackCategory=(typeof db.categories[0]==='string'?db.categories[0]:db.categories[0]?.name)||'';
@@ -12824,33 +12851,37 @@ function csvDoImport(type,rows,colMap){
     for(const row of rows){
       const name=(colMap.name>=0?row[colMap.name]||'':'').trim();
       const phone=(colMap.phone>=0?row[colMap.phone]||'':'').trim();
-      if(!name||db.customers.some(c=>c.name===name&&(c.phone||phone)===phone)){skipped++;continue;}
-      const party={id:uid(),name,phone,address:(colMap.address>=0?row[colMap.address]||'':'').trim(),balance:+(colMap.balance>=0?row[colMap.balance]:0)||0,points:0,creditLimit:0,tier:'',bday:'',firstVisit:today()};
-      snsMarkOpeningParty(party);
-      db.customers.push(party);
+      const collection=isSupplier?db.suppliers:db.customers;
+      if(!name||collection.some(c=>c.name===name&&(c.phone||phone)===phone)){skipped++;continue;}
+      // Bulk supplier import must not silently post historical debts.
+      const party={id:uid(),name,phone,address:(colMap.address>=0?row[colMap.address]||'':'').trim(),balance:isSupplier?0:(+(colMap.balance>=0?row[colMap.balance]:0)||0)};
+      if(!isSupplier){Object.assign(party,{points:0,creditLimit:0,tier:'',bday:'',firstVisit:today()});snsMarkOpeningParty(party);}
+      collection.push(party);
       added++;
     }
   }
   logAudit(L('استيراد CSV','CSV import'),added+' '+L('سجل','records')+' ('+type+')');
-  save();closeModal();isProduct?views.products():views.customers();
+  save();closeModal();isProduct?views.products():(isSupplier?views.suppliers():views.customers());
   toast('✅ '+L('تم استيراد','Imported')+' '+added+' '+L('سجل','records')+(skipped?' · '+L('صفوف اتخطت','rows skipped')+': '+skipped:''));
 }
 /* template download */
 
 function snsImportOptions(kind){
   const products=kind==='products';
-  if(snsViewAccess(products?'products':'customers')!=='open')return;
-  openModal(`<div class="modal-h"><h3>${products?L('استيراد الأصناف','Import items'):L('استيراد العملاء','Import customers')}</h3>
+  const suppliers=kind==='suppliers';
+  if(snsViewAccess(products?'products':(suppliers?'suppliers':'customers'))!=='open')return;
+  openModal(`<div class="modal-h"><h3>${products?L('استيراد الأصناف','Import items'):(suppliers?L('استيراد الموردين','Import suppliers'):L('استيراد العملاء','Import customers'))}</h3>
     <button type="button" class="x" onclick="closeModal()" aria-label="${L('إغلاق','Close')}">×</button></div>
     <div class="modal-b"><div class="sns-route-grid">
       <button type="button" class="sns-route-card" onclick="_csvMode='${kind}';csvImportModal()"><span>${L('قراءة أعمدة CSV تلقائيًا','Read CSV columns automatically')}</span></button>
-      <button type="button" class="sns-route-card" onclick="fatImportOpen('${kind}')"><span>${L('مطابقة أعمدة الملف يدويًا','Map file columns manually')}</span></button>
+      ${!suppliers?`<button type="button" class="sns-route-card" onclick="fatImportOpen('${kind}')"><span>${L('مطابقة أعمدة الملف يدويًا','Map file columns manually')}</span></button>`:''}
       ${products?`<button type="button" class="sns-route-card" onclick="fatDownloadTemplate(true)"><span>${L('تنزيل نموذج الأصناف','Download item template')}</span></button>`:''}
     </div></div>`);
 }
 function csvImportModal(){
   const isProduct=csvIsProduct(window._csvMode);
-  openModal('<div class="modal-h"><h3>'+(isProduct?L('استيراد الأصناف من CSV','Import items from CSV'):L('استيراد العملاء من CSV','Import customers from CSV'))+'</h3><button class="x" onclick="closeModal()">×</button></div>'+
+  const isSupplier=window._csvMode==='suppliers';
+  openModal('<div class="modal-h"><h3>'+(isProduct?L('استيراد الأصناف من CSV','Import items from CSV'):(isSupplier?L('استيراد الموردين من CSV','Import suppliers from CSV'):L('استيراد العملاء من CSV','Import customers from CSV')))+'</h3><button class="x" onclick="closeModal()">×</button></div>'+
   '<div class="modal-b">'+
   (!isProduct?
     '<div style="font-size:12.5px;color:var(--muted);background:var(--bg);border-radius:9px;padding:10px;margin-bottom:12px">'+
@@ -12864,7 +12895,7 @@ function csvImportModal(){
   '<input type="file" accept=".csv,.txt,.tsv" aria-label="'+L('ملف CSV','CSV file')+'" id="csvFile" onchange="csvFileChosen(this)" style="margin-bottom:10px">'+
   '</div>'+
   '<div class="modal-f"><button type="button" class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>');
-  window._csvMode=isProduct?'products':'customers';window._csvRows=null;}
+  window._csvMode=isProduct?'products':(isSupplier?'suppliers':'customers');window._csvRows=null;}
 
 const SNS_RELEASE_ID='2026.11.19-r6';
 
