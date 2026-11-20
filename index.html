@@ -1505,6 +1505,30 @@ body.pos-pro .main #posCheckoutBtn:disabled {opacity:.5;cursor:not-allowed}
     display:block!important;height:auto!important;max-height:none!important;overflow:visible!important;
   }
 }
+
+/* SNS 2026-11-20: permit the WHOLE cashier invoice column to scroll, including checkout actions. */
+body .pos>.cart, body.pos-pro .pos>.cart {
+  height:auto!important;
+  max-height:max(350px,calc(100dvh - 205px))!important;
+  overflow-y:scroll!important;
+  overflow-x:hidden!important;
+  display:block!important;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+  scrollbar-width:auto;
+  scrollbar-color:#8b9bb1 #e7edf5;
+}
+body .pos>.cart::-webkit-scrollbar{width:12px!important;display:block!important}
+body .pos>.cart::-webkit-scrollbar-track{background:#e7edf5;border-radius:10px}
+body .pos>.cart::-webkit-scrollbar-thumb{background:#8b9bb1;border:2px solid #e7edf5;border-radius:10px}
+body.pos-pro .pos>.cart>#cartItems{
+  flex:none!important;
+  min-height:0!important;
+  max-height:230px!important;
+  overflow-y:auto!important;
+}
+@media(max-width:700px){body .pos>.cart,body.pos-pro .pos>.cart{max-height:none!important;height:auto!important;overflow-y:visible!important}}
+
 </style>
 </head>
 <body>
@@ -4329,8 +4353,19 @@ function effPrice(p){
   if(posPriceTier==='wholesale' && (+p.wholeSalePrice||0)>0) return +p.wholeSalePrice;
   return +p.price||0;
 }
+/* Owner-editable display names. Pricing keys remain stable. */
+function snsTierName(tier){
+  var defaults={default:'قطاعي',online:'أونلاين (نص جملة)',wholesale:'جملة (كميات)'};
+  var saved=(db&&db.settings&&db.settings.priceTierNames)||{};
+  var value=saved[tier];
+  return (typeof value==='string'&&value.trim())?value.trim().slice(0,40):defaults[tier]||defaults.default;
+}
+function snsTierHtml(tier){
+  var icons={default:'🏪 ',online:'💻 ',wholesale:'📦 '};
+  return (icons[tier]||'')+esc(snsTierName(tier));
+}
 function priceTierLabel(tier){
-  return tier==='online'?L('💻 أونلاين (نص جملة)','💻 Online'):tier==='wholesale'?L('📦 جملة (كميات)','📦 Wholesale'):L('🏪 افتراضي (قطاعي)','🏪 Retail');
+  return snsTierHtml(tier);
 }
 function setPriceTier(tier){
   posPriceTier=tier;
@@ -4357,9 +4392,9 @@ function renderPriceTier(){
   row.innerHTML='<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px"><span style="font-size:11.5px;color:var(--muted);font-weight:700">💲 '+L('مستوى السعر','Price level')+'</span>'+
     (posPriceTier!=='default'?'<span style="font-size:10px;background:var(--gold-soft,#fff3cd);color:#8a6d00;padding:1px 7px;border-radius:6px;font-weight:700">'+priceTierLabel(posPriceTier)+'</span>':'')+'</div>'+
     '<div style="display:flex;gap:3px;background:var(--card);padding:4px;border-radius:11px;border:1px solid var(--line)">'+
-      btn('default',L('🏪 افتراضي (قطاعي)','🏪 Retail'))+
-      (hasOnline?btn('online',L('💻 أونلاين (نص جملة)','💻 Online')):'')+
-      (hasWholesale?btn('wholesale',L('📦 جملة (كميات)','📦 Wholesale')):'')+
+      btn('default',snsTierHtml('default'))+
+      (hasOnline?btn('online',snsTierHtml('online')):'')+
+      (hasWholesale?btn('wholesale',snsTierHtml('wholesale')):'')+
     '</div>';
 }
 const lineUnit=c=>{var _b=_safeNum(c.measure?upholsteryPrice(c,findProduct(c.pid)):(c.price!=null?c.price:effPrice(findProduct(c.pid))));return (c.lineDiscPct>0)?_safeNum(_b*(1-c.lineDiscPct/100)):_b;};
@@ -5349,7 +5384,7 @@ views.products=()=>{
       <div class="panel-h sns-stock-toolbar">
         <div class="pill-tabs" id="prodTabBtns" role="group" aria-label="${L('عرض المخزون','Inventory view')}">
           ${[['list','القائمة','List'],['profit','الربحية','Profitability'],['low','المخزون المنخفض','Low stock'],['moves','حركة المخزون','Stock movement']]
-            .map(([key,ar,en])=>`<button type="button" class="${prodTab===key?'active':''}" aria-pressed="${prodTab===key}" onclick="prodTab='${key}';views.products()">${L(ar,en)}</button>`).join('')}
+            .map(([key,ar,en])=>`<button type="button" class="${prodTab===key?'active':''}" aria-pressed="${prodTab===key}" onclick="prodTab='${key}';views.products()">${tier?esc(ar):L(ar,en)}</button>`).join('')}
         </div>
         <div class="search"><input type="search" aria-label="${L('بحث في الأصناف','Search items')}" placeholder="${L('بحث…','Search…')}" id="prodSearchInp" oninput="renderProductsTab(this.value)"><span class="si" aria-hidden="true">🔍</span></div>
         ${prodTab==='moves'?'':`<div class="sns-stock-filters" role="group" aria-label="${L('تصفية الأصناف','Filter items')}">
@@ -7026,7 +7061,7 @@ views.customers=()=>{
       <div class="panel-h sns-list-tools">
         <div class="search"><input type="search" id="snsCustomerSearch" aria-label="${L('بحث في العملاء','Search customers')}" placeholder="${L('ابحث بالاسم أو الهاتف','Search name or phone')}" value="${esc(custQuery)}" oninput="custQuery=this.value;renderCustomersList()"><span class="si" aria-hidden="true">🔍</span></div>
         <div class="sns-filter-row" role="group" aria-label="${L('تصنيف العملاء','Customer tier')}">
-          ${[['','الكل','All'],['vip','أونلاين','Online'],['wholesale','جملة','Wholesale'],['regular','قطاعي','Retail']].map(([tier,ar,en])=>
+          ${[['','الكل','All'],['vip',snsTierName('online'),'Online'],['wholesale',snsTierName('wholesale'),'Wholesale'],['regular',snsTierName('default'),'Retail']].map(([tier,ar,en])=>
             `<button type="button" class="cat-chip" data-tier="${tier}" onclick="custTierFilter=this.dataset.tier;renderCustomersList()">${L(ar,en)}</button>`).join('')}
         </div>
       </div>
@@ -7198,7 +7233,7 @@ function partyForm(kind,id){const isC=kind==='customer';const list=isC?db.custom
     <span title="${L('موجب (+) = العميل مدين لك (عليه فلوس). سالب (-) = دفع مقدم (له رصيد عندك). مثال: 500 = العميل عليه 500 ليك','Positive = customer owes you. Negative = customer pre-paid. Example: 500 means customer owes you 500')}" style="cursor:help;color:var(--primary);font-size:11px;font-weight:400;margin-right:4px">ℹ️ ${L('(+ عليه / - له)','(+ owes / - credit)')}</span>
     </label><input id="p_bal" ${id?'readonly':''} type="number" inputmode="decimal" value="${p.balance||0}" placeholder="0"></div>
   ${isC?`<div class="field"><label>${L('حد الائتمان (0 = بدون حد)','Credit limit (0 = none)')}</label><input id="p_climit" type="number" inputmode="decimal" value="${p.creditLimit||0}"></div>`:'<div class="field"></div>'}</div>
-  ${isC?`<div class="grid2"><div class="field"><label>${L('التصنيف','Category')}</label><select id="p_tier"><option value="" ${!p.tier?'selected':''}>${L('🏪 افتراضي (قطاعي)','🏪 Retail (Default)')}</option><option value="vip" ${p.tier==='vip'?'selected':''}>💻 ${L('أونلاين (نص جملة)','Online (Semi-wholesale)')}</option><option value="wholesale" ${p.tier==='wholesale'?'selected':''}>📦 ${L('جملة (كميات)','Wholesale')}</option></select></div>
+  ${isC?`<div class="grid2"><div class="field"><label>${L('التصنيف','Category')}</label><select id="p_tier"><option value="" ${!p.tier?'selected':''}>${snsTierHtml('default')}</option><option value="vip" ${p.tier==='vip'?'selected':''}>${snsTierHtml('online')}</option><option value="wholesale" ${p.tier==='wholesale'?'selected':''}>${snsTierHtml('wholesale')}</option></select></div>
   <div class="field"><label>${L('تاريخ ميلاد / مناسبة','Birthday / occasion')}</label><input id="p_bday" type="date" value="${esc(p.bday||'')}"></div></div>`:''}
   ${isC&&id?`<div class="hint">⭐ ${L('نقاط الولاء الحالية','Loyalty points')}: <b>${p.points||0}</b></div>`:''}</div>
   <div class="modal-f"><button class="btn btn-primary" onclick="saveParty('${kind}','${id||''}')">${L('حفظ','Save')}</button><button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button></div>`);}
@@ -7802,6 +7837,16 @@ views.settings=()=>{const st=db.settings;
           <div style="font-size:11px;color:var(--muted)">${L('هيظهر في الفاتورة المطبوعة وبجانب اسم النشاط','Appears in printed receipt and sidebar')}</div>
         </div>
       </div></div>
+    <div class="card" style="grid-column:1/-1;padding:16px;margin:10px 0;border:1px solid var(--line);border-radius:12px">
+  <div style="font-weight:800;margin-bottom:7px">🏷️ ${L('تسمية مستويات الأسعار وتصنيفات العملاء','Price levels & customer names')}</div>
+  <div class="hint" style="margin-bottom:10px">${L('غيّر الاسم الظاهر فقط حسب نشاط المنشأة؛ الأسعار والبيانات القديمة لن تتغير.','Change display names only; pricing stays the same.')}</div>
+  <div class="grid3">
+    <div class="field"><label>${L('المستوى الأول (قطاعي)','First level')}</label><input id="s_tier_default" maxlength="40" value="${esc(snsTierName('default'))}"></div>
+    <div class="field"><label>${L('المستوى الثاني (أونلاين)','Second level')}</label><input id="s_tier_online" maxlength="40" value="${esc(snsTierName('online'))}"></div>
+    <div class="field"><label>${L('المستوى الثالث (جملة)','Third level')}</label><input id="s_tier_wholesale" maxlength="40" value="${esc(snsTierName('wholesale'))}"></div>
+  </div>
+  <div class="hint">${L('اضغط «حفظ» في نهاية إعدادات المنشأة لتطبيق الأسماء.','Use the business settings Save button to apply.')}</div>
+</div>
     <div class="field"><label>${L('اسم المشروع','Business name')}</label><input id="s_company" value="${esc(st.company)}"></div><div class="field"><label>${L('الهاتف','Phone')}</label><input id="s_phone" type="tel" inputmode="tel" value="${esc(st.phone)}"></div></div>
     <div class="grid2"><div class="field"><label>${L('نوع النشاط','Business type')}</label><input id="s_activity" value="${esc(st.activity||'')}" placeholder="${L('مثلًا: مطعم','e.g. Restaurant')}"></div><div class="field"><label>${L('عرض إيصال الطابعة الحرارية','Thermal receipt width')}</label><select id="s_rcptw" onchange="db.settings.receiptWidth=this.value;save();toast(L('تم الحفظ','Saved'),'ok')"><option value="80" ${(st.receiptWidth||'80')==='80'?'selected':''}>80mm (${L('الشائع','Common')})</option><option value="58" ${st.receiptWidth==='58'?'selected':''}>58mm (${L('صغير','Small')})</option></select></div><div class="field"><label>${L('العنوان','Address')}</label><input id="s_address" value="${esc(st.address)}"></div></div>
     <div class="grid3"><div class="field"><label>${L('العملة','Currency')}</label><input id="s_currency" value="${esc(st.currency)}"></div><div class="field"><label>${L('الضريبة الافتراضية','Default tax')} %</label><input id="s_vat" type="number" inputmode="decimal" value="${st.vat}"></div><div class="field"><label>${L('الرقم الضريبي','Tax number')}</label><input id="s_tax" value="${esc(st.taxNumber)}"></div></div>
@@ -8280,7 +8325,7 @@ function emailLogin(){if(window._loginLockUntil&&Date.now()<window._loginLockUnt
   db.settings.role=u.role;db.settings.currentUser=u.name||u.email;logAudit(L('تسجيل دخول','Login'),u.email);save();
   document.getElementById('loginScreen').style.display='none';applyLang();go(defaultView());toast(L('مرحبًا','Welcome')+' '+(u.name||u.email));}
 function logoutUser(){db.settings.currentUser='';save();location.reload();}
-function saveSettings(){if(typeof fatCan==='function'&&!fatCan('editSettings'))return toast(L('مالكش صلاحية تعديل الإعدادات','No permission to edit settings'),'err');const g=x=>document.getElementById(x).value;Object.assign(db.settings,{company:g('s_company').trim()||'مشروعي',phone:g('s_phone').trim(),activity:g('s_activity').trim(),address:g('s_address').trim(),currency:g('s_currency').trim()||'ج.م',vat:+g('s_vat')||0,taxNumber:g('s_tax').trim(),posVat:document.getElementById('s_posvat').checked,invNumOn:document.getElementById('s_invnum_on').checked,invPrefix:g('s_invprefix').trim()||'INV',invYear:document.getElementById('s_invyear').checked,invPad:Math.min(8,Math.max(1,+g('s_invpad')||3))});applyBrand();save();views.settings();toast(L('تم الحفظ','Saved'));}
+function saveSettings(){if(typeof fatCan==='function'&&!fatCan('editSettings'))return toast(L('مالكش صلاحية تعديل الإعدادات','No permission to edit settings'),'err');const g=x=>document.getElementById(x).value;Object.assign(db.settings,{company:g('s_company').trim()||'مشروعي',phone:g('s_phone').trim(),activity:g('s_activity').trim(),address:g('s_address').trim(),currency:g('s_currency').trim()||'ج.م',vat:+g('s_vat')||0,taxNumber:g('s_tax').trim(),posVat:document.getElementById('s_posvat').checked,invNumOn:document.getElementById('s_invnum_on').checked,invPrefix:g('s_invprefix').trim()||'INV',invYear:document.getElementById('s_invyear').checked,invPad:Math.min(8,Math.max(1,+g('s_invpad')||3)),priceTierNames:{default:g('s_tier_default').trim().slice(0,40)||'قطاعي',online:g('s_tier_online').trim().slice(0,40)||'أونلاين (نص جملة)',wholesale:g('s_tier_wholesale').trim().slice(0,40)||'جملة (كميات)'}});applyBrand();save();views.settings();toast(L('تم الحفظ','Saved'));}
 function saveBrand(){
   const color=document.getElementById('s_color')?.value||'#0a2c56';
   const logoText=document.getElementById('s_logo_text')?.value.trim()||'';
