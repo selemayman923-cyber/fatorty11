@@ -3944,8 +3944,31 @@ views.pos=()=>{try{if(_activeShift&&_activeShift.openDate&&_activeShift.openDate
     <button type="button" class="btn btn-primary sns-pos-mobile-review" id="snsPosReview" onclick="snsReviewPosCart()" hidden></button>
     </div>`;
   shiftSessionLoad();_posHot=posHotMap();renderPosHotBar();renderPosCatBar();setOrderType(posOrderType);renderPosGrid('');renderCart();updateHeldBadge();try{renderPriceTier();}catch(e){}try{renderPosKPI();}catch(e){}try{posRestoreDraft();}catch(e){}setTimeout(()=>document.getElementById('posSearch')?.focus(),50);};
-function posSearchEnter(){const q=document.getElementById('posSearch').value;const list=db.products.filter(p=>fatShowsInMenu(p)&&(matches(p.name,q)||matches(p.sku,q)||(upholsteryRollLabel(p)&&matches(upholsteryRollLabel(p),q))||(p.barcode&&matches(p.barcode,q)))&&p.qty>0);
-  if(list.length){posTap(list[0].id);document.getElementById('posSearch').value='';renderPosGrid('');}}
+function snsPosProductCodes(product){
+  return [product.barcode,product.sku,product.code,product.upholstery?.roll,upholsteryRollLabel(product)]
+    .filter(value=>value!==null&&value!==undefined&&String(value).trim()!=='');
+}
+function snsPosMatches(product,query){
+  return matches(product.name,query)||snsPosProductCodes(product).some(code=>matches(code,query));
+}
+function snsPosExactCode(products,input){
+  const code=String(input).trim().toLowerCase();
+  return products.filter(product=>snsPosProductCodes(product).some(value=>String(value).trim().toLowerCase()===code));
+}
+function posSearchEnter(){
+  const search=document.getElementById('posSearch');
+  const query=search?.value.trim();
+  if(!query)return;
+  const products=db.products.filter(p=>fatShowsInMenu(p)&&(!posCatFilter||p.cat===posCatFilter));
+  const codes=snsPosExactCode(products,query);
+  const exact=codes.length?codes:products.filter(p=>norm(p.name)===norm(query));
+  if(exact.length!==1)return;
+  if(effAvail(exact[0])<=0)return toast(L('غير متاح','Out of stock'),'err');
+  posTap(exact[0].id);
+  search.value='';
+  posPage=1;
+  renderPosGrid('');
+}
 function posKeys(e){if(current!=='pos'||e.repeat||document.body.classList.contains('nav-open')||document.querySelector('#modalBg.open,#dlgBg.open'))return;
   var k=e.key;
   if(k==='F1'||k==='F2'){e.preventDefault();var s=document.getElementById('posSearch');if(s){s.focus();s.select();}}
@@ -4084,8 +4107,8 @@ function renderPosMemberCard(){
       var _balColor=_bal>0.009?'var(--danger)':(_bal<-0.009?'var(--ok)':'var(--muted)');
       var _balLbl=_bal>0.009?L('عليه','Owes'):(_bal<-0.009?L('له رصيد','Credit'):L('لا يوجد','None'));
       var _tierBadgeHtml='';
-      if(_ci.tier==='vip')_tierBadgeHtml=' <span style="background:#EFF4FF;color:#2563EB;border:1px solid #BFDBFE;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700">💻 '+L('أونلاين','Online')+'</span>';
-      else if(_ci.tier==='wholesale')_tierBadgeHtml=' <span style="background:#F0FDF4;color:#16A34A;border:1px solid #BBF7D0;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700">📦 '+L('جملة','Wholesale')+'</span>';
+      if(_ci.tier==='vip')_tierBadgeHtml=' <span style="background:#EFF4FF;color:#2563EB;border:1px solid #BFDBFE;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700">'+snsTierHtml('online')+'</span>';
+      else if(_ci.tier==='wholesale')_tierBadgeHtml=' <span style="background:#F0FDF4;color:#16A34A;border:1px solid #BBF7D0;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700">'+snsTierHtml('wholesale')+'</span>';
       else _tierBadgeHtml=' <span style="background:#F8FAFC;color:#64748B;border:1px solid #E2E8F0;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700">🏪 '+L('افتراضي','Retail')+'</span>';
       infoHtml='<div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:4px 0 8px">'+
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">'+
@@ -4232,7 +4255,7 @@ function snsClearPosFilters(){
   search.focus();
 }
 function renderPosGrid(q){var _hotTop3=Object.keys(_posHot||{}).sort(function(a,b){return (_posHot[b]||0)-(_posHot[a]||0);}).slice(0,3);
-  const list=db.products.filter(p=>fatShowsInMenu(p)&&(matches(p.name,q)||matches(p.sku,q)||(upholsteryRollLabel(p)&&matches(upholsteryRollLabel(p),q))||(p.barcode&&matches(p.barcode,q))||(p.code&&matches(p.code,q)))&&(!posCatFilter||p.cat===posCatFilter)).sort((a,b)=>((_posHot[b.id]||0)-(_posHot[a.id]||0))||String(a.name).localeCompare(String(b.name),'ar'));
+  const list=db.products.filter(p=>fatShowsInMenu(p)&&snsPosMatches(p,q)&&(!posCatFilter||p.cat===posCatFilter)).sort((a,b)=>((_posHot[b.id]||0)-(_posHot[a.id]||0))||String(a.name).localeCompare(String(b.name),'ar'));
   const bundleCards=(posCatFilter?[]:(db.bundles||[])).filter(b=>matches(b.name,q)).map(b=>{
     const avail=b.items.every(it=>{const p=findProduct(it.pid);return p&&p.qty>=it.qty;});
     return `<div class="pos-card ${avail?'':'out'}" onclick="posTapBundle('${b.id}')" style="border:1.5px solid var(--accent)"><div style="height:48px;display:grid;place-items:center"><div style="font-size:28px">🎁</div></div><div class="nm">${esc(b.name)}</div><div class="pr">${money(b.price)}</div><div class="q"><span class="badge" style="background:var(--accent-soft);color:var(--accent);font-size:10.5px;padding:1px 6px">${L('تجميعة','Bundle')} · ${b.items.length}</span></div></div>`;}).join('');
@@ -4330,16 +4353,35 @@ function posTapBundle(id){const b=(db.bundles||[]).find(x=>x.id===id);if(!b)retu
   b.items.forEach(it=>{const p=findProduct(it.pid);const unit=Math.round((p.price*factor)*100)/100;
     cart.push({lid:uid(),pid:it.pid,qty:it.qty,price:unit,label:`${p.name} — ${b.name}`,bundle:b.id});});
   renderCart();toast(`🎁 ${esc(b.name)}`);}
-function scanBarcode(el){if(!capAllowed('barcode')){toast(L(`الباركود متاح في باقة ${capNeedName('barcode')} وأعلى`,`Barcode is available in ${capNeedName('barcode')}+`),'err');el.value='';return;}
-  const code=el.value.trim();if(!code)return;const lc=code.toLowerCase();
-  // 1) تطابق تام على الباركود أو SKU (الأسرع والأدق — قارئ الباركود)
-  let p=db.products.find(x=>(x.barcode&&String(x.barcode)===code)||(x.sku&&String(x.sku)===code)||x.upholstery?.roll?.toLowerCase()===lc);
-  // 2) تطابق جزئي على SKU/باركود (لو كتب جزء من الكود)
-  if(!p)p=db.products.find(x=>(x.sku&&String(x.sku).toLowerCase().includes(lc))||(x.barcode&&String(x.barcode).toLowerCase().includes(lc)));
-  // 3) تطابق على الاسم (لو كتب اسم بدل كود)
-  if(!p)p=db.products.find(x=>x.name&&x.name.toLowerCase().includes(lc));
-  if(p){posTap(p.id);el.value='';var s=document.getElementById('posSearch');if(s){s.value='';renderPosGrid('');}}
-  else toast(L('لا يوجد صنف بهذا الكود أو الاسم','No item with this code or name'),'err');}
+function scanBarcode(el){
+  if(!capAllowed('barcode')){
+    el.value='';
+    return toast(L(`الباركود متاح في باقة ${capNeedName('barcode')} وأعلى`,`Barcode is available in ${capNeedName('barcode')}+`),'err');
+  }
+  const code=el.value.trim();
+  if(!code)return;
+  const products=db.products.filter(fatShowsInMenu);
+  const exact=snsPosExactCode(products,code);
+  const search=document.getElementById('posSearch');
+  if(exact.length===1){
+    if(effAvail(exact[0])<=0)return toast(L('غير متاح','Out of stock'),'err');
+    posTap(exact[0].id);
+    el.value='';
+    if(search){search.value='';posPage=1;renderPosGrid('');}
+    return;
+  }
+  if(!search||(!exact.length&&!products.some(product=>snsPosMatches(product,code)))){
+    return toast(L('لا يوجد صنف بهذا الكود أو الاسم','No item with this code or name'),'err');
+  }
+  el.value='';
+  search.value=code;
+  if(posCatFilter)setPosCat('');
+  else{posPage=1;renderPosGrid(code);}
+  search.focus();
+  toast(exact.length>1
+    ?L('الكود مكرر. اختر الصنف من النتائج.','More than one item uses this code. Select an item from the results.')
+    :L('اختر الصنف من نتائج البحث.','Select an item from the search results.'));
+}
 function exportProductsCSV(){if(!db.products.length)return toast(L('لا توجد أصناف','No items'),'err');
   const rows=[[L('الصنف','Item'),L('الكود','SKU'),L('التصنيف','Category'),L('الوحدة','Unit'),L('سعر الشراء','Cost'),L('سعر البيع','Price'),L('المتاح','Qty'),L('حد التنبيه','Min'),L('قيمة التكلفة','Cost value'),L('قيمة البيع','Sale value')]];
   db.products.forEach(p=>rows.push([p.name,p.sku||'',p.cat||'',p.unit||'',p.cost,p.price,p.qty,p.min,p.cost*p.qty,p.price*p.qty]));
@@ -4355,7 +4397,7 @@ function effPrice(p){
 }
 /* Owner-editable display names. Pricing keys remain stable. */
 function snsTierName(tier){
-  var defaults={default:'قطاعي',online:'أونلاين (نص جملة)',wholesale:'جملة (كميات)'};
+  var defaults={default:L('قطاعي','Retail'),online:L('أونلاين (نص جملة)','Online'),wholesale:L('جملة (كميات)','Wholesale')};
   var saved=(db&&db.settings&&db.settings.priceTierNames)||{};
   var value=saved[tier];
   return (typeof value==='string'&&value.trim())?value.trim().slice(0,40):defaults[tier]||defaults.default;
@@ -5384,7 +5426,7 @@ views.products=()=>{
       <div class="panel-h sns-stock-toolbar">
         <div class="pill-tabs" id="prodTabBtns" role="group" aria-label="${L('عرض المخزون','Inventory view')}">
           ${[['list','القائمة','List'],['profit','الربحية','Profitability'],['low','المخزون المنخفض','Low stock'],['moves','حركة المخزون','Stock movement']]
-            .map(([key,ar,en])=>`<button type="button" class="${prodTab===key?'active':''}" aria-pressed="${prodTab===key}" onclick="prodTab='${key}';views.products()">${tier?esc(ar):L(ar,en)}</button>`).join('')}
+            .map(([key,ar,en])=>`<button type="button" class="${prodTab===key?'active':''}" aria-pressed="${prodTab===key}" onclick="prodTab='${key}';views.products()">${L(ar,en)}</button>`).join('')}
         </div>
         <div class="search"><input type="search" aria-label="${L('بحث في الأصناف','Search items')}" placeholder="${L('بحث…','Search…')}" id="prodSearchInp" oninput="renderProductsTab(this.value)"><span class="si" aria-hidden="true">🔍</span></div>
         ${prodTab==='moves'?'':`<div class="sns-stock-filters" role="group" aria-label="${L('تصفية الأصناف','Filter items')}">
@@ -5902,12 +5944,53 @@ function upholsteryQuote(q){
   if(customer)customer.value=q.customerId||'';
   renderCart();
 }
-function upholsteryReturned(sale,kind='sale'){
-  return db.returns.filter(r=>r.type===kind&&r.refId===sale.id);
+function snsInvoiceReturns(invoice,kind){
+  const legacyRef=kind==='sale'?'saleId':'purchaseId';
+  return db.returns.filter(row=>row.refId
+    ? row.refId===invoice.id&&(!row.type||row.type===kind)
+    : row[legacyRef]===invoice.id&&(!row.type||row.type===kind));
+}
+function snsReturnAvailability(invoice,previous){
+  const lines=invoice.items.map((item,index)=>({
+    ...item,lineId:item.lineId||String(index),ret:0,_maxRet:+item.qty||0,_alreadyRet:0
+  }));
+  const prior=previous.flatMap(row=>row.items||[]).filter(item=>+item.qty>0);
+  function allocate(item,candidates){
+    let unassigned=+item.qty;
+    for(const line of candidates){
+      const quantity=Math.min(line._maxRet,unassigned);
+      line._maxRet-=quantity;
+      line._alreadyRet+=quantity;
+      unassigned-=quantity;
+      if(unassigned<=1e-8)break;
+    }
+    return unassigned>1e-8;
+  }
+
+  let needsReview=false;
+  // Exact line references take precedence over older records that only saved an item name.
+  for(const item of prior){
+    if(item.lineId!=null)needsReview=allocate(item,lines.filter(line=>String(line.lineId)===String(item.lineId)))||needsReview;
+  }
+  for(const item of prior){
+    if(item.lineId!=null)continue;
+    const name=String(item.name||'').trim();
+    const matching=item.pid?lines.filter(line=>line.pid===item.pid):
+      lines.filter(line=>name&&String(line.name||'').trim()===name);
+    const atSamePrice=item.price!=null?matching.filter(line=>+line.price===+item.price):[];
+    // A legacy return cannot distinguish identical invoice lines. Apply its quantity once, in invoice order.
+    needsReview=allocate(item,atSamePrice.length?atSamePrice:matching)||needsReview;
+  }
+  for(const line of lines){
+    const product=findProduct(line.pid);
+    line._alreadyRet=upholsteryQty(product,line._alreadyRet);
+    line._maxRet=needsReview?0:upholsteryQty(product,Math.max(0,line._maxRet));
+  }
+  return {lines,needsReview};
 }
 function snsRefundAmounts(invoice,lines,kind){
   if(!invoice.posting&&!invoice.items.some(it=>it.measure))return null;
-  const previous=upholsteryReturned(invoice,kind);
+  const previous=snsInvoiceReturns(invoice,kind);
   const previousItems=previous.flatMap(row=>row.items||[]);
   const gross=lines.reduce((total,it)=>total+it.ret*it.price,0)+previousItems.reduce((total,it)=>total+it.qty*it.price,0);
   const share=invoice.sub>0?Math.min(1,gross/invoice.sub):0;
@@ -5916,27 +5999,15 @@ function snsRefundAmounts(invoice,lines,kind){
     return {net:r2(r2(Math.max(0,invoice.sub-invoice.disc)*share)-previous.reduce((sum,r)=>sum+r.total,0)),vat,nonStock:0};
   }
   let net=0,nonStock=0;
+  const available=snsReturnAvailability(invoice,previous).lines;
   for(const line of lines){
-    const alreadyReturned=previousItems.filter(item=>item.lineId===line.lineId).reduce((sum,item)=>sum+item.qty,0);
+    const alreadyReturned=available.find(item=>item.lineId===line.lineId)?._alreadyRet||0;
     const value=r2(line.netAmount*Math.min(1,(line.ret+alreadyReturned)/line.qty))-
       r2(line.netAmount*Math.min(1,alreadyReturned/line.qty));
     net+=value;
     if(!line.pid)nonStock+=value;
   }
   return {net:r2(net),vat,nonStock:r2(nonStock)};
-}
-function upholsteryValidateReturn(){
-  const sale=retCtx.s;
-  const reject=()=>{toast(L('الرصيد المتاح للمرتجع اتغيّر. افتح الفاتورة مرة تانية.','The returnable quantity changed. Reopen the invoice.'),'err');return false;};
-  if(!db.sales.includes(sale))return reject();
-  const previous=upholsteryReturned(sale).flatMap(r=>r.items);
-  return retLines.every(it=>{
-    if(!it.ret)return true;
-    const product=findProduct(it.pid);
-    const used=previous.filter(r=>r.lineId===it.lineId).reduce((sum,r)=>sum+r.qty,0);
-    it.ret=upholsteryQty(product,it.ret);
-    return (product&&it.ret+used<=it.qty+1e-9)||reject();
-  });
 }
 function upholsteryUsePicker(){
   return toast(L('استخدم نقطة البيع لاختيار قياس القماش أو الإسفنج','Use the POS to choose fabric or foam measurements'),'err');
@@ -6593,29 +6664,36 @@ async function delPurchase(id){if(typeof fatCan==='function'&&!fatCan('deleteInv
 /* Returns */
 let retLines=[],retCtx=null;
 function returnForm(kind,id){const isSale=kind==='sale';const s=(isSale?db.sales:db.purchases).find(x=>x.id===id);if(!s||s.voided)return;retCtx={kind,id,s};
-  // احسب المرتجعات السابقة لنفس الفاتورة عشان منسمحش بـ Double Return
-  const tracked=!!s.posting||s.items.some(it=>it.measure);
-  const previous=db.returns.filter(r=>r.type===kind&&r.refId===id).flatMap(r=>r.items||[]);
-  retLines=s.items.map((it,index)=>{
-    const key=it.lineId||String(index);
-    const alreadyRet=tracked?previous.filter(r=>r.lineId===key).reduce((sum,r)=>sum+r.qty,0):
-      (db.returns||[]).filter(r=>r.saleId===id||r.purchaseId===id).flatMap(r=>r.items||[]).filter(r=>r.pid===it.pid).reduce((sum,r)=>sum+r.qty,0);
-    const remaining=Math.max(0,tracked?upholsteryQty(findProduct(it.pid),it.qty-alreadyRet):it.qty-alreadyRet);
-    return {...it,...(tracked?{lineId:key}:{}),ret:0,_maxRet:remaining,_alreadyRet:alreadyRet};
-  });
-  var hasReturnable=retLines.some(function(l){return l._maxRet>0;});
+  const availability=snsReturnAvailability(s,snsInvoiceReturns(s,kind));
+  retLines=availability.lines;
+  const hasReturnable=retLines.some(line=>line._maxRet>0);
   openModal(`<div class="modal-h"><h3>↩️ ${L('مرتجع','Return')} #${s.no}</h3><button class="x" onclick="closeModal()">×</button></div>
   <div class="modal-b"><div class="hint">${isSale?L('يُعاد الصنف للمخزون ويُرد المبلغ.','Item returns to stock and amount refunded.'):L('يُخصم الصنف من المخزون.','Item deducted from stock.')}</div>
-  ${!hasReturnable?`<div style="background:var(--danger-soft);color:var(--danger);padding:12px;border-radius:10px;font-weight:600">✋ ${L('هذه الفاتورة اترجعت بالكامل من قبل','This invoice was already fully returned')}</div>`:''}
+  ${!hasReturnable?`<div style="background:var(--danger-soft);color:var(--danger);padding:12px;border-radius:10px;font-weight:600">✋ ${availability.needsReview?L('فيه مرتجعات سابقة محتاجة مراجعة قبل ما تسجّل مرتجع جديد.','Review the previous returns for this invoice before recording another.'):L('هذه الفاتورة اترجعت بالكامل من قبل','This invoice was already fully returned')}</div>`:''}
   <table class="inv-items"><thead><tr><th>${L('الصنف','Item')}</th><th>${L('الأصلية','Original')}</th><th>${L('مرتجع سابق','Prev returned')}</th><th>${L('يمكن إرجاعه','Returnable')}</th><th>${L('إرجاع','Return qty')}</th></tr></thead><tbody>
   ${retLines.map((it,i)=>`<tr style="${it._maxRet<=0?'opacity:.45':''}"><td>${esc(it.name)}</td><td class="t-num">${it.qty}</td><td class="t-num" style="color:var(--muted)">${it._alreadyRet||0}</td><td class="t-num" style="color:${it._maxRet>0?'var(--ok)':'var(--danger)'}">${it._maxRet}</td><td>${it._maxRet>0?`<input type="number" inputmode="decimal" step="any" min="0" max="${it._maxRet}" value="0" oninput="retLines[${i}].ret=Math.min(${it._maxRet},Math.max(0,+this.value));calcRet()">`:L('لا يمكن','N/A')}</td></tr>`).join('')}</tbody></table>
   <div class="inv-totals" id="retTotals"></div></div>
   <div class="modal-f"><button class="btn btn-primary" onclick="saveReturn()" ${!hasReturnable?'disabled':''}>✅ ${L('تأكيد','Confirm')}</button><button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button></div>`,true);calcRet();}
 function calcRet(){const bill=snsRefundAmounts(retCtx.s,retLines,retCtx.kind);const total=bill?bill.net+bill.vat:retLines.reduce((s,l)=>s+l.ret*l.price,0);document.getElementById('retTotals').innerHTML=`<div class="row grand"><span>${L('قيمة المرتجع','Return value')}</span><span>${money(total)}</span></div>`;}
-function saveReturn(){if(!snsCanSettleInvoice(retCtx?.s))return;if(typeof fatCan==='function'&&!fatCan('refund'))return toast(L('مالكش صلاحية عمل مرتجعات','No refund permission'),'err');const isSale=retCtx.kind==='sale';if(retCtx.s.items.some(it=>it.measure)&&!upholsteryValidateReturn())return;retLines.forEach(function(l){if(l._maxRet!=null&&l.ret>l._maxRet)l.ret=l._maxRet;});const lines=retLines.filter(l=>l.ret>0);if(!lines.length)return toast(L('حدّد كمية','Set a quantity'),'err');
-  const bill=snsRefundAmounts(retCtx.s,lines,retCtx.kind);
-  const s=retCtx.s;
-  if(!(isSale?db.sales:db.purchases).includes(s))return;
+function saveReturn(){
+  if(!retCtx||!snsCanSettleInvoice(retCtx.s))return;
+  if(typeof fatCan==='function'&&!fatCan('refund'))return toast(L('مالكش صلاحية عمل مرتجعات','No refund permission'),'err');
+  const {s,kind}=retCtx;
+  const isSale=kind==='sale';
+  const invoice=(isSale?db.sales:db.purchases).find(row=>row.id===s.id);
+  const reject=()=>toast(L('الكمية المتاحة للمرتجع اتغيّرت. افتح الفاتورة مرة تانية.','The returnable quantity changed. Reopen the invoice.'),'err');
+  if(invoice!==s||s.voided)return reject();
+  const previous=snsInvoiceReturns(s,kind);
+  const availability=snsReturnAvailability(s,previous);
+  const lines=retLines.filter(line=>line.ret>0).map(line=>({
+    ...line,ret:line.measure?upholsteryQty(findProduct(line.pid),line.ret):line.ret
+  })).filter(line=>line.ret>0);
+  if(!lines.length)return toast(L('حدّد كمية','Set a quantity'),'err');
+  if(availability.needsReview||lines.some(line=>{
+    const available=availability.lines.find(item=>item.lineId===line.lineId);
+    return !available||line.ret>available._maxRet+1e-8||(line.measure&&!findProduct(line.pid));
+  }))return reject();
+  const bill=snsRefundAmounts(s,lines,kind);
   let purchaseStockCost=0;
   if(!isSale){
     const quantities=new Map();
@@ -6629,7 +6707,7 @@ function saveReturn(){if(!snsCanSettleInvoice(retCtx?.s))return;if(typeof fatCan
   const total=bill?bill.net:lines.reduce((sum,line)=>sum+line.ret*line.price,0);
   const cost=r2(lines.reduce((sum,line)=>sum+line.ret*(isSale?line.cost:line.price),0));
   var _vatP=+((s&&s.vatP)||0);var _retVat=bill?bill.vat:(_vatP>0?Math.round(total*_vatP/100*100)/100:0);
-  const rec={id:uid(),no:db.seq.ret++,date:today(),type:retCtx.kind,refNo:s.no,refId:s.id,partyName:(isSale?s.customerName:s.supplierName)||L('نقدي','Cash'),items:lines.map(l=>({name:l.name,qty:l.ret,price:l.price,...(l.lineId?{lineId:l.lineId,pid:l.pid}:{})})),total,cost,vat:_retVat};
+  const rec={id:uid(),no:db.seq.ret++,date:today(),type:retCtx.kind,refNo:s.no,refId:s.id,partyName:(isSale?s.customerName:s.supplierName)||L('نقدي','Cash'),items:lines.map(l=>({name:l.name,qty:l.ret,price:l.price,lineId:l.lineId,...(l.pid?{pid:l.pid}:{})})),total,cost,vat:_retVat};
   const dueBefore=s.dueAmount||0;
   const cashBefore=db.cash.length;
   db.returns.push(rec);
@@ -6639,8 +6717,7 @@ function saveReturn(){if(!snsCanSettleInvoice(retCtx?.s))return;if(typeof fatCan
     if(amount<=0)return;
     const note='رد مرتجع #'+rec.no;
     if(!bill||s.payMethod!=='split'||!s.splitAcct)return addCash('out',amount,note,rec.id,racct);
-    const refundedBefore=(db.returns||[]).filter(r=>r.id!==rec.id&&r.type==='sale'&&r.refId===s.id)
-      .reduce((sum,r)=>sum+r.total+r.vat,0);
+    const refundedBefore=previous.reduce((sum,r)=>sum+(+r.total||0)+(+r.vat||0),0);
     const cash=Math.max(0,Math.min(amount,r2((s.splitCash||0)-refundedBefore)));
     if(cash>0)addCash('out',cash,note,rec.id,'cash');
     if(amount>cash)addCash('out',r2(amount-cash),note,rec.id,s.splitAcct);
@@ -7061,8 +7138,8 @@ views.customers=()=>{
       <div class="panel-h sns-list-tools">
         <div class="search"><input type="search" id="snsCustomerSearch" aria-label="${L('بحث في العملاء','Search customers')}" placeholder="${L('ابحث بالاسم أو الهاتف','Search name or phone')}" value="${esc(custQuery)}" oninput="custQuery=this.value;renderCustomersList()"><span class="si" aria-hidden="true">🔍</span></div>
         <div class="sns-filter-row" role="group" aria-label="${L('تصنيف العملاء','Customer tier')}">
-          ${[['','الكل','All'],['vip',snsTierName('online'),'Online'],['wholesale',snsTierName('wholesale'),'Wholesale'],['regular',snsTierName('default'),'Retail']].map(([tier,ar,en])=>
-            `<button type="button" class="cat-chip" data-tier="${tier}" onclick="custTierFilter=this.dataset.tier;renderCustomersList()">${L(ar,en)}</button>`).join('')}
+          ${[['',L('الكل','All')],['vip',snsTierName('online')],['wholesale',snsTierName('wholesale')],['regular',snsTierName('default')]].map(([tier,label])=>
+            `<button type="button" class="cat-chip" data-tier="${tier}" onclick="custTierFilter=this.dataset.tier;renderCustomersList()">${esc(label)}</button>`).join('')}
         </div>
       </div>
       <div class="panel-b" id="snsCustomersList"></div>
@@ -7128,7 +7205,7 @@ function snsCustomerTools(button){
 }
 function exportCustomersCSV(){if(!db.customers.length)return toast(L('لا يوجد عملاء','No customers'),'err');
   const rows=[[L('الاسم','Name'),L('الهاتف','Phone'),L('رقم إضافي','Extra phone'),L('العنوان','Address'),L('التصنيف','Category'),L('تاريخ ميلاد','Birthday'),L('الرصيد','Balance'),L('حد الائتمان','Credit limit'),L('النقاط','Points')]];
-  db.customers.forEach(c=>rows.push([c.name,c.phone||'',c.phone2||'',c.address||'',c.tier==='vip'?L('أونلاين','Online'):c.tier==='wholesale'?L('جملة','Wholesale'):L('افتراضي','Retail'),c.bday||'',c.balance,c.creditLimit||0,c.points||0]));
+  db.customers.forEach(c=>rows.push([c.name,c.phone||'',c.phone2||'',c.address||'',snsTierName(c.tier==='vip'?'online':c.tier==='wholesale'?'wholesale':'default'),c.bday||'',c.balance,c.creditLimit||0,c.points||0]));
   downloadCSV('customers-'+today()+'.csv',rows);}
 async function waCustomer(id){const c=findCustomer(id);if(!c)return;const num=waNumber(c.phone);if(!num)return toast(L('لا يوجد رقم','No phone number'),'err');
   const msg=await promptBox(L('الرسالة للعميل:','Message to customer:'),{value:L(`مرحبًا ${c.name}،`,`Hello ${c.name},`)});if(msg===null)return;
@@ -10797,8 +10874,8 @@ function autoTier(c){
   if(sp>=500||vi>=3)return {k:'silver',icon:'🥈',label:L('فضي','Silver'),bg:'rgba(140,150,160,.16)',fg:'#5f6b76'};
   return {k:'bronze',icon:'🥉',label:L('برونزي','Bronze'),bg:'rgba(176,121,80,.14)',fg:'#8a5a3b'};}
 function tierBadge(c){
-  if(c.tier==='vip')return ' <span class="badge" style="background:#EFF4FF;color:#2563EB;border:1px solid #BFDBFE">💻 '+L('أونلاين','Online')+'</span>';
-  if(c.tier==='wholesale')return ' <span class="badge info">📦 '+L('جملة','Wholesale')+'</span>';
+  if(c.tier==='vip')return ' <span class="badge" style="background:#EFF4FF;color:#2563EB;border:1px solid #BFDBFE">'+snsTierHtml('online')+'</span>';
+  if(c.tier==='wholesale')return ' <span class="badge info">'+snsTierHtml('wholesale')+'</span>';
   var a=autoTier(c);
   if(!a)return '';
   return ' <span class="badge" title="'+L('تصنيف تلقائي حسب الإنفاق والزيارات','Auto tier by spend & visits')+'" style="background:'+a.bg+';color:'+a.fg+';font-size:10px">'+a.icon+' '+a.label+'</span>';}
@@ -12942,7 +13019,7 @@ function csvImportModal(){
   '<div class="modal-f"><button type="button" class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>');
   window._csvMode=isProduct?'products':(isSupplier?'suppliers':'customers');window._csvRows=null;}
 
-const SNS_RELEASE_ID='2026.11.19-r6';
+const SNS_RELEASE_ID='2026.11.20-r7';
 
 function setSyncStatus(state){
   var el=document.getElementById('syncDot');if(!el)return;
