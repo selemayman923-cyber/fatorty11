@@ -433,7 +433,7 @@ test('an old purchase return is allocated once across duplicate lines and rechec
   expect(errors).toEqual([]);
 });
 
-test('a long POS invoice scrolls on mobile and keeps both print buttons reachable', async ({ page }) => {
+test('a long POS invoice scrolls on mobile and keeps both print buttons reachable', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 720 });
   const errors = await openWorkspace(page, { activity: 'other' });
   await page.evaluate(() => {
@@ -462,7 +462,7 @@ test('a long POS invoice scrolls on mobile and keeps both print buttons reachabl
   await expect(page.locator('.app')).toBeHidden();
   await expect(details.locator('tbody tr').last()).toBeVisible();
   await expect(preview.locator('.modal-f')).toBeHidden();
-  const pdf=await page.pdf({preferCSSPageSize:true});
+  const pdf=await page.pdf({preferCSSPageSize:true,path:testInfo.outputPath('SNS_Long_A4_Test.pdf')});
   expect(pdf.toString('ascii',0,5)).toBe('%PDF-');
   expect(errors).toEqual([]);
 });
@@ -626,7 +626,7 @@ test('a cashier shift follows its drawer movements and requires an actual count'
   expect(errors).toEqual([]);
 });
 
-test('58mm receipt renders its QR, and a blocked popup leaves the invoice untouched', async ({ page }) => {
+test('58mm receipt renders its QR, and a blocked popup leaves the invoice untouched', async ({ page }, testInfo) => {
   const errors = await openWorkspace(page, { activity:'other' });
   await page.addScriptTag({url:'/vendor/qrcode.min.js'});
   const orig = await page.evaluate(() => {
@@ -655,6 +655,9 @@ test('58mm receipt renders its QR, and a blocked popup leaves the invoice untouc
   await expect(popup.locator('body')).toHaveAttribute('data-print-requested','true');
   await expect(popup.locator('#qrc canvas')).toHaveCount(1);
   await expect(popup.getByRole('heading',{name:"Ahmed's shop"})).toBeVisible();
+  const sample=await popup.pdf({width:'58mm',height:'160mm',printBackground:true,path:testInfo.outputPath('SNS_Thermal_58mm_Test.pdf')});
+  expect(sample.toString('ascii',0,5)).toBe('%PDF-');
+
   expect(await popup.locator('body').evaluate(body=>({width:Math.round(body.getBoundingClientRect().width),fits:body.querySelector('table').getBoundingClientRect().width<=body.getBoundingClientRect().width}))).toEqual({width:219,fits:true});
   expect(await page.evaluate(() => ({log:db.audit.filter(a=>a.print).length,invoice:snapStr(db.sales[0])})))
     .toEqual({log:1,invoice:orig.invoice});
@@ -933,5 +936,48 @@ test('a purchase order receives partial quantities only at its originating branc
     receivable:db.purchases[0].dueAmount,supplier:findSupplier('supplier-test').balance,
     qty:fatBQOf(findProduct('cloth'),orderBranch),reserve:fatBQOf(findProduct('cloth'),'reserve')
   }))).toEqual({status:'partial',remainder:2,receivable:40,supplier:40,qty:12,reserve:0});
+  expect(errors).toEqual([]);
+});
+
+test('billing reviewer records a verified transfer and the shop owner can read its confirmation', async ({ page }) => {
+  const errors=await openWorkspace(page,{activity:'other'});
+  await page.evaluate(() => {
+    CURRENT_ORG='demo-shop';
+    CURRENT_ORG_OWNED=true;
+    SNS_BILLING_REVIEWER=true;
+    window.billingRequests=[];
+    Object.assign(sb,{rpc:async (name,args)=>{
+      switch(name){
+        case 'sns_billing_shops':
+          return {data:[{org_id:'demo-shop',name:'محل تجريبي',plan:'trial',status:'trialing'}]};
+        case 'sns_review_transfer':
+          billingRequests.push(args);
+          return {data:{decision:args.p_decision,replayed:billingRequests.length>1}};
+        case 'sns_my_transfer_reviews':
+          return {data:[{reference:'DEMO-9001',amount:299,decision:'accepted',expires_at:'2027-02-03T00:00:00Z'}]};
+        default:
+          return {data:null};
+      }
+    }});
+    go('admin');
+  });
+  await expect(page.locator('#affBody')).toHaveCount(0);
+  await page.getByRole('button',{name:'مراجعة تحويل'}).click();
+  const form=page.locator('#snsTransferReview');
+  await form.locator('[name="reference"]').fill('DEMO-9001');
+  await form.locator('[name="amount"]').fill('299');
+  const accept=form.getByRole('button',{name:'قبول وتفعيل'});
+  await accept.click();
+  await expect(form.locator('#snsTransferResult')).toContainText('أكد إنك راجعت التحويل');
+  expect(await page.evaluate(()=>billingRequests.length)).toBe(0);
+  await form.locator('[name="verified"]').check();
+  await accept.click();
+  await expect(form.locator('#snsTransferResult')).toContainText('اتفعّل الاشتراك');
+  await accept.click();
+  await expect(form.locator('#snsTransferResult')).toContainText('متسجل بالفعل');
+  expect(await page.evaluate(()=>billingRequests[0])).toMatchObject({p_reference:'DEMO-9001',p_amount:299,p_decision:'accepted'});
+  await page.evaluate(()=>{closeModal();fatRenewModal();});
+  await expect(page.locator('#rnModalBody [data-transfer-reviews]')).toContainText('DEMO-9001');
+  await expect(page.locator('#rnModalBody [data-transfer-reviews]')).toContainText('تم التفعيل');
   expect(errors).toEqual([]);
 });

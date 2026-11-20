@@ -1,8 +1,11 @@
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const { test, expect } = require('@playwright/test');
 const { createAccountingDatabase, asActor, applyBatch } = require('../tools/accounting-postgres-fixture');
 
 const uid = '20000000-0000-4000-8000-000000000001';
 const org = '10000000-0000-4000-8000-000000000001';
+const reviewer = '20000000-0000-4000-8000-000000000099';
 const branch = { id: 'main', name: 'الفرع الرئيسي' };
 const product = { id: 'needle', name: 'إبر تنجيد', price: 10, cost: 4, qty: 5 };
 const invoice = { id: 'previous-sale', no: 7, date: '2026-10-01', total: 10, items: [{ pid: 'needle', qty: 1, price: 10 }] };
@@ -62,6 +65,15 @@ async function loadShop(page, { activity, role = 'manager', owner = true, create
       const path = new URL(route.request().url()).pathname.replace('/sns-industry-fixture/', '');
       const args = route.request().postDataJSON();
       let data;
+      if (database && (path === 'subscriptions' || path === 'rpc/sns_my_transfer_reviews')) {
+        data = await asActor(database, uid, async tx => {
+          if(path === 'subscriptions')return (await tx.query(
+            'select plan,status,expires_at from public.subscriptions where org_id=$1',[args.org_id]
+          )).rows[0]??null;
+          return (await tx.query('select * from public.sns_my_transfer_reviews($1)',[args.p_org])).rows;
+        });
+        return route.fulfill({ json:{data,error:null} });
+      }
       if (database && args.org_id && (path === 'v2_records' || path === 'v2_settings')) {
         data = await asActor(database, uid, async tx => {
           if (path === 'v2_records') return (await tx.query(
@@ -229,10 +241,15 @@ for (const role of ['cashier','manager']) {
 }
 
 
-test('owner settings, sale and return round trip from Chromium through PostgreSQL', async ({ page, browser }) => {
+test('paid trial, owner settings, sale, return and shift close round trip through local PostgreSQL', async ({ page, browser }) => {
   test.setTimeout(30000);
   const database = await createAccountingDatabase();
   try {
+    await database.exec('create table auth.users (id uuid primary key)');
+    await database.query('insert into auth.users values ($1)',[reviewer]);
+    await database.exec(await fs.readFile(path.join(__dirname,'..','supabase','sns-manual-billing.sql'),'utf8'));
+    await database.query('insert into public.sns_billing_reviewers values ($1)',[reviewer]);
+    await database.exec("insert into public.plan_limits values ('growth',3,5,80)");
     const shop = await loadShop(page, { database });
     const chooser = page.locator('#snsIndustry');
     await chooser.getByRole('searchbox').fill('pharmacy');
@@ -241,17 +258,29 @@ test('owner settings, sale and return round trip from Chromium through PostgreSQ
     await chooser.getByRole('button', { name: 'احفظ وابدأ' }).click();
     await expect(chooser).toBeHidden();
     await page.getByRole('button', { name: 'أوافق وأكمل' }).click();
+    const approved=await asActor(database,reviewer,tx=>tx.query(
+      "select public.sns_review_transfer($1,'vodafone','SNS-FLOW-699','growth',1,699,'accepted') as receipt",[org]
+    ));
+    expect(approved.rows[0].receipt).toMatchObject({decision:'accepted',replayed:false});
+    await page.evaluate(async()=>{await loadSubscription({ensure:false});fatRenewModal();});
+    await expect(page.locator('#rnModalBody [data-transfer-reviews]')).toContainText('SNS-FLOW-699');
+    await expect(page.locator('#rnModalBody [data-transfer-reviews]')).toContainText('تم التفعيل');
 
     await page.evaluate(async () => {
+      closeModal();
       db.settings.cashierMustShift = false;
       db.settings.autoPrintReceipt = false;
       db.settings.waAutoReceipt = false;
       db.settings.vat = 0;
+      db.branches.push({id:'secondary',name:'فرع الاختبار الثاني'});
       db.products.push({ id: 'qa-product', name: 'صنف اختبار الحفظ', price: 50, cost: 20, qty: 3, itemType: 'simple' });
       _rebuildProdIdx();
       await save();
       go('pos');
     });
+    await page.locator('#shiftStatusBtn').click();
+    await page.locator('#sh_ofloat').fill('100');
+    await page.locator('#modal').getByRole('button',{name:'فتح الشيفت',exact:true}).click();
     await page.locator('#posGrid [data-pid="qa-product"]').click();
     await page.evaluate(() => posCheckout());
     await expect.poll(() => page.evaluate(() => db.sales.length)).toBe(1);
@@ -268,6 +297,14 @@ test('owner settings, sale and return round trip from Chromium through PostgreSQ
     await expect.poll(async () => (await database.query(
       "select count(*)::int as total from public.v2_records where org_id=$1 and kind='returns'", [org],
     )).rows[0].total).toBe(1);
+
+    await page.evaluate(()=>go('pos'));
+    await page.locator('#shiftStatusBtn').click();
+    await page.locator('#sh_counted').fill('100');
+    await page.locator('#modal').getByRole('button',{name:/إغلاق الشيفت/}).click();
+    await expect.poll(async()=> (await database.query(
+      "select (data->>'expectedCash')::int as expected,(data->>'countedCash')::int as counted from public.v2_records where org_id=$1 and kind='shiftSessions'",[org]
+    )).rows).toEqual([{expected:100,counted:100}]);
 
     const device = await browser.newContext({ serviceWorkers: 'block' });
     try {

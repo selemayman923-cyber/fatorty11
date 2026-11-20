@@ -108,7 +108,8 @@ begin
     where v.org_id = p_org;
     return;
   end if;
-  if exists (select 1 from public.subscriptions
+  if not exists (select 1 from public.subscriptions where org_id=p_org)
+    or exists (select 1 from public.subscriptions
     where org_id = p_org and (expires_at <= now()
       or status::text in ('suspended', 'expired', 'cancelled', 'canceled'))) then
     raise exception 'SUB_EXPIRED';

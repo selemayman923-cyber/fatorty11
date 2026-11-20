@@ -1949,6 +1949,7 @@ let CURRENT_ORG=null, CURRENT_ROLE='manager';
 let CURRENT_ORG_OWNED=false;   // which shop, and my role in it (server-enforced)
 let SUB=null;                                   // {plan,status,expires_at} for the current shop
 let LIMITS=null;                                // {max_users,max_products,max_branches} for the current plan
+let SNS_BILLING_REVIEWER=false;
 let IS_ADMIN=false;                             // is the signed-in user the system super-admin
 
 /* ---- Auth screen UI ---- */
@@ -2707,13 +2708,15 @@ async function loadSubscription({ensure=true}={}){
   if(ensure){SUB=null;LIMITS=null;}
   if(!sb||!org)return false;
   if(ensure){
-    try{await sb.rpc('ensure_subscription',{p_org:org});}catch(e){console.warn('ensure_subscription',e);}
+    try{const {error}=await sb.rpc('sns_billing_start',{p_org:org});if(error)throw error;}
+    catch(e){console.warn('sns_billing_start',e);}
   }
   try{
     const {data,error}=await sb.from('subscriptions').select('plan,status,expires_at').eq('org_id',org).maybeSingle();
     if(error)throw error;
-    if(!data||!sameWorkspace())return false;
-    SUB=data;
+    if(!sameWorkspace())return false;
+    SUB=data||{status:'inactive'};
+    if(!data)return true;
     if(snsSubscriptionBlockedOrg===org&&['active','trialing'].includes(data.status)&&!snsSubscriptionInactive(data)){
       snsSubscriptionBlockedOrg=null;
     }
@@ -2783,7 +2786,7 @@ function subDaysLeft(){
 }
 function snsSubscriptionInactive(subscription){
   if(!subscription)return false;
-  if(['suspended','expired','cancelled','canceled'].includes(subscription.status))return true;
+  if(['inactive','suspended','expired','cancelled','canceled'].includes(subscription.status))return true;
   return !!subscription.expires_at&&Date.parse(subscription.expires_at)<=Date.now();
 }
 function snsSubscriptionLocked(){
@@ -2995,7 +2998,7 @@ function capAllowed(cap){ const need=CAP_MIN_PLAN[cap]; if(!need)return true; if
 function capNeedName(cap){ return PLAN_AR[CAP_MIN_PLAN[cap]]||CAP_MIN_PLAN[cap]||''; }
 const roleName=r=>{const o=ROLES[r]||ROLES.cashier;return L(o.ar,o.en);};
 function canView(view){
-  if(view==='admin')return IS_ADMIN;
+  if(view==='admin')return IS_ADMIN||SNS_BILLING_REVIEWER;
   if(IS_ADMIN)return true;                       // system admin sees everything
   const r=db.settings.role||'manager';const allowed=ROLE_VIEWS[r];
   if(allowed&&!allowed.includes(view))return false;
@@ -3195,7 +3198,7 @@ function cashflowProjection(days){days=days||30;const horizon=addDays(today(),da
 
 /* ============ Nav / Router ============ */
 // role decides visibility; plan only adds a 🔒 (item stays visible to entice upgrades)
-function roleAllowsView(view){ if(view==='wholesale')return snsWholesaleVisible(); if(view==='admin')return IS_ADMIN; if(IS_ADMIN)return true; const r=db.settings.role||'manager';const allowed=ROLE_VIEWS[r]; return !allowed||allowed.includes(view); }
+function roleAllowsView(view){ if(view==='wholesale')return snsWholesaleVisible(); if(view==='admin')return IS_ADMIN||SNS_BILLING_REVIEWER; if(IS_ADMIN)return true; const r=db.settings.role||'manager';const allowed=ROLE_VIEWS[r]; return !allowed||allowed.includes(view); }
 /* الأقسام اللي العميل اختار يخفيها (تخصيص حسب النشاط) */
 function userHidesView(view){
   try{
@@ -3313,7 +3316,7 @@ function renderNav(){
   <a data-view="trash" ${show('trash')}><span class="ic">🗑️</span> ${L('سلة المحذوفات','Trash')}</a>
   <a data-view="audit" ${show('audit')}><span class="ic">📜</span> ${L('سجل التدقيق','Audit Log')}${lk('audit')}</a>
   <a data-view="settings" ${show('settings')}><span class="ic">⚙️</span> ${t('nav_settings')}</a>
-  ${IS_ADMIN?`<a data-view="admin"><span class="ic">🛡️</span> ${L('لوحة الأدمن','Admin')}</a>`:''}`;
+  ${IS_ADMIN||SNS_BILLING_REVIEWER?`<a data-view="admin"><span class="ic">🛡️</span> ${L('لوحة الأدمن','Admin')}</a>`:''}`;
   document.querySelector(`#nav a[data-view="${current}"]`)?.classList.add('active');
   try{if(typeof applyFeatureFlags==='function')applyFeatureFlags();}catch(e){}}
 let current='dashboard';
@@ -3628,7 +3631,7 @@ function showPricing(){
         :`<button class="btn ${popular?'btn-primary':'btn-ghost'}" style="width:100%;justify-content:center" onclick="contactUpgrade('${p.key}')">${p.price>0?L('اشترك','Subscribe'):L('تواصل معنا','Contact us')}</button>`}
     </div>`;
   }).join('');
-  openModal(`<div style="text-align:center;margin-bottom:8px"><h2 style="letter-spacing:normal;color:var(--ink)">💎 ${L('باقات SNS','SNS Plans')}</h2><p style="color:var(--muted);font-size:13px;letter-spacing:normal">${L('اختار الباقة اللي تناسب نشاطك — وكلّمنا نفعّلها فورًا','Pick the plan that fits your business — contact us to activate instantly')}</p></div>
+  openModal(`<div style="text-align:center;margin-bottom:8px"><h2 style="letter-spacing:normal;color:var(--ink)">💎 ${L('باقات SNS','SNS Plans')}</h2><p style="color:var(--muted);font-size:13px;letter-spacing:normal">${L('اختار الباقة المناسبة. التفعيل بعد مراجعة التحويل.','Choose a plan. Activation follows transfer review.')}</p></div>
   <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:20px">${cards}</div>
   <div style="text-align:center;margin-top:16px;font-size:12.5px;color:var(--ink);font-weight:600;letter-spacing:normal">${L('خصومات: 6 شهور 10% · سنة 20% · سنتين 30%','Discounts: 6mo 10% · yearly 20% · 2yr 30%')}</div>
   <div style="text-align:center;margin-top:14px"><button class="btn btn-ghost" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`,true);
@@ -3648,79 +3651,99 @@ const PLAN_LABEL={trial:L('تجربة','Trial'),starter:'Starter',growth:'Growth
 const PLAN_PRICE={starter:299,growth:699,pro:1499,enterprise:0};
 views.admin=async()=>{
   const c=document.getElementById('content');
-  if(!IS_ADMIN){c.innerHTML=`<div class="panel" style="max-width:560px"><div class="panel-b pad"><div class="hint">${L('غير مصرّح','Not authorized')}</div></div></div>`;return;}
+  if(!(IS_ADMIN||SNS_BILLING_REVIEWER)){c.innerHTML=`<div class="panel" style="max-width:560px"><div class="panel-b pad"><div class="hint">${L('غير مصرّح','Not authorized')}</div></div></div>`;return;}
   c.innerHTML=`<div class="panel" style="max-width:920px"><div class="panel-h"><h3>🛡️ ${L('اشتراكات المحلات','Shop Subscriptions')}</h3><button class="btn btn-ghost btn-sm" onclick="views.admin()">↻ ${L('تحديث','Refresh')}</button></div><div class="panel-b pad" id="adminBody">${L('جارٍ التحميل…','Loading…')}</div></div>
-  <div class="panel" style="max-width:920px;margin-top:16px"><div class="panel-h"><h3>🤝 ${L('المسوّقين','Affiliates')}</h3><button class="btn btn-primary btn-sm" onclick="affiliateForm()">+ ${L('مسوّق جديد','New affiliate')}</button></div><div class="panel-b pad" id="affBody">${L('جارٍ التحميل…','Loading…')}</div></div>`;
-  renderAffiliates();
+  ${IS_ADMIN?`<div class="panel" style="max-width:920px;margin-top:16px"><div class="panel-h"><h3>🤝 ${L('المسوّقين','Affiliates')}</h3><button class="btn btn-primary btn-sm" onclick="affiliateForm()">+ ${L('مسوّق جديد','New affiliate')}</button></div><div class="panel-b pad" id="affBody">${L('جارٍ التحميل…','Loading…')}</div></div>`:''}`;
+  if(IS_ADMIN)renderAffiliates();
   try{
-    const [{data:orgs,error:oe},{data:subs,error:se}]=await Promise.all([
-      sb.rpc('admin_list_orgs'),
-      sb.from('subscriptions').select('org_id,plan,status,expires_at,note')
-    ]);
-    if(oe)throw oe; if(se)throw se;
-    const subMap={}; (subs||[]).forEach(s=>subMap[s.org_id]=s);
-    if(!orgs||!orgs.length){document.getElementById('adminBody').innerHTML=`<div class="hint">${L('لا توجد محلات بعد','No shops yet')}</div>`;return;}
-    const daysOf=s=>s&&s.expires_at?Math.ceil((new Date(s.expires_at)-new Date())/86400000):null;
+    const {data:orgs,error}=await sb.rpc('sns_billing_shops');
+    if(error)throw error;
+    const body=document.getElementById('adminBody');
+    if(!body)return;
+    if(!orgs?.length){body.textContent=L('لا توجد محلات بعد','No shops yet');return;}
     const rows=orgs.map(o=>{
-      const s=subMap[o.id]; const d=daysOf(s);
+      const s=o.plan?o:null;
+      const d=s?.expires_at?Math.ceil((Date.parse(s.expires_at)-Date.now())/86400000):null;
       let badge;
       if(!s){badge=`<span class="badge muted">${L('بدون','None')}</span>`;}
-      else if(d<0){badge=`<span class="badge" style="background:var(--danger);color:#fff">${L('منتهي','Expired')} (${d})</span>`;}
+      else if(snsSubscriptionInactive(s)){badge=`<span class="badge" style="background:var(--danger);color:#fff">${L('غير نشط','Inactive')}</span>`;}
       else if(s.status==='trialing'){badge=`<span class="badge ok">${L('تجربة','Trial')} · ${d}${L('ي','d')}</span>`;}
       else{badge=`<span class="badge ok">${L('مفعّل','Active')} · ${d}${L('ي','d')}</span>`;}
       const exp=s&&s.expires_at?new Date(s.expires_at).toLocaleDateString():'—';
       return `<tr>
-        <td><b>${esc(o.name||'—')}</b><div style="font-size:12px;color:var(--accent);font-weight:600">📧 ${esc(o.owner_email||'—')}</div><div style="font-size:11px;color:var(--muted)">${esc(s?(PLAN_LABEL[s.plan]||s.plan):'')} · ${L('ينتهي','exp')}: ${exp}</div>${s&&s.note?`<div style="font-size:11px;color:var(--muted)">📝 ${esc(s.note)}</div>`:''}</td>
+        <td><b>${esc(o.name||'—')}</b><div class="hint">${esc(s?(PLAN_LABEL[s.plan]||s.plan):'')} · ${exp}</div></td>
         <td>${badge}</td>
-        <td style="text-align:left;white-space:nowrap">
-          <select id="pl_${o.id}" class="btn-sm" style="padding:4px">
-            <option value="starter">Starter</option><option value="growth">Growth</option><option value="pro">Pro</option><option value="enterprise">Enterprise</option>
-          </select>
-          <select id="mo_${o.id}" class="btn-sm" style="padding:4px">
-            <option value="1">1 ${L('شهر','mo')}</option><option value="6">6 ${L('شهور','mo')}</option><option value="12">12 ${L('شهر','mo')}</option><option value="24">24 ${L('شهر','mo')}</option>
-          </select>
-          <button class="btn btn-primary btn-sm" onclick="adminActivate('${o.id}')">✓ ${L('تفعيل/تجديد','Activate')}</button>
-          ${s?`<div style="margin-top:6px;display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-start">
-            <button class="btn btn-ghost btn-sm" onclick="adminSetExpiry('${o.id}')">📅 ${L('تعديل التاريخ','Edit date')}</button>
-            ${(d>=0)?`<button class="btn btn-ghost btn-sm" onclick="adminSuspend('${o.id}')">⏸️ ${L('إيقاف','Suspend')}</button>`:''}
-            <button class="btn btn-danger btn-sm" onclick="adminCancel('${o.id}')">🗑️ ${L('إلغاء','Cancel')}</button>
-          </div>`:''}
+        <td>
+          <button class="btn btn-primary btn-sm" onclick="adminTransferForm('${o.org_id}')">${L('مراجعة تحويل','Review transfer')}</button>
+          ${s&&!snsSubscriptionInactive(s)?`<button class="btn btn-ghost btn-sm" onclick="adminBillingStop('${o.org_id}','suspended')">${L('إيقاف','Suspend')}</button>`:''}
+          ${s&&s.status!=='cancelled'?`<button class="btn btn-danger btn-sm" onclick="adminBillingStop('${o.org_id}','cancelled')">${L('إلغاء','Cancel')}</button>`:''}
         </td></tr>`;
     }).join('');
     document.getElementById('adminBody').innerHTML=`
-      <div class="hint">${L('فعّل أو جدّد اشتراك أي محل بعد ما يحوّل لك. التفعيل بيمتد من تاريخ انتهائه الحالي لو لسه شغّال.','Activate or renew any shop after they pay. Renewal extends from the current expiry if still active.')}</div>
+      <div class="hint">${L('طابق رقم العملية والمبلغ مع سجل التحويل عندك، ثم سجّل قرار المراجعة.','Match the reference and amount to your transfer statement, then record the review decision.')}</div>
       <table><thead><tr><th>${L('المحل','Shop')}</th><th>${L('الحالة','Status')}</th><th style="text-align:left">${L('إجراء','Action')}</th></tr></thead><tbody>${rows}</tbody></table>`;
-  }catch(e){document.getElementById('adminBody').innerHTML=`<div class="hint" style="color:var(--danger)">${L('تعذّر التحميل','Load failed')}: ${esc(e.message||'')}</div>`;}
+  }catch(e){const body=document.getElementById('adminBody');if(body)body.innerHTML=`<div class="hint" style="color:var(--danger)">${L('تعذّر التحميل','Load failed')}: ${esc(e.message||'')}</div>`;}
 };
-async function adminActivate(orgId){
-  const plan=document.getElementById('pl_'+orgId).value;
-  const months=parseInt(document.getElementById('mo_'+orgId).value,10)||1;
-  const note=await promptBox(L('ملاحظة (اختياري) — مثلًا رقم التحويل أو اسم العميل:','Note (optional) — e.g. transfer ref or customer name:'))||null;
-  const aff=await promptBox(L('كود المسوّق (اختياري) — سيبه فاضي لو مفيش مسوّق:','Affiliate code (optional) — leave empty if none:'))||null;
-  if(!await confirmBox(L(`تفعيل باقة ${PLAN_LABEL[plan]||plan} لمدة ${months} شهر؟\n(تجديد نفس الباقة بيمدّد من تاريخ الانتهاء، وتغيير الباقة بيبدأ مدة جديدة من النهاردة)`,`Activate ${PLAN_LABEL[plan]||plan} for ${months} month(s)?\n(Renewing the same plan extends from expiry; changing plan starts fresh from today)`)))return;
+function adminTransferForm(org){
+  if(!(IS_ADMIN||SNS_BILLING_REVIEWER))return;
+  openModal(`<form id="snsTransferReview" data-org="${esc(org)}" onsubmit="event.preventDefault();adminReviewTransfer(this,event.submitter?.value)">
+    <div class="modal-h"><h3>${L('مراجعة تحويل اشتراك','Review subscription transfer')}</h3><button type="button" class="x" onclick="closeModal()">×</button></div>
+    <div class="modal-b">
+      <p class="hint">${L('راجع التحويل في كشف الحساب قبل الموافقة. اكتب رقم العملية الكامل والمبلغ اللي وصلك.','Verify the transfer on your statement before approving. Enter the full reference and amount received.')}</p>
+      <div class="grid2">
+        <label class="field">${L('الوسيلة','Method')}<select name="method"><option value="vodafone">Vodafone Cash</option><option value="instapay">InstaPay</option><option value="bank">${L('تحويل بنكي','Bank transfer')}</option></select></label>
+        <label class="field">${L('رقم العملية الكامل','Full transaction reference')}<input name="reference" required maxlength="100" autocomplete="off"></label>
+        <label class="field">${L('الباقة','Plan')}<select name="plan">${PRICING_PLANS.filter(plan=>plan.price>0).map(plan=>`<option value="${plan.key}">${L(plan.ar,plan.name)}</option>`).join('')}</select></label>
+        <label class="field">${L('المدة بالشهور','Months')}<select name="months">${[1,6,12,24].map(month=>`<option>${month}</option>`).join('')}</select></label>
+        <label class="field">${L('المبلغ بالجنيه','Amount in EGP')}<input name="amount" type="number" min="0.01" step="0.01" required></label>
+      </div>
+      <label><input name="verified" type="checkbox"> ${L('راجعت الرقم والمبلغ في سجل التحويل','I verified the reference and amount on the statement')}</label>
+      <p id="snsTransferResult" role="status"></p>
+    </div>
+    <div class="modal-f"><button type="submit" class="btn btn-primary" value="accepted">${L('قبول وتفعيل','Accept and activate')}</button>
+      <button type="submit" class="btn btn-ghost" value="rejected">${L('رفض الإثبات','Reject proof')}</button></div>
+  </form>`);
+}
+async function adminReviewTransfer(form,decision){
+  if(!(IS_ADMIN||SNS_BILLING_REVIEWER)||form.dataset.busy||!['accepted','rejected'].includes(decision))return;
+  const result=form.querySelector('#snsTransferResult');
+  const values=new FormData(form);
+  if(decision==='accepted'&&!values.has('verified')){
+    result.textContent=L('أكد إنك راجعت التحويل الأول.','Confirm that you verified the transfer first.');
+    return;
+  }
+  form.dataset.busy='1';
+  const buttons=[...form.querySelectorAll('button[type=submit]')];
+  buttons.forEach(button=>button.disabled=true);
   try{
-    const {error}=await sb.rpc('activate_subscription',{p_org:orgId,p_plan:plan,p_months:months,p_note:note,p_affiliate:aff});
+    const {data,error}=await sb.rpc('sns_review_transfer',{p_org:form.dataset.org,
+      p_method:values.get('method'),p_reference:values.get('reference'),p_plan:values.get('plan'),
+      p_months:Number(values.get('months')),p_amount:Number(values.get('amount')),p_decision:decision});
     if(error)throw error;
-    toast(L('تم التفعيل','Activated'));views.admin();
-  }catch(e){toast((e&&e.message)||L('فشل التفعيل','Failed'),'err');}
+    if(!data||data.decision!==decision)throw new Error('Unexpected transfer review result');
+    result.textContent=data.replayed
+      ?L('القرار ده متسجل بالفعل. الاشتراك ما اتمددش مرة تانية.','This decision already exists. The subscription was not extended again.')
+      :decision==='accepted'
+        ?L('اتفعّل الاشتراك. المالك يقدر يراجع التأكيد من شاشة التجديد.','Subscription activated. The owner can view confirmation under Renewal.')
+        :L('تم تسجيل الرفض. المالك يقدر يراجع النتيجة من شاشة التجديد.','Rejection recorded. The owner can view the result under Renewal.');
+    if(current==='admin')views.admin();
+  }catch(error){
+    result.textContent=error.message==='SNS_BILLING_AMOUNT_MISMATCH'
+      ?L('المبلغ المحوّل مش مطابق لقيمة الباقة والمدة. راجع التحويل.','The amount does not match this plan and term.')
+      :error.code==='23505'?L('رقم العملية له مراجعة سابقة. راجع السجل قبل تسوية جديدة.','This reference already has a review. Check it before starting another review.')
+      :L('تعذّر حفظ القرار. راجع البيانات والاتصال وصلاحية المراجعة.','Could not record the decision. Check the data, connection, and permissions.');
+  }finally{
+    delete form.dataset.busy;
+    buttons.forEach(button=>button.disabled=false);
+  }
 }
-async function adminSuspend(orgId){
-  if(!await confirmBox(L('إيقاف اشتراك المحل ده فورًا؟ هيتقفل عليه على طول.','Suspend this shop now? It will be locked immediately.')))return;
-  try{const {error}=await sb.rpc('suspend_subscription',{p_org:orgId});if(error)throw error;toast(L('تم الإيقاف','Suspended'));views.admin();}
-  catch(e){toast((e&&e.message)||L('فشل الإيقاف','Failed'),'err');}
-}
-async function adminCancel(orgId){
-  if(!await confirmBox(L('إلغاء/حذف اشتراك المحل ده تمامًا؟ المحل هيرجع كأنه بلا اشتراك (مقفول لحد ما تفعّله من جديد).','Cancel this shop\'s subscription entirely? It will revert to no subscription (locked until reactivated).')))return;
-  try{const {error}=await sb.rpc('cancel_subscription',{p_org:orgId});if(error)throw error;toast(L('تم الإلغاء','Canceled'));views.admin();}
-  catch(e){toast((e&&e.message)||L('فشل الإلغاء','Failed'),'err');}
-}
-async function adminSetExpiry(orgId){
-  const v=await promptBox(L('تاريخ الانتهاء الجديد (سنة-شهر-يوم) مثلًا 2026-12-31:','New expiry date (YYYY-MM-DD), e.g. 2026-12-31:'));
-  if(!v)return;
-  const dt=new Date(v+'T23:59:59');
-  if(isNaN(dt.getTime()))return toast(L('تاريخ غير صحيح','Invalid date'),'err');
-  try{const {error}=await sb.rpc('set_subscription_expiry',{p_org:orgId,p_expires:dt.toISOString()});if(error)throw error;toast(L('تم تعديل التاريخ','Date updated'));views.admin();}
-  catch(e){toast((e&&e.message)||L('فشل التعديل','Failed'),'err');}
+async function adminBillingStop(org,status){
+  if(!(IS_ADMIN||SNS_BILLING_REVIEWER)||!await confirmBox(L('تأكيد إيقاف الاشتراك؟ سجل التحويلات هيفضل محفوظ.','Stop this subscription? Transfer history stays available.')))return;
+  try{
+    const {error}=await sb.rpc('sns_billing_stop',{p_org:org,p_status:status});
+    if(error)throw error;
+    toast(L('تم تحديث حالة الاشتراك','Subscription status updated'));views.admin();
+  }catch(e){toast(L('تعذّر تحديث الاشتراك','Could not update the subscription'),'err');}
 }
 
 /* ===== Affiliates (admin only) ===== */
@@ -9567,6 +9590,11 @@ async function startApp(){
   await load();
   // stamp the signed-in account (for the badge + audit log)
   try{if(sb&&sb.auth){const {data:{session}}=await sb.auth.getSession();if(session&&session.user){db.settings.cloudEmail=session.user.email; IS_ADMIN=(session.user.email||'').toLowerCase()==='selemayman923@gmail.com';}}}catch(e){}
+  SNS_BILLING_REVIEWER=false;
+  if(sb&&CURRENT_UID){
+    try{const {data,error}=await sb.rpc('sns_can_review_billing');if(!error)SNS_BILLING_REVIEWER=data===true;}
+    catch(e){console.warn('billing reviewer check',e);}
+  }
   applyLang();applyBrand();applyCustomBrand();renderBranchSel();
   try{ if(typeof fatInitOfflineEnhancements==='function') fatInitOfflineEnhancements(); }catch(e){}
   try{ if(typeof fatInitCustomerUX==='function') fatInitCustomerUX(); }catch(e){}
@@ -13345,7 +13373,7 @@ function csvImportModal(){
   '<div class="modal-f"><button type="button" class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>');
   window._csvMode=isProduct?'products':(isSupplier?'suppliers':'customers');window._csvRows=null;}
 
-const SNS_RELEASE_ID='2026.11.21-r11';
+const SNS_RELEASE_ID='2026.11.21-r12';
 
 function setSyncStatus(state){
   var el=document.getElementById('syncDot');if(!el)return;
@@ -21564,7 +21592,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     { key: 'bank', icon: '🏦', label: 'تحويل بنكي', labelEn: 'Bank transfer',
       value: '', hint: 'رقم الحساب / الآيبان' }
   ];
-  var FAT_PAY_NOTE = 'بعد التحويل املا البيانات تحت وابعتلنا — هنفعّل اشتراكك خلال ساعات العمل.';
+  var FAT_PAY_NOTE = 'بعد التحويل، ابعت رقم العملية الكامل. راجع نتيجة التفعيل من الشاشة دي.';
   /* ══════════════════════════════════════════════════════ */
 
   var R2 = function (n) { return Math.round((+n || 0) * 100) / 100; };
@@ -21591,6 +21619,8 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   };
 
   window.fatPayMethods = function () {
+    if(SNS_AUTH_STAGING)return [{key:'vodafone',icon:'📱',label:'وسيلة تجريبية',labelEn:'Test transfer',
+      value:'SNS-TEST-ONLY',hint:L('مرجع للتجربة فقط','For testing only')}];
     return FAT_PAY_METHODS.filter(function (m) { return String(m.value || '').trim(); });
   };
 
@@ -21691,12 +21721,43 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     window.fatRenewRender();
   };
 
+  async function renderTransferReviews(host){
+    const org=CURRENT_ORG;
+    if(!host||!sb||!org||!CURRENT_ORG_OWNED)return;
+    try{
+      const {data,error}=await sb.rpc('sns_my_transfer_reviews',{p_org:org});
+      if(!host.isConnected||CURRENT_ORG!==org)return;
+      if(error)throw error;
+      host.innerHTML=data?.length?'<ul>'+data.map(row=>
+        '<li><b>'+ (row.decision==='accepted'?L('تم التفعيل','Activated'):L('الإثبات مرفوض','Proof rejected'))+
+        '</b> · <bdi>'+esc(row.reference)+'</bdi> · '+money(Number(row.amount))+
+        (row.expires_at?' · '+L('الانتهاء','Expiry')+' '+esc(new Date(row.expires_at).toLocaleDateString()):'')+'</li>'
+      ).join('')+'</ul>':L('لسه مفيش نتيجة مراجعة تحويل.','No transfer decision yet.');
+    }catch(error){
+      if(host.isConnected&&CURRENT_ORG===org)host.textContent=L('تعذّر تحميل نتائج التحويل. افتح التجديد تاني بعد رجوع الاتصال.','Could not load transfers. Reopen renewal after reconnecting.');
+    }
+  }
+
+  function transferReviewPanel(){
+    return CURRENT_ORG&&CURRENT_ORG_OWNED?'<div class="panel-b pad"><h4>'+
+      L('نتائج مراجعة التحويل','Transfer review results')+'</h4><div data-transfer-reviews role="status">'+
+      L('جارٍ التحميل…','Loading…')+'</div></div>':'';
+  }
+
   function renewalField(id){
     const modal=document.querySelector('#modalBg.open #rnModalBody');
     return modal?modal.querySelector('#'+id):document.getElementById(id);
   }
 
   function openRenewalWhatsApp(message){
+    if(SNS_AUTH_STAGING){
+      const panel=document.getElementById('rnModalBody')||document.getElementById('content');
+      let draft=panel.querySelector('[data-renewal-test-draft]');
+      if(!draft){draft=document.createElement('pre');draft.dataset.renewalTestDraft='1';draft.style.whiteSpace='pre-wrap';panel.appendChild(draft);}
+      draft.textContent=L('مسودة تجريبية','Test draft')+'\\n'+message;
+      draft.scrollIntoView({block:'nearest'});
+      return false;
+    }
     let draft;
     try{draft=window.open('about:blank','_blank');}catch(e){}
     if(!draft){
@@ -21755,8 +21816,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     var g = function (id) { var e = renewalField(id); return e ? String(e.value || '').trim() : ''; };
     var method = g('rn_method'), amount = +g('rn_amount') || 0, ref = g('rn_ref'), date = g('rn_date') || today();
     if (!Number.isFinite(amount)||amount<=0) return toast(L('اكتب المبلغ اللي حوّلته', 'Enter the amount you transferred'), 'err');
-    if (!ref) return toast(L('اكتب رقم العملية أو آخر ٤ أرقام من الرقم اللي حوّلت منه',
-      'Enter the transaction reference or last 4 digits'), 'err');
+    if (ref.replace(/\s/g,'').length<5) return toast(L('اكتب رقم العملية الكامل','Enter the full transaction reference'),'err');
 
     var c = window.fatRenewCalc();
     var st = window.fatSubState();
@@ -21782,7 +21842,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       '───────────────\n' +
       '✅ ' + L('المبلغ المحوّل', 'Amount transferred') + ': *' + money(amount) + '*\n' +
       '🏦 ' + L('الوسيلة', 'Method') + ': ' + mLabel + '\n' +
-      '🔢 ' + L('رقم العملية / آخر ٤ أرقام', 'Reference / last 4') + ': *' + ref + '*\n' +
+      '🔢 ' + L('رقم العملية الكامل', 'Full transaction reference') + ': *' + ref + '*\n' +
       '🗓️ ' + L('تاريخ التحويل', 'Transfer date') + ': ' + date + '\n' +
       '───────────────\n' +
       (Math.abs(amount - c.net) > 0.5
@@ -21814,9 +21874,9 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
 
     var statusCard = '';
     if (st.mode !== 'none') {
-      var col = (st.days === null || st.days < 0) ? 'var(--danger)'
-        : (st.days <= 7 ? '#b7791f' : 'var(--ok)');
-      var txt = (st.days === null) ? L('نشط', 'Active')
+      var inactive = st.mode==='cloud' ? snsSubscriptionInactive(SUB) : st.days<0;
+      var col = inactive ? 'var(--danger)' : (st.days!==null&&st.days<=7 ? '#b7791f' : 'var(--ok)');
+      var txt = inactive ? L('غير نشط', 'Inactive') : (st.days === null) ? L('نشط', 'Active')
         : (st.days < 0 ? L('منتهي', 'Expired')
           : (st.days + ' ' + L('يوم متبقي', 'days left')));
       statusCard =
@@ -21864,8 +21924,8 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
         '<div class="field"><label>' + L('المبلغ اللي حوّلته', 'Amount transferred') + '</label>' +
         '<input id="rn_amount" type="number" inputmode="decimal" step="any" min="0" oninput="this.dataset.touched=1"></div>' +
         '</div><div class="grid2">' +
-        '<div class="field"><label>' + L('رقم العملية / آخر ٤ أرقام', 'Reference / last 4 digits') + '</label>' +
-        '<input id="rn_ref" placeholder="' + L('مثال: 8421', 'e.g. 8421') + '"></div>' +
+        '<div class="field"><label>' + L('رقم العملية الكامل', 'Full transaction reference digits') + '</label>' +
+        '<input id="rn_ref" placeholder="' + L('مثال: TR-48219', 'e.g. TR-48219') + '"></div>' +
         '<div class="field"><label>' + L('تاريخ التحويل', 'Transfer date') + '</label>' +
         '<input id="rn_date" type="date" value="' + today() + '"></div>' +
         '</div>' +
@@ -21898,7 +21958,8 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       '<div class="panel" style="margin-bottom:16px"><div class="panel-h"><h3>💎 ' +
       L('اختار باقتك ومدتها', 'Choose your plan and duration') + '</h3></div>' +
       '<div class="panel-b pad"><div id="rnCalc"></div></div></div>' +
-      payBox + form + hist + '</div>';
+      payBox + form + transferReviewPanel() + hist + '</div>';
+    renderTransferReviews(document.querySelector('#content [data-transfer-reviews]'));
 
     window.fatRenewRender();
   };
@@ -21939,7 +22000,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
           '</select></div>' +
           '<div class="field"><label>' + L('المبلغ المحوّل', 'Amount') + '</label>' +
           '<input id="rn_amount" type="number" inputmode="decimal" step="any" oninput="this.dataset.touched=1"></div></div>' +
-          '<div class="grid2"><div class="field"><label>' + L('رقم العملية / آخر ٤ أرقام', 'Reference') + '</label>' +
+          '<div class="grid2"><div class="field"><label>' + L('رقم العملية الكامل', 'Reference') + '</label>' +
           '<input id="rn_ref"></div>' +
           '<div class="field"><label>' + L('تاريخ التحويل', 'Date') + '</label>' +
           '<input id="rn_date" type="date" value="' + today() + '"></div></div>' +
@@ -21948,7 +22009,8 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
         : '<div class="hint" style="margin-top:12px">' +
           L('كلّمنا على واتساب وهنبعتلك بيانات التحويل.', 'Contact us on WhatsApp for payment details.') +
           '</div><button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:10px" onclick="fatRenewWA()">💬 ' +
-          L('واتساب', 'WhatsApp') + '</button>');
+          L('واتساب', 'WhatsApp') + '</button>') + transferReviewPanel();
+    renderTransferReviews(b.querySelector('[data-transfer-reviews]'));
     window.fatRenewRender();
   };
 

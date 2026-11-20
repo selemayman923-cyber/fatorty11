@@ -27,7 +27,7 @@ async function createAccountingDatabase({ migrate = true } = {}) {
         $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
       create function auth.role() returns text language sql stable as
         $$ select current_setting('role',true) $$;
-      create table public.orgs (id uuid primary key, owner_id uuid not null);
+      create table public.orgs (id uuid primary key, owner_id uuid not null, name text not null default 'Test shop');
       create table public.org_members (
         org_id uuid not null references public.orgs(id), user_id uuid not null,
         role text not null, branch_id text, primary key (org_id,user_id)
@@ -73,7 +73,7 @@ async function createAccountingDatabase({ migrate = true } = {}) {
         await pg.exec(await fs.readFile(path.join(__dirname, '..', 'supabase', filename), 'utf8'));
       }
     }
-    await pg.query('insert into public.orgs values ($1,$2),($3,$4)', [
+    await pg.query('insert into public.orgs (id,owner_id) values ($1,$2),($3,$4)', [
       ids.mainShop, ids.owner, ids.otherShop, ids.otherOwner,
     ]);
     await pg.query(`insert into public.org_members values

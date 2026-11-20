@@ -10,7 +10,8 @@
     "test:reliability": "node tools/test-reliability.js",
     "test:accounting": "node tools/test-accounting-month.js",
     "build:staging": "node tools/build-staging.js",
-    "test:staging": "node tools/test-staging-build.js"
+    "test:staging": "node tools/test-staging-build.js",
+    "test:billing": "node tools/test-manual-billing.js"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.16",
