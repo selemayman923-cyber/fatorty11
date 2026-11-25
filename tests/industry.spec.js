@@ -321,6 +321,42 @@ test('paid trial, owner settings, sale, return and shift close round trip throug
     } finally {
       await device.close();
     }
+    if (process.env.SNS_QA_PREVIOUS_INDEX) {
+      const previousIndex = await fs.readFile(process.env.SNS_QA_PREVIOUS_INDEX, 'utf8');
+      expect(previousIndex).toMatch(/const SNS_RELEASE_ID='2026\.11\.21-r12';/);
+      const persistedTransactions = async () => ({
+        business: (await database.query(
+          "select kind, local_id, data from public.v2_records where org_id=$1 and kind in ('sales','returns','shiftSessions','products') order by kind, local_id", [org],
+        )).rows,
+        reviews: (await database.query(
+          'select * from public.sns_transfer_reviews where org_id=$1 order by method, reference', [org],
+        )).rows,
+        subscription: (await database.query('select * from public.subscriptions where org_id=$1', [org])).rows,
+      });
+      const before = await persistedTransactions();
+      expect(before.reviews).toHaveLength(1);
+      const rollback = await browser.newContext({serviceWorkers:'block'});
+      try {
+        const previousPage = await rollback.newPage();
+        await previousPage.route('**/index.html', route => route.fulfill({
+          contentType:'text/html; charset=utf-8',body:previousIndex,
+        }));
+        await shop.connect(previousPage);
+        await expect(previousPage.locator('#brandName')).toHaveText('صيدلية اختبار الحفظ');
+        expect(await previousPage.evaluate(() => ({
+          sales:db.sales.map(sale=>sale.total),
+          returns:db.returns.map(ret=>ret.total),
+          stock:findProduct('qa-product').qty,
+        }))).toEqual({sales:[50],returns:[50],stock:3});
+        await previousPage.evaluate(async()=>{await loadSubscription({ensure:false});fatRenewModal();});
+        await expect(previousPage.locator('#rnModalBody [data-transfer-reviews]')).toContainText('SNS-FLOW-699');
+        await expect(previousPage.locator('#rnModalBody [data-transfer-reviews]')).toContainText('تم التفعيل');
+        expect(await persistedTransactions()).toEqual(before);
+        console.log('ROLLBACK PASS r13 to r12 HTML, one accepted transfer, sale 50, refund 50, closing cash 100, stock 3; business records and expiry unchanged');
+      } finally {
+        await rollback.close();
+      }
+    }
     expect(shop.errors).toEqual([]);
   } finally {
     await database.close();

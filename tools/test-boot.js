@@ -111,7 +111,7 @@ setTimeout(() => {
     ['v8.7 · المزامنة', 'fatThreeWay'],
     ['v8.8 · تسريع التحميل', 'fatEnsureQRLib'],
     ['v8.9 · رصد الأخطاء', 'fatReportError'],
-    ['v9.0 · تحذير رصيد الفرع', 'fatCartBranchIssues'],
+    ['تحذير رصيد المخزن', 'snsSaleStockShortages'],
     ['v9.0 · تقرير أداء العروض', 'fatPromoStats'],
     ['v9.1 · قفل الشاشة', 'fatLockScreen']
   ];

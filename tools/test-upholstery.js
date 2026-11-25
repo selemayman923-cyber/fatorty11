@@ -241,6 +241,259 @@ for(const entry of monthEntries){
   const sum=entry.lines.reduce((total,line)=>total+Math.round(line.debit*100)-Math.round(line.credit*100),0);
   assert.equal(sum,0,entry.desc);
 }
+// A manager's saved default is applied after the foam line discount.
+ev(()=>{
+  partyForm('customer','customer');
+  db.settings.vat=0;
+});
+input('p_invoiceDiscount','5');
+ev(()=>saveParty('customer','customer'));
+assert.equal(ev(()=>findCustomer('customer').invoiceDiscountPct),5);
+ev(foam=>{go('pos');findProduct(foam).price=6000;posTap(foam);},foam);
+change('up_pick_length_unit','cm');
+input('up_pick_width','120');
+input('up_pick_length','200');
+input('up_pick_height','18');
+input('up_pick_discount','10');
+assert.match(el('up_pick_info').textContent,/2,332\.80/);
+el('up_pick_add').click();
+assert.equal(ev(()=>cart[0].qty),0.432);
+assert.equal(ev(()=>posCalc().total),2332.8);
+ev(foam=>upholsteryPicker(findProduct(foam),cart[0].lid),foam);
+assert.equal(el('up_pick_length').value,'200');
+assert.equal(el('up_pick_discount').value,'10');
+el('up_pick_add').click();
+change('posCustomer','customer');
+assert.equal(ev(()=>posCalc().total),2216.16);
+input('posDisc','0');
+assert.equal(ev(()=>posCalc().total),2332.8);
+input('posDisc','');
+assert.equal(ev(()=>posCalc().total),2216.16);
+await ev(()=>posCheckout());
+assert.equal(ev(()=>db.sales.at(-1).total),2216.16);
+assert.equal(ev(()=>db.sales.at(-1).items[0].lineDiscPct),10);
+assert.equal(ev(()=>db.sales.at(-1).items[0].grossUnit),6000);
+const foamPosting=json(()=>db.sales.at(-1).posting.lines);
+assert.equal(foamPosting.reduce((sum,line)=>sum+Math.round(line.debit*100)-Math.round(line.credit*100),0),0);
+assert.ok(foamPosting.some(line=>line.code==='1100'&&line.debit===2216.16));
+
+// The same foam SKU supports whole pieces and calculated weight against one volume balance.
+ev(foam=>{
+  const product=findProduct(foam);
+  product.qty=2;
+  product.bq={main:1,east:1};
+  go('pos');
+  posTap(foam);
+},foam);
+change('up_pick_mode','piece');
+change('up_pick_length_unit','cm');
+input('up_pick_width','120');
+input('up_pick_length','200');
+input('up_pick_height','18');
+input('up_pick_discount','10');
+input('up_pick_count','3');
+assert.equal(el('up_pick_add').disabled,true);
+assert.match(el('up_pick_info').textContent,/الرئيسي/);
+assert.match(el('up_pick_info').textContent,/الناقص 0.296 م³/);
+assert.match(el('up_pick_info').textContent,/الشرق 1 م³/);
+ev(()=>{window._fatMyBranch='main';upholsteryPreview();});
+assert.doesNotMatch(el('up_pick_info').textContent,/الشرق/);
+ev(()=>{window._fatMyBranch=null;});
+input('up_pick_count','1.5');
+assert.equal(el('up_pick_add').disabled,true);
+input('up_pick_count','2');
+assert.match(el('up_pick_info').textContent,/4,665\.60/);
+el('up_pick_add').click();
+assert.equal(ev(()=>cart[0].qty),0.864);
+await ev(()=>posCheckout());
+const pieceSale=json(()=>db.sales.at(-1));
+assert.equal(pieceSale.total,4665.6);
+assert.equal(pieceSale.items[0].measure.count,2);
+assert.deepEqual(json(()=>snsInvoiceSaleUnit(db.sales.at(-1).items[0])),{amount:2,label:'قطعة'});
+assert.equal(ev(foam=>fatBQOf(findProduct(foam),'main'),foam),0.136);
+assert.equal(ev(foam=>fatBQOf(findProduct(foam),'east'),foam),1);
+
+ev(foam=>{
+ const p=findProduct(foam);
+ p.qty=2;
+ p.bq={main:1,east:1};
+ go('pos');
+ posTap(foam);
+},foam);
+change('up_pick_mode','kg_size');
+change('up_pick_length_unit','cm');
+input('up_pick_width','120');
+input('up_pick_length','200');
+input('up_pick_height','18');
+input('up_pick_count','2');
+input('up_pick_discount','10');
+assert.match(el('up_pick_info').textContent,/21.6 كجم/);
+assert.match(el('up_pick_info').textContent,/1,944\.00/);
+el('up_pick_add').click();
+assert.equal(ev(()=>cart[0].measure.amount),21.6);
+assert.equal(ev(()=>cart[0].qty),0.864);
+await ev(()=>posCheckout());
+assert.equal(ev(()=>db.sales.at(-1).total),1944);
+assert.equal(ev(foam=>fatBQOf(findProduct(foam),'main'),foam),0.136);
+
+// Manual invoices aggregate repeated lines. POS also reports the available warehouses.
+ev(piece=>{
+  const p=findProduct(piece);
+  p.qty=10;
+  p.bq={main:3,east:7};
+  invoiceForm('sale');
+  invLines=[{pid:piece,qty:2,price:50},{pid:piece,qty:3,price:50}];
+  renderInvLines();
+  calcInv();
+},piece);
+assert.equal(el('snsInvoiceStock').hidden,false);
+assert.match(el('snsInvoiceStock').textContent,/المطلوب 5/);
+assert.match(el('snsInvoiceStock').textContent,/المتاح 3/);
+assert.match(el('snsInvoiceStock').textContent,/الناقص 2/);
+assert.match(el('snsInvoiceStock').textContent,/الشرق 7/);
+const saleCount=ev(()=>db.sales.length);
+ev(()=>saveInvoice());
+assert.equal(ev(()=>db.sales.length),saleCount);
+ev(()=>{invLines[1].qty=1;calcInv();});
+assert.equal(el('snsInvoiceStock').hidden,true);
+ev(piece=>{
+  closeModal();
+  go('pos');
+  cart=[{lid:'shortage',pid:piece,qty:5}];
+  renderCart();
+},piece);
+assert.match(el('snsPosStock').textContent,/الشرق 7/);
+await ev(()=>posCheckout());
+assert.equal(ev(()=>db.sales.length),saleCount);
+ev(()=>{cart=[];renderCart();});
+
+// One stock unit per SKU: fixed net-weight cartons and loose weight share kilograms.
+ev(()=>{go('products');productForm();});
+input('f_name','فيبر رولات تجريبي');
+change('f_cat','فيبر رول');
+ev(()=>{document.getElementById('f_byweight').checked=true;toggleWeightUI();});
+input('f_cartonKg','4.5');
+input('f_price','25');
+input('f_qty','20');
+await ev(()=>saveProduct());
+const fibre=ev(()=>db.products.at(-1).id);
+ev(fibre=>{go('pos');posTap(fibre);},fibre);
+input('pickCartons','2');
+input('pickGrams','500');
+ev(()=>pickerConfirm());
+assert.equal(ev(()=>cart[0].qty),9.5);
+assert.equal(ev(()=>posCalc().total),237.5);
+ev(fibre=>openItemPicker(fibre,cart[0].lid),fibre);
+assert.equal(el('pickCartons').value,'2');
+assert.equal(el('pickGrams').value,'500');
+ev(()=>pickerConfirm());
+await ev(()=>posCheckout());
+assert.equal(ev(fibre=>fatBQOf(findProduct(fibre),'main'),fibre),10.5);
+assert.equal(ev(()=>db.sales.at(-1).items[0].cartons),2);
+
+// A roll split between warehouses is counted once in the total, with separate metre balances.
+ev(({roll,otherRoll})=>{
+ const a=findProduct(roll), b=findProduct(otherRoll);
+ a.upholstery.family='قطن المجموعة';
+ b.upholstery.family='قطن المجموعة';
+ a.bq={main:4,east:2};
+ a.qty=6;
+ b.bq={main:0,east:1};
+ b.qty=1;
+ go('branchStock');
+},{roll,otherRoll});
+const rollRows=[...w.document.querySelectorAll('tr[data-sns-roll-stock]')];
+assert.equal(rollRows.length,2);
+const beige=rollRows.find(row=>row.cells[0].textContent.includes('بيج'));
+assert.match(beige.cells[1].textContent,/1 \/ 4/);
+assert.match(beige.cells[2].textContent,/1 \/ 2/);
+assert.match(beige.cells[3].textContent,/1 \/ 6/);
+// Reserve each source warehouse's minimum and allocate its surplus only once.
+ev(piece=>{
+ const p=findProduct(piece);
+ p.qty=14;
+ p.bq={main:2,east:11,store:1};
+ db.branches.push({id:'store',name:'مخزن ثالث'});
+ go('products');
+ productForm(piece);
+ const minimums={main:7,east:6,store:5};
+ for(const input of document.querySelectorAll('[data-sns-warehouse-min]'))input.value=minimums[input.dataset.snsWarehouseMin];
+ saveProduct(piece);
+ go('branchStock');
+},piece);
+assert.deepEqual(json(piece=>snsWarehouseReorder(fatBranchList()).filter(row=>row.p.id===piece).map(row=>({
+ warehouse:row.warehouse,transfers:row.transfers,buy:row.buy,
+})),piece),[
+ {warehouse:'الرئيسي',transfers:[{warehouse:'الشرق',quantity:5}],buy:0},
+ {warehouse:'مخزن ثالث',transfers:[],buy:4},
+]);
+assert.match(el('snsWarehouseReorder').textContent,/الشرق 5/);
+assert.equal(ev(piece=>findProduct(piece).qty,piece),14);
+// Finished bedding can use different pricing units while stock and returns count whole pieces.
+goNewItem();
+const pillow=await create('pillow','مخدة مقاس تجريبي','مخدات',{f_price:150,f_cost:70,f_qty:3});
+const mattress=await create('mattress','مرتبة مقاس تجريبي','مراتب',{f_price:7000,f_cost:4500,f_qty:3});
+function goNewItem(){ev(()=>{db.settings.activeBranch='main';go('products');});}
+assert.deepEqual(json(({pillow,mattress})=>[pillow,mattress].map(id=>findProduct(id).upholstery.priceBasis),{pillow,mattress}),['linear','area']);
+
+ev(pillow=>{go('pos');db.settings.vat=0;posTap(pillow);},pillow);
+assert.equal(el('up_pick_length_unit').value,'cm');
+assert.equal(el('up_pick_width').closest('label').hidden,true);
+input('up_pick_length','120');
+input('up_pick_discount','10');
+assert.match(el('up_pick_info').textContent,/162\.00/);
+input('up_pick_length','60');
+assert.match(el('up_pick_info').textContent,/81\.00/);
+input('up_pick_length','120');
+input('up_pick_count','4');
+assert.equal(el('up_pick_add').disabled,true);
+assert.match(el('up_pick_info').textContent,/الناقص 1 قطعة/);
+input('up_pick_count','2');
+el('up_pick_add').click();
+assert.equal(ev(()=>cart[0].qty),2);
+assert.equal(ev(()=>posCalc().total),324);
+await ev(()=>posCheckout());
+assert.equal(ev(pillow=>fatBQOf(findProduct(pillow),'main'),pillow),1);
+assert.equal(ev(()=>db.sales.at(-1).cost),140);
+assert.equal(ev(()=>db.sales.at(-1).items[0].measure.rate),150);
+ev(()=>returnForm('sale',db.sales.at(-1).id));
+ev(()=>{retLines[0].ret=.5;saveReturn();});
+assert.match(el('toast').textContent,/بعدد قطع صحيح/);
+ev(()=>{retLines[0].ret=1;saveReturn();});
+assert.equal(ev(pillow=>fatBQOf(findProduct(pillow),'main'),pillow),2);
+assert.equal(ev(()=>db.returns.at(-1).total),162);
+
+ev(mattress=>{closeModal();go('pos');posTap(mattress);},mattress);
+input('up_pick_width','120');
+input('up_pick_length','195');
+input('up_pick_discount','10');
+assert.equal(el('up_pick_height').closest('label').hidden,true);
+assert.match(el('up_pick_info').textContent,/14,742\.00/);
+change('up_pick_length_unit','m');
+input('up_pick_length','2');
+assert.match(el('up_pick_info').textContent,/15,120\.00/);
+el('up_pick_add').click();
+assert.equal(ev(()=>cart[0].qty),1);
+assert.equal(ev(()=>posCalc().total),15120);
+await ev(()=>posCheckout());
+assert.equal(ev(mattress=>fatBQOf(findProduct(mattress),'main'),mattress),2);
+assert.equal(ev(()=>db.sales.at(-1).items[0].measure.basis),'area');
+
+ev(mattress=>{go('products');productForm(mattress);},mattress);
+change('up_bedding_basis','volume');
+input('f_price','8000');
+await ev(mattress=>saveProduct(mattress),mattress);
+ev(mattress=>{go('pos');posTap(mattress);},mattress);
+input('up_pick_width','120');
+input('up_pick_length','200');
+input('up_pick_discount','10');
+assert.equal(el('up_pick_add').disabled,true);
+input('up_pick_height','20');
+assert.match(el('up_pick_info').textContent,/3,456\.00/);
+el('up_pick_add').click();
+assert.equal(ev(()=>cart[0].qty),1);
+assert.equal(ev(()=>posCalc().total),3456);
+assert.equal(ev(()=>db.sales.at(-1).total),15120);
 assert.deepEqual(errors,[]);
 console.log('PASS guided setup, first invoice, stock preview, product forms, barcode, yards, foam dimensions and weight, held sales, branch stock, POS cash and credit, returns, closed periods, open-period settlements and partial purchase receipts');
 }finally{dom.window.close();}

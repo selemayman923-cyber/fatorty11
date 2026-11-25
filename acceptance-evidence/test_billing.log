@@ -1,0 +1,6 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> test:billing
+> node tools/test-manual-billing.js
+
+PASS manual transfer approval, rejection, exact amount, owner receipt, duplicate references, renewal, cancellation, expiry and trial history

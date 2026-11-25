@@ -706,6 +706,19 @@ async function verifySubscriptionWriteGate(pg) {
   process.stdout.write('PASS simultaneous purchase documents cannot both claim the same invoice number\n');
 }
 
+async function verifyCommitmentSync(pg) {
+  const row = {commitment:true, active:false, status:'open', kind:'rent', branch:'main', due:'2026-11-15', amount:5000, notice:5};
+  const id = 'warehouse-rent-test';
+  await applyBatch(pg, ids.accountant, ids.mainShop, request([change('recurringExpenses', id, null, row)]));
+  const saved = await databaseRecord(pg, ids.mainShop, 'recurringExpenses', id);
+  assert.equal(saved.data.due, '2026-11-15');
+  assert.equal(saved.data.active, false);
+  await assert.rejects(applyBatch(pg, ids.cashier, ids.mainShop, request([change('recurringExpenses', 'unauthorized-rent', null, row)])));
+  assert.equal(await databaseRecord(pg, ids.mainShop, 'recurringExpenses', 'unauthorized-rent'), undefined);
+  assert.equal(await databaseRecord(pg, ids.otherShop, 'recurringExpenses', id), undefined);
+  process.stdout.write('PASS warehouse reminders sync under accountant permissions, with cashier writes rejected\n');
+}
+
 async function main() {
   await verifySyncMigration();
   const pg = await createAccountingDatabase();
@@ -714,6 +727,7 @@ async function main() {
     await verifyTwoRegisters(pg);
     await verifyPurchaseCostAndOpenings(pg);
     await verifyStockkeeperPurchase(pg);
+    await verifyCommitmentSync(pg);
     await verifySubscriptionWriteGate(pg);
     process.stdout.write('PASS month close, invoice and return reload, cross-period settlements, backup restore, shop isolation, concurrent sale retry, print audit, opening balances, stockkeeper purchase and purchase costing using PostgreSQL\n');
     process.stdout.write(JSON.stringify(balances) + '\n');

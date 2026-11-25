@@ -257,24 +257,23 @@ setTimeout(() => {
       db.settings.activeBranch='b1';
       db.products=[{id:'w1',name:'أسمنت',qty:100,cost:1,bq:{b1:5,b2:95}}];
       cart=[{lid:'l1',pid:'w1',qty:20}];
-      var iss=fatCartBranchIssues();
-      return { count:iss.length, want:iss[0]&&iss[0].want, have:iss[0]&&iss[0].have, total:iss[0]&&iss[0].total };
+      var issues=snsSaleStockShortages(snsSaleStockQuantities(cart),activeBranch());
+      return {count:issues.length, want:issues[0]?.qty, have:issues[0]?.available, message:issues.map(snsStockShortageText).join(' ')};
     })()
   `);
   ok('كشف إن الكمية أكبر من رصيد الفرع', branchWarn && branchWarn.count === 1);
   ok('عرف المطلوب والمتاح', branchWarn && branchWarn.want === 20 && branchWarn.have === 5);
-  ok('وبيقول إن الإجمالي متوفر في فرع تاني', branchWarn && branchWarn.total === 100);
+  ok('عرض اسم المخزن الثاني ورصيده', branchWarn && branchWarn.message.includes('طنطا 95'));
   ok('مفيش تحذير لو الرصيد كفاية', ev(`
-    (function(){ cart=[{lid:'l1',pid:'w1',qty:3}]; return fatCartBranchIssues().length===0; })()
+    (function(){ cart=[{lid:'l1',pid:'w1',qty:3}]; return posStockAvailable(cart); })()
   `) === true);
-  ok('مفيش تحذير لفرع واحد بس', ev(`
+  ok('يمنع حفظ البيع عند نقص الرصيد حتى في وجود مخزن واحد', ev(`
     (function(){
       var keep=db.branches; db.branches=[{id:'b1',name:'وحيد'}];
       cart=[{lid:'l1',pid:'w1',qty:999}];
-      var n=fatCartBranchIssues().length; db.branches=keep; return n===0;
+      var allowed=posStockAvailable(cart); db.branches=keep; return allowed===false;
     })()
   `) === true);
-  ok('المنع مقفول افتراضيًا', ev(`fatPosCfg().block===false && fatPosCfg().warn===true`) === true);
 
   const alerts = ev(`
     (function(){

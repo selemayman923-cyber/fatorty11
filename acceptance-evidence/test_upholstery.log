@@ -1,0 +1,6 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> test:upholstery
+> node tools/test-upholstery.js
+
+PASS guided setup, first invoice, stock preview, product forms, barcode, yards, foam dimensions and weight, held sales, branch stock, POS cash and credit, returns, closed periods, open-period settlements and partial purchase receipts

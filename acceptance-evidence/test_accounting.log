@@ -1,0 +1,11 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> test:accounting
+> node tools/test-accounting-month.js
+
+PASS sync migration rejected duplicates and preserved records, settings and legacy permissions
+PASS staging reconciliation archived all duplicate versions and preserved numbering before sync installation
+PASS suspended or expired subscriptions block new writes and cannot duplicate accepted or retried batches
+PASS simultaneous purchase documents cannot both claim the same invoice number
+PASS month close, invoice and return reload, cross-period settlements, backup restore, shop isolation, concurrent sale retry, print audit, opening balances, stockkeeper purchase and purchase costing using PostgreSQL
+{"cash":470,"bank":140,"customers":40,"suppliers":130,"stock":140,"stockAtBranch":14,"ledgerCash":470,"ledgerBank":140,"ledgerCustomers":40,"ledgerSuppliers":130,"ledgerStock":140,"income":60,"balanceSheet":true,"trialBalance":true}

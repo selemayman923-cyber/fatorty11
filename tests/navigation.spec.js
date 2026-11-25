@@ -1001,3 +1001,57 @@ test('billing reviewer records a verified transfer and the shop owner can read i
   await expect(page.locator('#rnModalBody [data-transfer-reviews]')).toContainText('تم التفعيل');
   expect(errors).toEqual([]);
 });
+
+test('warehouse rent and cheque reminders follow dates without posting cash or ledgers', async ({ page }) => {
+  const errors = await openWorkspace(page);
+  await page.evaluate(() => {
+    db.branches = [{id:'main',name:'المخزن الأساسي'},{id:'home',name:'مخزن البيت'}];
+    db.banks = [{id:'bank',name:'بنك الاختبار'}];
+    db.settings.activeBranch = 'main';
+    go('expenses');
+  });
+  const panel = page.locator('#snsCommitmentPanel');
+  await panel.getByRole('button', { name: '+ إضافة' }).click();
+  const form = page.locator('#modal form');
+  await form.locator('[name="kind"]').selectOption('incoming');
+  await form.locator('[name="bank"]').selectOption('bank');
+  await form.locator('[name="description"]').fill('شيك المورد التجريبي');
+  await form.locator('[name="amount"]').fill('25000');
+  await form.locator('[name="due"]').fill('2026-01-15');
+  await form.getByRole('button', { name: 'حفظ الموعد' }).click();
+  await expect(panel).toContainText('بنك الاختبار');
+  expect(await page.evaluate(() => ['2026-01-09','2026-01-10','2026-01-15','2026-01-16'].map(date=>snsCommitmentAlerts(date).length))).toEqual([0,1,1,1]);
+  const checkRow = panel.getByRole('row').filter({ hasText: 'شيك المورد التجريبي' });
+  await checkRow.getByRole('button', { name: 'تم الإيداع' }).click();
+  await form.getByRole('button', { name: 'تأكيد',exact:true }).click();
+  await expect(checkRow).toContainText('مقدّم للبنك');
+  await checkRow.getByRole('button', { name: 'شيك مرتجع' }).click();
+  await form.getByRole('button', { name: 'تأكيد',exact:true }).click();
+  await expect(checkRow).toContainText('مرتجع — يحتاج متابعة');
+  expect(await page.evaluate(() => snsCommitmentAlerts().length)).toBe(1);
+  await checkRow.getByRole('button', { name: 'تأكيد التسوية' }).click();
+  await form.getByRole('button', { name: 'تأكيد',exact:true }).click();
+  expect(await page.evaluate(() => snsCommitmentAlerts().length)).toBe(0);
+
+  await panel.getByRole('button', { name: '+ إضافة' }).click();
+  await form.locator('[name="description"]').fill('إيجار المخزن الأساسي');
+  await form.locator('[name="amount"]').fill('8000');
+  await form.locator('[name="due"]').fill('2026-01-31');
+  await form.locator('[name="monthly"]').check();
+  await form.getByRole('button', { name: 'حفظ الموعد' }).click();
+  const rentRow = panel.getByRole('row').filter({ hasText: 'إيجار المخزن الأساسي' });
+  for (const due of ['2026-02-28','2026-03-31']) {
+    await rentRow.getByRole('button', { name: 'تأكيد السداد' }).click();
+    await form.getByRole('button', { name: 'تأكيد',exact:true }).click();
+    await expect(rentRow).toContainText(due);
+  }
+  expect(await page.evaluate(() => ({
+    cash:db.cash.length, expenses:db.expenses.length,journal:db.journal.length,
+    autoPosted:recExpProcess(),active:snsCommitments().map(row=>row.active),
+  }))).toEqual({cash:0,expenses:0,journal:0,autoPosted:0,active:[false,false]});
+  await page.evaluate(() => { window._fatMyBranch='home'; views.expenses(); });
+  await expect(panel).not.toContainText('إيجار المخزن الأساسي');
+  await page.evaluate(() => { db.settings.role='cashier'; views.expenses(); });
+  await expect(panel).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
