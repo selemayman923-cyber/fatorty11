@@ -326,6 +326,7 @@ body.pos-pro .pos-grid{grid-template-columns:repeat(auto-fill,minmax(165px,1fr))
 /* ── قائمة اقتراحات البحث المنسدلة ── */
 .search-suggest{display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #E2E8F0;border-radius:12px;box-shadow:0 12px 32px -8px rgba(16,24,40,.18);z-index:50;max-height:340px;overflow-y:auto}
 .search-suggest .ss-item{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;border-bottom:1px solid #F1F5F9;transition:background .1s}
+.search-suggest button.ss-item{width:100%;border:0;border-bottom:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;text-align:start}
 .search-suggest .ss-item:last-child{border-bottom:none}
 .search-suggest .ss-item:hover{background:#F0FAF7}
 .search-suggest .ss-nm{flex:1;font-weight:600;color:#1E293B;font-size:13.5px}
@@ -496,7 +497,7 @@ body.pos-pro .modal .cat-chip.active{background:#0a2c56!important;color:#fff!imp
 .pos-card .pr{color:var(--primary-d);font-weight:800;font-size:15px;letter-spacing:-.3px}
 .pos-card .q{font-size:10.5px;color:var(--muted);margin-top:4px;display:flex;align-items:center;justify-content:center;gap:4px;flex-wrap:wrap}
 .pos-card.out{opacity:.45;pointer-events:none}
-.pos-card.sns-pos-product.out{pointer-events:auto}
+.pos-card:is(.sns-pos-product,.sns-pos-bundle).out{pointer-events:auto}
 .cart{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);position:sticky;top:80px}
 .cart-h{padding:14px 18px;border-bottom:1px solid var(--line);font-family:'Cairo';font-weight:700;display:flex;justify-content:space-between;align-items:center}
 .cart-items{max-height:40vh;overflow-y:auto}
@@ -4085,6 +4086,7 @@ function posRestoreDraft(){try{
 views.pos=()=>{try{if(_activeShift&&_activeShift.openDate&&_activeShift.openDate!==today()){setTimeout(function(){toast(L('⚠️ في شيفت مفتوح من يوم '+_activeShift.openDate+' — اقفله عشان التقارير تبقى مظبوطة','⚠️ Shift open since '+_activeShift.openDate),'err');},600);}}catch(e){}cart=[];posDiscount=0;posDiscountOverride=false;posPromo='';posOrderType='dinein';posDelivery=0;posTable='';posCatFilter='';posPointsUse=null;posWalletUse=null;posWelcome=null;posPriceTier='default';posPage=1;
   document.getElementById('topActions').innerHTML=
     `<button class="btn btn-ghost btn-sm" id="heldBadge" onclick="openHeldList()" style="display:none">⏸️ ${L('معلّقة','Held')} (0)</button>`+
+    `<button type="button" class="btn btn-ghost btn-sm" onclick="snsStockLookup()">${L('استعلام المخزون','Stock lookup')}</button>`+
     `<button class="btn btn-ghost btn-sm" onclick="snsStockHoldList()">${L('حجوزات المخزون','Stock reservations')}</button>`+
     `<button class="btn btn-ghost btn-sm" onclick="shiftCloseModal()">🧾 ${L('تقفيل الوردية','Close shift')}</button>` +
     (upholsteryActive()?`<button class="btn btn-ghost btn-sm" onclick="snsFoamOffcutPicker()">${L('بواقي الإسفنج','Foam offcuts')}</button>`:'');
@@ -4152,7 +4154,6 @@ function posSearchEnter(){
   const codes=snsPosExactCode(products,query);
   const exact=codes.length?codes:products.filter(p=>norm(p.name)===norm(query));
   if(exact.length!==1)return;
-  if(effAvail(exact[0])<=0)return toast(L('غير متاح','Out of stock'),'err');
   posTap(exact[0].id);
   search.value='';
   posPage=1;
@@ -4423,12 +4424,15 @@ function renderSearchSuggest(q){
   var box=document.getElementById('posSearchSuggest');if(!box)return;
   q=(q||'').trim();
   if(!q){box.style.display='none';box.innerHTML='';return;}
-  var list=db.products.filter(function(p){return fatShowsInMenu(p)&&(matches(p.name,q)||matches(p.sku,q)||(p.barcode&&matches(p.barcode,q)));}).slice(0,8);
+  const terms=norm(q).split(/\s+/).filter(Boolean);
+  const list=db.products.filter(p=>fatShowsInMenu(p)&&snsPosMatches(p,q,terms)).slice(0,8);
   if(!list.length){box.style.display='none';box.innerHTML='';return;}
-  box.innerHTML=list.map(function(p){
-    var q2=snsPosStockHere(p);
-    var st=q2<=0?'<span style="color:#DC2626;font-size:10px">'+L('نافذ','Out')+'</span>':(q2<=(+p.min||5)?'<span style="color:#D97706;font-size:10px">'+L('قليل','Low')+' '+_safeNum(q2)+'</span>':'<span style="color:#16A34A;font-size:10px">'+L('متوفر','In')+'</span>');
-    return '<div class="ss-item" onclick="posTap(\''+p.id+'\');document.getElementById(\'posSearch\').value=\'\';hideSearchSuggest();renderPosGrid(\'\');"><span class="ss-nm">'+esc(p.name)+'</span><span class="ss-pr">'+money(effPrice(p))+'</span>'+st+'</div>';
+  box.innerHTML=list.map(p=>{
+    const available=snsPosStockHere(p);
+    const label=available>0?snsStockQuantityLabel(p,available):L('نفد في المخزن الحالي','Out at this warehouse');
+    return `<button type="button" class="ss-item" data-id="${esc(p.id)}"
+      onclick="posTap(this.dataset.id);document.getElementById('posSearch').value='';hideSearchSuggest();renderPosGrid('')"><span class="ss-nm">${esc(p.name)}</span>
+      <span class="ss-pr">${money(effPrice(p))}</span><span class="hint">${esc(label)}</span></button>`;
   }).join('');
   box.style.display='block';
 }
@@ -4445,8 +4449,9 @@ function renderPosGrid(q){
   const list=db.products.filter(p=>(!posCatFilter||snsUpholsteryCategory(p.cat)===posCatFilter)&&fatShowsInMenu(p)&&snsPosMatches(p,q,terms))
     .sort((a,b)=>((_posHot[b.id]||0)-(_posHot[a.id]||0))||snsPosNameSort.compare(String(a.name),String(b.name)));
   const bundleCards=(posCatFilter?[]:(db.bundles||[])).filter(b=>matches(b.name,q)).map(b=>{
-    const avail=b.items.every(it=>{const p=findProduct(it.pid);return p&&p.qty>=it.qty;});
-    return `<div class="pos-card ${avail?'':'out'}" onclick="posTapBundle('${b.id}')" style="border:1.5px solid var(--accent)"><div style="height:48px;display:grid;place-items:center"><div style="font-size:28px">🎁</div></div><div class="nm">${esc(b.name)}</div><div class="pr">${money(b.price)}</div><div class="q"><span class="badge" style="background:var(--accent-soft);color:var(--accent);font-size:10.5px;padding:1px 6px">${L('تجميعة','Bundle')} · ${b.items.length}</span></div></div>`;}).join('');
+    const needed=snsSaleStockQuantities([...cart,...b.items],true);
+    const avail=!!needed&&!snsSaleStockShortages(needed,fatCurBranch(),new Map(),snsStockHoldRef(cart)).length;
+    return `<button type="button" class="pos-card sns-pos-bundle ${avail?'':'out'}" data-bundle="${esc(b.id)}" onclick="posTapBundle(this.dataset.bundle)" style="border:1.5px solid var(--accent)"><div style="height:48px;display:grid;place-items:center"><div style="font-size:28px">🎁</div></div><div class="nm">${esc(b.name)}</div><div class="pr">${money(b.price)}</div><div class="q"><span class="badge" style="background:var(--accent-soft);color:var(--accent);font-size:10.5px;padding:1px 6px">${L('تجميعة','Bundle')} · ${b.items.length}</span></div></button>`;}).join('');
     // ── Pagination حقيقي ──
   var allCards=[];
   if(bundleCards)allCards.push({_bundle:true,html:bundleCards});
@@ -4534,7 +4539,7 @@ function posGoPage(p){var n=parseInt(p)||1;posPage=n;renderPosGrid(document.getE
 function posSetPerPage(n){posPerPage=n||20;posPage=1;renderPosGrid(document.getElementById('posSearch')?document.getElementById('posSearch').value:'');}
 function posTapBundle(id){const b=(db.bundles||[]).find(x=>x.id===id);if(!b)return;
   if(b.items.some(it=>upholsteryKind(findProduct(it.pid))))return upholsteryUsePicker();
-  for(const it of b.items){const p=findProduct(it.pid);if(!p)return toast(L('مكوّن محذوف','Component deleted'),'err');const used=cartUsedQty(it.pid);if(p.qty-used<it.qty)return toast(`${L('غير متاح','Out of stock')}: ${esc(p.name)}`,'err');}
+  if(!posStockAvailable([...cart,...b.items],fatCurBranch(),[],snsStockHoldRef(cart)))return;
   // Prorate the bundle price across components so line totals sum exactly to the bundle price
   const sum=b.items.reduce((a,it)=>{const p=findProduct(it.pid);return a+(p?p.price*it.qty:0);},0);
   const factor=sum>0?b.price/sum:1;
@@ -4552,7 +4557,6 @@ function scanBarcode(el){
   const exact=snsPosExactCode(products,code);
   const search=document.getElementById('posSearch');
   if(exact.length===1){
-    if(effAvail(exact[0])<=0)return toast(L('غير متاح','Out of stock'),'err');
     posTap(exact[0].id);
     el.value='';
     if(search){search.value='';posPage=1;renderPosGrid('');}
@@ -4735,7 +4739,7 @@ if(upholsteryKind(p))return upholsteryPicker(p,editLid);pickProd=p;pickEditLid=e
     </div>`:''}
     <div id="pickInfo" style="text-align:center;padding:12px;border-radius:12px;background:var(--primary-soft)"></div><div id="snsPickerStock" class="hint sns-stock-shortages" aria-live="polite" hidden></div>
   </div>
-  <div class="modal-f"><button class="btn btn-primary" onclick="pickerConfirm()">${editLid?L('تحديث','Update'):L('أضف للسلة','Add to cart')}</button><button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button></div>`);
+  <div class="modal-f"><button class="btn btn-primary" id="snsPickerConfirm" onclick="pickerConfirm()">${editLid?L('تحديث','Update'):L('أضف للسلة','Add to cart')}</button><button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button></div>`);
   pickerRefresh();}
 function pickerCompute(){const p=pickProd;const extra=(pickVar>=0&&p.variants[pickVar])?(+p.variants[pickVar].extra||0):0;
   var baseUnit=(typeof effPrice==='function'?effPrice(p):(+p.price||0));
@@ -4771,13 +4775,18 @@ function pickerCompute(){const p=pickProd;const extra=(pickVar>=0&&p.variants[pi
 function pickerRefresh(){const c=pickerCompute();const el=document.getElementById('pickInfo');if(!el)return;
   const otherLines=cart.filter(line=>line.lid!==pickEditLid);
   const needed=c.qty>0?snsSaleStockQuantities([...otherLines,{pid:c.p.id,qty:c.qty}],true):null;
-  snsRenderStockShortages(document.getElementById('snsPickerStock'),needed?snsSaleStockShortages(needed,fatCurBranch(),new Map(),snsStockHoldRef(cart)):[]);
+  const branch=fatCurBranch(),holdId=snsStockHoldRef(cart);
+  const issues=needed?snsSaleStockShortages(needed,branch,new Map(),holdId):[];
+  snsRenderStockShortages(document.getElementById('snsPickerStock'),issues);
+  document.getElementById('snsPickerConfirm').disabled=!needed||issues.length>0;
+  const remainingBoxes=()=>snsBoxEquivalent(snsWarehouseSellable(c.p,branch,0,holdId)-
+    (needed?.get(c.p)||0),snsCartonBoxes(c.p));
   // re-render variant chips active state
   const vbox=document.getElementById('pickVars');if(vbox&&pickProd.variants)vbox.innerHTML=pickProd.variants.map((v,i)=>`<span class="cat-chip ${i===pickVar?'active':''}" onclick="pickVar=${i};pickerRefresh()">${esc(v.name)}${v.extra?` (+${fmt(v.extra)})`:''}</span>`).join('');
   var discLine=c.discAmt>0?`<div style="font-size:12px;color:#c0392b;font-weight:700">${L('خصم','Disc')}: -${money(c.discAmt)}${c.discType==='pct'?` (${c.discVal}%)`:''}</div>`:'';
   var grossStrike=c.discAmt>0?`<span style="text-decoration:line-through;color:var(--muted);font-size:14px;margin-left:8px">${money(c.grossLine)}</span>`:'';
   if(pickProd.byWeight)el.innerHTML=`<div style="font-size:12px;color:var(--muted)">${money(c.unit)}/${L('كجم','kg')} × ${c.grams>=1000?(c.grams/1000)+L('كجم','kg'):c.grams+L('جم','g')}</div>${discLine}<div style="font-family:Cairo;font-weight:800;font-size:26px;color:var(--primary-d)">${money(c.total)}${grossStrike}</div>`;
-  else el.innerHTML=`<div style="font-size:12px;color:var(--muted)">${money(c.unit)} × ${c.qty}${snsCartonBoxes(c.p)?' '+L('علبة','boxes'):''}</div>${snsCartonBoxes(c.p)&&c.qty>0?`<div data-box-balance>${L('المتبقي في المخزن بعد السلة','Warehouse balance after cart')} · ${snsBoxEquivalent(upholsteryAvailable(c.p)-otherLines.filter(line=>line.pid===c.p.id).reduce((sum,line)=>sum+line.qty,0)-c.qty,snsCartonBoxes(c.p))}</div>`:''}${discLine}<div style="font-family:Cairo;font-weight:800;font-size:26px;color:var(--primary-d)">${money(c.total)}${grossStrike}</div>`;}
+  else el.innerHTML=`<div style="font-size:12px;color:var(--muted)">${money(c.unit)} × ${c.qty}${snsCartonBoxes(c.p)?' '+L('علبة','boxes'):''}</div>${snsCartonBoxes(c.p)&&c.qty>0?`<div data-box-balance>${L('المتبقي في المخزن بعد السلة','Warehouse balance after cart')} · ${remainingBoxes()}</div>`:''}${discLine}<div style="font-family:Cairo;font-weight:800;font-size:26px;color:var(--primary-d)">${money(c.total)}${grossStrike}</div>`;}
 function pickerConfirm(){const c=pickerCompute();const p=pickProd;
   if(c.qty<=0)return toast(p.byWeight?L('أدخل وزنًا','Enter a weight'):L('أدخل كمية','Enter a quantity'),'err');
   if(!posStockAvailable([...cart.filter(line=>line.lid!==pickEditLid),{pid:p.id,qty:c.qty}],fatCurBranch(),[],snsStockHoldRef(cart)))return;
@@ -4797,7 +4806,7 @@ function renderPosSuggest(){
   var inCart={};cart.forEach(function(c){inCart[c.pid]=1;});
   var cats={};cart.forEach(function(c){var p=findProduct(c.pid);if(p&&p.cat)cats[p.cat]=1;});
   var catList=Object.keys(cats);if(!catList.length){box.innerHTML='';return;}
-  var cand=db.products.filter(function(p){return p.cat&&cats[p.cat]&&!inCart[p.id]&&fatShowsInMenu(p)&&effAvail(p)>0;})
+  var cand=db.products.filter(function(p){return p.cat&&cats[p.cat]&&!inCart[p.id]&&fatShowsInMenu(p)&&snsPosStockHere(p)>0;})
     .sort(function(a,b){return (_posHot[b.id]||0)-(_posHot[a.id]||0);}).slice(0,4);
   if(!cand.length){box.innerHTML='';return;}
   box.innerHTML='<div style="padding:8px 12px 2px"><div style="font-size:11px;color:var(--muted);font-weight:700;margin-bottom:6px">💡 '+L('قد يحتاج أيضًا','Frequently added')+'</div>'+
@@ -5077,10 +5086,78 @@ function snsSaleStockShortages(needed,branch,previous=new Map(),reservationId=''
     return qty>available+1e-9?[{product,qty,available,branch}]:[];
   });
 }
+function snsStockQuantityLabel(product,qty){
+  const unit=upholsteryKind(product)?upholsteryUnit(upholsteryKind(product)):product.byWeight?L('كجم','kg'):prodUnit(product)||L('قطعة','pc');
+  return upholsteryQty(product,qty)+' '+unit;
+}
+function snsStockLookup(){
+  if(current!=='pos'||snsViewAccess('pos')!=='open')return;
+  const query=document.getElementById('posSearch')?.value.trim()||'';
+  openModal(`<div class="modal-h"><h3>${L('استعلام المخزون','Stock lookup')}</h3>
+    <button type="button" class="x" aria-label="${L('إغلاق','Close')}" onclick="closeModal()">×</button></div>
+    <div class="modal-b"><label class="field">${L('اسم الصنف أو الكود أو الباركود','Item name, code or barcode')}
+      <input id="snsStockLookupQuery" type="search" autocomplete="off" value="${esc(query)}"
+        oninput="snsStockLookupResults()"></label>
+      <div id="snsStockLookupResults"></div><div id="snsStockLookupBalances" aria-live="polite"></div>
+    </div>`,true);
+  snsStockLookupResults();
+  document.getElementById('snsStockLookupQuery')?.focus();
+}
+function snsStockLookupResults(){
+  const results=document.getElementById('snsStockLookupResults');
+  const balances=document.getElementById('snsStockLookupBalances');
+  if(!results||!balances)return;
+  balances.replaceChildren();
+  const query=document.getElementById('snsStockLookupQuery').value.trim();
+  if(!query){
+    results.innerHTML=`<p class="hint">${L('اكتب اسم الصنف لعرض رصيده حسب المخزن.','Enter an item name to see its stock by warehouse.')}</p>`;
+    return;
+  }
+  const terms=norm(query).split(/\s+/).filter(Boolean);
+  const products=db.products.filter(p=>fatShowsInMenu(p)&&snsPosMatches(p,query,terms))
+    .sort((a,b)=>snsPosNameSort.compare(String(a.name),String(b.name)));
+  results.innerHTML=products.length?`<div style="display:flex;gap:6px;flex-wrap:wrap">${products.slice(0,20).map(p=>
+    `<button type="button" class="btn btn-ghost btn-sm" data-id="${esc(p.id)}" aria-pressed="false"
+      onclick="snsStockLookupItem(this)">${esc(p.name)}${p.sku?' · '+esc(p.sku):''}</button>`).join('')}</div>
+    ${products.length>20?`<p class="hint">${L('أضف جزءًا من الاسم أو الكود لتضييق البحث.','Refine the name or code to narrow the results.')}</p>`:''}`:
+    `<p role="status">${L('مفيش أصناف مطابقة','No matching items')}</p>`;
+  if(products.length===1)snsStockLookupItem(results.querySelector('button'));
+}
+function snsStockLookupItem(button){
+  const target=document.getElementById('snsStockLookupBalances');
+  const product=findProduct(button?.dataset.id);
+  if(!target||!product||current!=='pos'||snsViewAccess('pos')!=='open')return;
+  for(const result of document.querySelectorAll('#snsStockLookupResults button')){
+    result.setAttribute('aria-pressed',String(result===button));
+  }
+  const currentBranch=fatCurBranch();
+  const warehouses=fatBranchList().sort((a,b)=>Number(b.id===currentBranch)-Number(a.id===currentBranch));
+  if(!warehouses.length){
+    target.textContent=L('اختار مخزن لعرض الرصيد.','Select a warehouse to view stock.');
+    return;
+  }
+  const parts=product.components?.length?snsSaleStockQuantities([{pid:product.id,qty:1}],true):null;
+  const quantityFor=(branch,recordedOnly)=>{
+    const stock=item=>recordedOnly?fatBQOf({...item},branch):snsWarehouseSellable(item,branch);
+    if(!product.components?.length)return stock(product);
+    return parts?.size?Math.floor(Math.min(...Array.from(parts,([item,qty])=>stock(item)/qty))+1e-9):0;
+  };
+  const restricted=!!window._fatMyBranch;
+  target.innerHTML=`<h4>${esc(product.name)}</h4><div style="overflow:auto">
+    <table><thead><tr><th>${L('المخزن','Warehouse')}</th><th>${L('الكمية','Quantity')}</th><th>${L('نوع الرصيد','Stock type')}</th></tr></thead><tbody>
+      ${warehouses.map(warehouse=>{
+        const recorded=restricted&&warehouse.id!==currentBranch;
+        return `<tr><th scope="row">${esc(warehouse.name)}${warehouse.id===currentBranch?' · '+L('الحالي','Current'):''}</th>
+          <td class="t-num">${esc(snsStockQuantityLabel(product,quantityFor(warehouse.id,recorded)))}</td>
+          <td>${recorded?L('رصيد مسجّل','Recorded stock'):L('متاح للبيع','Sellable stock')}</td></tr>`;
+      }).join('')}
+    </tbody></table></div>
+    ${restricted&&warehouses.length>1?`<p class="hint">${L('الرصيد المسجّل في مخزن تاني ممكن يشمل بضاعة محجوزة. أكد المتاح مع المخزن قبل ما توعد العميل.',
+      'Recorded stock in another warehouse can include reserved items. Confirm availability before promising it.')}</p>`:''}`;
+}
 function snsStockShortageText(issue){
   const {product,qty,available,branch}=issue;
-  const unit=upholsteryKind(product)?upholsteryUnit(upholsteryKind(product)):product.byWeight?L('كجم','kg'):prodUnit(product)||L('قطعة','pc');
-  const quantity=n=>upholsteryQty(product,n)+' '+unit;
+  const quantity=n=>snsStockQuantityLabel(product,n);
   const branchLabel=db.branches.find(row=>row.id===branch)?.name||L('المخزن الحالي','Current warehouse');
   const lines=[product.name+' — '+branchLabel+'\n'+L('المطلوب','Requested')+' '+quantity(qty)+' · '+
     L('المتاح','Available')+' '+quantity(available)+' · '+L('الناقص','Short by')+' '+quantity(qty-available)];
@@ -14477,7 +14554,8 @@ var COL_ALIASES={
   expiry:['expiry','تاريخ انتهاء الصلاحية','انتهاء','expiry date'],
   phone:['phone','هاتف','الهاتف','mobile','موبايل','جوال'],
   address:['address','عنوان','العنوان'],
-  balance:['balance','رصيد','الرصيد'],
+  balance:['balance','رصيد','الرصيد','opening balance','رصيد افتتاحي','الرصيد الافتتاحي'],
+  warehouse:['warehouse','branch','المخزن','الفرع','اسم المخزن','اسم الفرع'],
   notes:['notes','ملاحظات','note'],
 };
 function resolveCol(headers,field){var aliases=COL_ALIASES[field]||[field];for(var i=0;i<aliases.length;i++){var idx=headers.indexOf(aliases[i]);if(idx>=0)return idx;}return -1;}
@@ -14592,7 +14670,7 @@ function csvPreview(type,text){
   if(!rows.length)return toast(L('الملف فارغ','File is empty'),'err');
   var isProduct=csvIsProduct(type);
   const isSupplier=type==='supplier'||type==='suppliers';
-  var fields=isProduct?['name','sku','price','cost','qty','min','cat','unit','expiry']:
+  var fields=isProduct?['name','sku','price','cost','qty','min','cat','unit','expiry','warehouse']:
     (isSupplier?['name','phone','address']:['name','phone','address','balance']);
   var label=isProduct?L('أصناف','Products'):(isSupplier?L('موردين','Suppliers'):L('عملاء','Customers'));
   // map columns
@@ -14602,6 +14680,7 @@ function csvPreview(type,text){
   if(isProduct){
     const review=snsReviewOpeningStock(rows,colMap,parsed.lineNumbers);
     const branch=activeBranch();
+    window._csvColMap.lineNumbers=parsed.lineNumbers;
     openModal(`<div class="modal-h"><h3>${L('استيراد أصناف ومخزون افتتاحي','Import items and opening stock')}</h3>
       <button type="button" class="x" onclick="closeModal()" aria-label="${L('إغلاق','Close')}">×</button></div>
       <div class="modal-b">${snsOpeningStockPreview(review,branch)}</div>
@@ -14610,6 +14689,13 @@ function csvPreview(type,text){
         <button type="button" class="btn btn-ghost" onclick="csvImportModal()">${L('اختيار ملف تاني','Choose another file')}</button></div>`,true);
     return;
   }
+  colMap.width=h.length;
+  colMap.lineNumbers=parsed.lineNumbers;
+  const review=snsReviewPartyImport(rows,colMap,isSupplier);
+  const openingReview=isSupplier&&isManager()&&resolveCol(h,'balance')>=0
+    ?snsReviewPartyImport(rows,{...colMap,balance:resolveCol(h,'balance')},true,true):null;
+  const issuePreview=review.issues.slice(0,20).map(({line,message})=>
+    `<li>${L('سطر','Row')} ${line} · ${esc(message)}</li>`).join('');
   const supplierBalanceNotice=isSupplier&&resolveCol(h,'balance')>=0
     ? `<p class="hint" role="alert">${L('الملف فيه عمود رصيد. هيتم استيراد بيانات الموردين فقط، والأرصدة الافتتاحية تتسجل بشكل منفصل.','This file contains a balance column. Only supplier details will be imported. Record opening balances separately.')}</p>`
     : '';
@@ -14620,6 +14706,12 @@ function csvPreview(type,text){
   '<div style="background:rgba(10,44,86,.08);border-radius:10px;padding:10px 13px;margin-bottom:12px;font-size:12.5px">'+
     '📊 '+rows.length+' '+L('سطر في الملف','rows in file')+' · '+L('معاينة أول 5','Preview first 5')+'</div>'+
   supplierBalanceNotice+
+  (!isSupplier&&colMap.balance>=0&&review.ready.some(entry=>entry.balance)?
+    `<label class="field">${L('تاريخ الرصيد الافتتاحي','Opening balance date')}
+       <input id="snsCustomerOpeningDate" type="date" max="${today()}" value="${today()}"></label>${snsPartyOpeningTotals(review.ready,false)}`:'')+
+  `<p data-party-import-summary>${L('جاهز للاستيراد','Ready to import')} <b>${review.ready.length}</b> ·
+    ${L('يحتاج مراجعة أو موجود بالفعل','Needs review or already exists')} <b>${review.issues.length}</b></p>`+
+  (issuePreview?`<ul class="hint" style="max-height:150px;overflow:auto">${issuePreview}</ul>`:'')+
   '<div style="overflow-x:auto;margin-bottom:12px"><table><thead><tr>'+
     fields.map(function(f){return '<th style="font-size:11px">'+(COL_ALIASES[f]?COL_ALIASES[f][0]:f)+(colMap[f]<0?' <span style="color:var(--danger)">(غير موجود)</span>':'')+'</th>';}).join('')+
   '</tr></thead><tbody>'+preview+'</tbody></table></div>'+
@@ -14627,16 +14719,101 @@ function csvPreview(type,text){
     (isSupplier?L('الاسم مطلوب، والهاتف والعنوان اختياريان.','Name is required. Phone and address are optional.')
     :L('الاسم مطلوب، والهاتف والعنوان والرصيد اختياريون.','Name is required. Phone, address, and balance are optional.'))+'</div>'+
   '</div>'+
+  (openingReview?.ready.some(entry=>entry.balance)?`<div class="modal-b">
+    <label class="field">${L('تاريخ الرصيد الافتتاحي','Opening balance date')}
+    <input type="date" id="snsSupplierOpeningDate" max="${today()}" value="${today()}"></label>
+    <p class="hint">${L('الأرصدة للموردين الجدد فقط. الموجب مستحق عليك والسالب مقدّم عند المورد.','Opening balances are for new suppliers. Positive is payable and negative is a supplier advance.')}</p>
+    <p class="hint" data-supplier-opening-summary>${L('صفوف صالحة مع الرصيد','Rows eligible with opening balances')} ${openingReview.ready.length} ·
+    ${L('صفوف تحتاج مراجعة','Rows to review')} ${openingReview.issues.length}</p>
+        ${snsPartyOpeningTotals(openingReview.ready,true)}
+    ${openingReview.issues.length?`<ul class="hint" style="max-height:150px;overflow:auto">${openingReview.issues.slice(0,20).map(({line,message})=>`<li>${L('سطر','Row')} ${line} · ${esc(message)}</li>`).join('')}</ul>`:''}
+    <button type="button" class="btn btn-ghost" data-balance-column="${resolveCol(h,'balance')}" onclick="snsImportSupplierOpening(this)">
+      ${L('استيراد الموردين الجدد مع الأرصدة','Import new suppliers with balances')}</button>
+  </div>`:'')+
   '<div class="modal-f">'+
-    '<button class="btn btn-primary" onclick="csvDoImport()">'+
+    '<button class="btn btn-primary" onclick="csvDoImport()" '+(review.ready.length?'':'disabled')+'>'+
       (supplierBalanceNotice?L('استيراد بيانات الموردين فقط','Import supplier details only'):
-      L('استيراد','Import')+' '+rows.length+' '+L('سجل','records'))+'</button>'+
+      L('استيراد','Import')+' '+review.ready.length+' '+L('سجل','records'))+'</button>'+
     '<button class="btn btn-ghost" onclick="closeModal()">'+L('إلغاء','Cancel')+'</button>'+
   '</div>',true);}
+function snsPartyOpeningTotals(entries,isSupplier){
+  let positive=0,negative=0;
+  for(const {balance} of entries){
+    if(balance>0)positive+=balance;
+    else negative-=balance;
+  }
+  return `<dl class="grid2" data-party-opening-totals>
+    <div><dt>${isSupplier?L('مستحق للموردين','Payable to suppliers'):L('مستحق من العملاء','Due from customers')}</dt><dd>${money(r2(positive))}</dd></div>
+    <div><dt>${isSupplier?L('مقدّم عند الموردين','Supplier advances'):L('رصيد لصالح العملاء','Customer credits')}</dt><dd>${money(r2(negative))}</dd></div>
+  </dl>`;
+}
+async function snsImportSupplierOpening(button){
+  if(!isManager()||snsViewAccess('suppliers')!=='open'||button.disabled)return;
+  const input=document.getElementById('snsSupplierOpeningDate'),date=input?.value;
+  if(!date||!input.checkValidity()||date>today())return toast(L('اختار تاريخًا صحيحًا للرصيد الافتتاحي','Choose a valid opening balance date'),'err');
+  if(!snsCanPost(date))return;
+  const rows=window._csvRows,columns={...window._csvColMap,balance:Number(button.dataset.balanceColumn)};
+  if(!rows?.length||!Number.isSafeInteger(columns.balance)||columns.balance<0)return;
+  const org=CURRENT_ORG,user=CURRENT_UID,branch=activeBranch();
+  const review=snsReviewPartyImport(rows,columns,true,true);
+  if(!review.ready.some(entry=>entry.balance))return toast(L('مفيش أرصدة صالحة للموردين الجدد','No eligible opening balances for new suppliers'),'err');
+  button.disabled=true;
+  try{
+    const accepted=await confirmBox(L('تسجيل أرصدة الموردين الجدد بتاريخ','Record new supplier balances on')+' '+date+'؟');
+    if(!accepted||!button.isConnected||!button.closest('#modalBg.open')||org!==CURRENT_ORG||user!==CURRENT_UID||branch!==activeBranch())return;
+    await csvDoImport('suppliers',rows,columns,undefined,date);
+  }finally{
+    if(button.isConnected)button.disabled=false;
+  }
+}
+function snsPartyImportIdentity(name,phone){
+  return JSON.stringify([norm(name).replace(/\s+/g,' '),snsDigits(phone).replace(/[\s()-]/g,'')]);
+}
+async function snsImportRecordIds(kind,keys){
+  const ids=new Map();
+  for(const key of new Set(keys)){
+    const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(kind+'\n'+key));
+    const hash=Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
+    ids.set(key,(kind==='products'?'stock-import-':'party-import-')+hash);
+  }
+  return ids;
+}
+function snsPartyImportIds(type,entries){
+  return snsImportRecordIds(type,entries.map(({name,phone})=>snsPartyImportIdentity(name,phone)));
+}
+function snsReviewPartyImport(rows,columns,isSupplier,withOpening=false){
+  const collection=isSupplier?db.suppliers:db.customers;
+
+  const existing=new Set(collection.map(party=>snsPartyImportIdentity(party.name,party.phone)));
+  const seen=new Set();
+  const ready=[],issues=[];
+  const read=(row,key)=>String(row[columns[key]]??'').trim();
+  for(const [index,row] of rows.entries()){
+    const name=read(row,'name'),phone=read(row,'phone'),address=read(row,'address');
+    const key=snsPartyImportIdentity(name,phone);
+    const raw=snsDigits(read(row,'balance')).replace('٫','.');
+    const readBalance=!isSupplier||withOpening;
+    const balance=readBalance&&raw?Number(raw):0;
+    let message='';
+    if(columns.width&&row.length>columns.width)message=L('راجع الفواصل، السطر فيه أعمدة زيادة','Check delimiters, the row has extra columns');
+    else if(!name)message=L('الاسم ناقص','Name is missing');
+    else if(existing.has(key))message=L('الاسم والهاتف موجودان بالفعل','Name and phone already exist');
+    else if(seen.has(key))message=L('الاسم والهاتف مكرران في الملف','Name and phone are repeated in the file');
+    else if(readBalance&&raw&&(!/^[+-]?(?:\d+(?:\.\d{1,2})?|\.\d{1,2})$/.test(raw)||
+      !Number.isSafeInteger(Math.round(balance*100))))message=L('راجع صيغة الرصيد الافتتاحي','Check the opening balance format');
+    if(message)issues.push({line:columns.lineNumbers?.[index]??index+2,message});
+    else{seen.add(key);ready.push({name,phone,address,balance});}
+  }
+  return {ready,issues};
+}
 function snsReviewOpeningStock(rows,columns,lineNumbers=[]){
   const code=value=>String(value||'').trim().toLowerCase();
   const existing=new Set(db.products.map(item=>code(item.sku)).filter(Boolean));
-  const seen=new Set();
+  const seen=new Map();
+  const active=activeBranch();
+  const warehouses=fatBranchList();
+  const withWarehouse=Number.isInteger(columns.warehouse)&&columns.warehouse>=0;
+  const byWarehouse=new Map();
   const read=(row,key)=>String(row[columns[key]]??'').trim();
   const ready=[],issues=[],totals=new Map();
   for(const [index,row] of rows.entries()){
@@ -14644,11 +14821,18 @@ function snsReviewOpeningStock(rows,columns,lineNumbers=[]){
     const item={};
     for(const field of ['name','sku','cat','unit','expiry'])item[field]=read(row,field);
     const errors=[];
+    const requestedWarehouse=read(row,'warehouse');
+    const matchesWarehouse=requestedWarehouse?warehouses.filter(site=>site.id===requestedWarehouse||norm(site.name)===norm(requestedWarehouse)):[];
+    const warehouse=requestedWarehouse&&matchesWarehouse.length===1?matchesWarehouse[0].id:active;
+    if(requestedWarehouse&&matchesWarehouse.length!==1)
+      errors.push(L('اسم المخزن غير معروف أو مكرر','Warehouse name is unknown or ambiguous'));
+    if(warehouse!==active&&(!isManager()||window._fatMyBranch))
+      errors.push(L('استيراد أكثر من مخزن متاح للمدير','Only an unrestricted manager can import across warehouses'));
+    if(requestedWarehouse&&!item.sku)errors.push(L('اكتب كود الصنف مع اسم المخزن','Provide an item code with the warehouse'));
     if(!item.name)errors.push(L('اسم الصنف ناقص','Item name is missing'));
     const sku=code(item.sku);
     if(sku&&existing.has(sku))errors.push(L('الكود موجود في المخزون','Code already exists in inventory'));
-    else if(sku&&seen.has(sku))errors.push(L('الكود مكرر في الملف','Code is repeated in the file'));
-    if(sku)seen.add(sku);
+
     if(item.unit&&(!/^[\p{L}\p{N}²³ ._/-]{1,30}$/u.test(item.unit)||!/[\p{L}]/u.test(item.unit)))
       errors.push(L('وحدة القياس غير صالحة','Invalid unit of measure'));
 
@@ -14666,37 +14850,58 @@ function snsReviewOpeningStock(rows,columns,lineNumbers=[]){
     }
     if(['قطعه','علبه','كرتونه','لوح','pc','pcs','box','carton','piece'].includes(norm(item.unit))&&!Number.isSafeInteger(item.qty))
       errors.push(L('الوحدة دي تحتاج عدد صحيح في الكمية الافتتاحية','This unit requires a whole opening quantity'));
+    const identity=JSON.stringify([norm(item.name),norm(item.cat),norm(item.unit),item.expiry,item.price,item.cost,item.min]);
+    const previous=sku?seen.get(sku):null;
+    if(previous){
+      if(!withWarehouse||previous.warehouses.has(warehouse))
+        errors.push(L('الكود مكرر في الملف','Code is repeated in the file'));
+      else if(previous.identity!==identity)
+        errors.push(L('نفس الكود فيه بيانات صنف مختلفة بين المخازن','The same code has different item details across warehouses'));
+    }
     if(errors.length){
       issues.push({line,name:item.name,message:errors.join(' · '),warning:false});
       continue;
     }
     if(item.qty&&!item.unit)issues.push({line,name:item.name,message:L('الوحدة فاضية. راجع وحدة الصنف قبل البيع.','Missing unit. Review the item unit before selling.'),warning:true});
     if(!read(row,'qty'))issues.push({line,name:item.name,message:L('الكمية فاضية، هيتضاف برصيد صفر','Blank quantity will import as zero'),warning:true});
-    ready.push({...item,line});
-    if(item.qty)totals.set(item.unit,(totals.get(item.unit)||0)+item.qty);
+    if(sku){
+      if(!previous)seen.set(sku,{identity,warehouses:new Set([warehouse])});
+      else previous.warehouses.add(warehouse);
+    }
+    ready.push({...item,line,warehouse,importKey:sku||'row:'+index});
+    if(item.qty){
+      totals.set(item.unit,(totals.get(item.unit)||0)+item.qty);
+      if(!byWarehouse.has(warehouse))byWarehouse.set(warehouse,new Map());
+      const counts=byWarehouse.get(warehouse);
+      counts.set(item.unit,(counts.get(item.unit)||0)+item.qty);
+    }
   }
-  return {ready,issues,totals,skipped:rows.length-ready.length};
+  return {ready,issues,totals,byWarehouse,withWarehouse,skipped:rows.length-ready.length};
 }
 function snsOpeningStockPreview(review,branch){
-  const totals=[...review.totals].map(([unit,value])=>esc(String(Math.round(value*1e6)/1e6))+' '+esc(unit||L('بدون وحدة محددة','unit unspecified')));
+  const formatCounts=counts=>[...counts].map(([unit,value])=>esc(String(Math.round(value*1e6)/1e6))+' '+esc(unit||L('بدون وحدة محددة','unit unspecified'))).join(' · ');
+  const totals=formatCounts(review.totals);
   const issueRows=review.issues.slice(0,50).map(issue=>`<tr><td>${issue.line}</td><td>${esc(issue.name||'—')}</td>
     <td>${issue.warning?L('تنبيه','Warning'):L('هيتخطى','Skipped')}</td><td>${esc(issue.message)}</td></tr>`).join('');
-  const samples=review.ready.slice(0,8).map(item=>`<tr><td>${item.line}</td><td>${esc(item.name)}</td><td>${esc(item.sku||'—')}</td><td>${esc(String(item.qty))}</td><td>${esc(item.unit||'—')}</td></tr>`).join('');
+  const samples=review.ready.slice(0,8).map(item=>`<tr><td>${item.line}</td><td>${esc(item.name)}</td><td>${esc(item.sku||'—')}</td><td>${esc(String(item.qty))}</td><td>${esc(item.unit||'—')}</td>${review.withWarehouse?`<td>${esc(branchName(item.warehouse))}</td>`:''}</tr>`).join('');
   return `<p class="hint" role="status">${L('الفرع','Branch')} ${esc(branchName(branch))} ·
       ${L('جاهز للاستيراد','Ready to import')} ${review.ready.length} · ${L('هيتخطى','Skipped')} ${review.skipped}</p>
-    <p>${L('إجمالي الكميات الافتتاحية','Opening quantity totals')} · ${totals.join(' · ')||'0'}</p>
-    ${samples?`<div style="overflow:auto"><table><thead><tr><th>${L('سطر','Row')}</th><th>${L('الصنف','Item')}</th><th>${L('الكود','Code')}</th><th>${L('الكمية','Quantity')}</th><th>${L('الوحدة','Unit')}</th></tr></thead><tbody>${samples}</tbody></table></div><p class="hint">${L('المعاينة تعرض أول 8 أصناف جاهزة بحد أقصى','Preview shows up to 8 ready items')}</p>`:''}
+    <p>${L('إجمالي الكميات الافتتاحية','Opening quantity totals')} · ${totals||'0'}</p>
+    ${review.withWarehouse?`<ul data-opening-warehouse-totals>${[...review.byWarehouse].map(([id,counts])=>
+      `<li>${esc(branchName(id))} · ${formatCounts(counts)}</li>`).join('')}</ul>`:''}
+    ${samples?`<div style="overflow:auto"><table><thead><tr><th>${L('سطر','Row')}</th><th>${L('الصنف','Item')}</th><th>${L('الكود','Code')}</th><th>${L('الكمية','Quantity')}</th><th>${L('الوحدة','Unit')}</th>${review.withWarehouse?`<th>${L('المخزن','Warehouse')}</th>`:''}</tr></thead><tbody>${samples}</tbody></table></div><p class="hint">${L('المعاينة تعرض أول 8 أصناف جاهزة بحد أقصى','Preview shows up to 8 ready items')}</p>`:''}
     ${issueRows?`<h4>${L('مراجعة الصفوف','Review rows')}</h4><div style="max-height:220px;overflow:auto" tabindex="0"><table><thead><tr><th>${L('سطر','Row')}</th><th>${L('الصنف','Item')}</th><th>${L('الحالة','Status')}</th><th>${L('التفاصيل','Details')}</th></tr></thead><tbody>${issueRows}</tbody></table></div>
       ${review.issues.length>50?`<p class="hint">${L('عرض أول 50 مشكلة من','Showing first 50 issues out of')} ${review.issues.length}</p>`:''}`:''}`;
 }
 let snsOpeningImportPending=false;
-async function csvDoImport(type,rows,colMap,button){
+async function csvDoImport(type,rows,colMap,button,openingDate){
   if(snsOpeningImportPending||!snsCanPost(today()))return;
   type=type||window._csvType;rows=rows||window._csvRows;colMap=colMap||window._csvColMap;
   if(!rows||!colMap)return toast(L('مفيش بيانات للاستيراد — اختر الملف تاني','No data to import — choose the file again'),'err');
   const isProduct=csvIsProduct(type);
   const isSupplier=type==='suppliers'||type==='supplier';
   let added=0,skipped=0;
+  const imported=[];
   if(isProduct){
     if(snsViewAccess('products')!=='open')return;
     const org=CURRENT_ORG,user=CURRENT_UID,branch=activeBranch();
@@ -14704,6 +14909,7 @@ async function csvDoImport(type,rows,colMap,button){
       return toast(L('المخزن اتغيّر بعد المعاينة. افتح الملف من جديد.','The warehouse changed after preview. Open the file again.'),'err');
     if(!db.branches.some(item=>item.id===branch))return toast(L('اختار فرع للاستيراد','Select a branch for import'),'err');
     const originalLabel=button?.textContent;
+    let stockIds=new Map(),review;
     snsOpeningImportPending=true;
     if(button){
       button.disabled=true;
@@ -14716,6 +14922,18 @@ async function csvDoImport(type,rows,colMap,button){
         return toast(L('الفرع أو شاشة الاستيراد اتغيّرت. راجع الملف من جديد.','The branch or import screen changed. Review the file again.'),'err');
       }
       if(snsViewAccess('products')!=='open'||!snsCanPost(today()))return;
+      review=snsReviewOpeningStock(rows,colMap,colMap.lineNumbers);
+      if(org&&review.ready.some(item=>item.sku)){
+        try{
+          stockIds=await snsImportRecordIds('products',review.ready.filter(item=>item.sku).map(item=>item.importKey));
+        }catch(error){
+          return toast(L('تعذر تجهيز الأصناف للاستيراد. استخدم رابط SNS الآمن.','Could not prepare items for import. Use the secure SNS URL.'),'err');
+        }
+        if(CURRENT_ORG!==org||CURRENT_UID!==user||activeBranch()!==branch||
+          (button&&!button.closest('#modalBg.open'))||snsViewAccess('products')!=='open'||!snsCanPost(today()))return;
+        review=snsReviewOpeningStock(rows,colMap,colMap.lineNumbers);
+      }
+
     }finally{
       snsOpeningImportPending=false;
       if(button){
@@ -14723,35 +14941,83 @@ async function csvDoImport(type,rows,colMap,button){
         button.textContent=originalLabel;
       }
     }
-    const review=snsReviewOpeningStock(rows,colMap);
     if(!review.ready.length)return toast(L('مفيش أصناف صالحة للاستيراد','No valid items to import'),'err');
     const max=maxProducts();
-    if(max>=0&&db.products.length+review.ready.length>max)return toast(L('الاستيراد هيتجاوز حد الأصناف في باقتك','Import exceeds your plan’s item limit'),'err');
+    const skuCount=new Set(review.ready.map(item=>item.importKey)).size;
+    if(max>=0&&db.products.length+skuCount>max)return toast(L('الاستيراد هيتجاوز حد الأصناف في باقتك','Import exceeds your plan’s item limit'),'err');
     const fallbackCategory=(typeof db.categories[0]==='string'?db.categories[0]:db.categories[0]?.name)||'';
-    for(const {line:ignored,qty,...item} of review.ready){
-      const product={...item,id:uid(),qty:0,cat:item.cat||fallbackCategory,notes:'',img:'',byWeight:false,variants:[],components:[],priceHistory:[],location:''};
-      db.products.push(product);
-      if(qty>0)moveStock(product.id,qty,'opening',L('استيراد','Import'));
+    const products=new Map();
+    for(const {line:ignored,qty,warehouse,importKey,...item} of review.ready){
+      let product=products.get(importKey);
+      if(!product){
+        product={...item,id:stockIds.get(importKey)||uid(),qty:0,cat:item.cat||fallbackCategory,notes:'',img:'',byWeight:false,variants:[],components:[],priceHistory:[],location:''};
+        db.products.push(product);
+        products.set(importKey,product);
+        imported.push(product);
+      }
+      if(qty>0){
+        const previousWarehouse=window._fatBranchOverride;
+        try{
+          window._fatBranchOverride=warehouse;
+          moveStock(product.id,qty,'opening',L('استيراد','Import'));
+        }finally{window._fatBranchOverride=previousWarehouse;}
+      }
     }
-    added=review.ready.length;
+    added=products.size;
     skipped=review.skipped;
     window._csvRows=null;
   }else{
-    for(const row of rows){
-      const name=(colMap.name>=0?row[colMap.name]||'':'').trim();
-      const phone=(colMap.phone>=0?row[colMap.phone]||'':'').trim();
-      const collection=isSupplier?db.suppliers:db.customers;
-      if(!name||collection.some(c=>c.name===name&&(c.phone||phone)===phone)){skipped++;continue;}
-      // Bulk supplier import must not silently post historical debts.
-      const party={id:uid(),name,phone,address:(colMap.address>=0?row[colMap.address]||'':'').trim(),balance:isSupplier?0:(+(colMap.balance>=0?row[colMap.balance]:0)||0)};
-      if(!isSupplier){Object.assign(party,{points:0,creditLimit:0,tier:'',bday:'',firstVisit:today()});snsMarkOpeningParty(party);}
-      collection.push(party);
-      added++;
+    const collection=isSupplier?db.suppliers:db.customers;
+    if(snsViewAccess(isSupplier?'suppliers':'customers')!=='open')return;
+    if(openingDate&&(!isSupplier||!isManager()||!/^\d{4}-\d{2}-\d{2}$/.test(openingDate)||openingDate>today()||!snsCanPost(openingDate)))return;
+    const customerDate=!isSupplier?document.getElementById('snsCustomerOpeningDate'):null;
+    if(customerDate&&(!customerDate.value||!customerDate.checkValidity()||customerDate.value>today()))
+      return toast(L('اختار تاريخًا صحيحًا للرصيد الافتتاحي','Choose a valid opening balance date'),'err');
+    if(customerDate&&!snsCanPost(customerDate.value))return;
+    const datedOpening=openingDate||customerDate?.value;
+    let review=snsReviewPartyImport(rows,colMap,isSupplier,!!openingDate);
+    let importIds=new Map();
+    if(CURRENT_ORG&&review.ready.length){
+      const org=CURRENT_ORG,user=CURRENT_UID,branch=activeBranch();
+      snsOpeningImportPending=true;
+      try{
+        importIds=await snsPartyImportIds(isSupplier?'suppliers':'customers',review.ready);
+        if(org!==CURRENT_ORG||user!==CURRENT_UID||branch!==activeBranch()||
+          snsViewAccess(isSupplier?'suppliers':'customers')!=='open'||(openingDate&&!isManager())||
+          (datedOpening&&!snsCanPost(datedOpening))||
+          window._csvRows!==rows||!document.getElementById('modalBg').classList.contains('open'))return;
+        review=snsReviewPartyImport(rows,colMap,isSupplier,!!openingDate);
+      }catch(error){
+        return toast(L('تعذر تجهيز الملف للاستيراد. استخدم رابط SNS الآمن.','Could not prepare the import. Use the secure SNS URL.'),'err');
+      }finally{
+        snsOpeningImportPending=false;
+      }
     }
+    if(!review.ready.length)return toast(L('مفيش سجلات صالحة للاستيراد','No valid records to import'),'err');
+    for(const entry of review.ready){
+      const identity=snsPartyImportIdentity(entry.name,entry.phone);
+      const party={id:importIds.get(identity)||uid(),...entry};
+      if(!isSupplier)Object.assign(party,{points:0,creditLimit:0,tier:'',bday:'',firstVisit:today()});
+      if(!isSupplier||openingDate)snsMarkOpeningParty(party);
+      if(party.openingDate&&(openingDate||customerDate))party.openingDate=openingDate||customerDate.value;
+      collection.push(party);
+      imported.push(party);
+    }
+    added=review.ready.length;
+    skipped=review.issues.length;
+    window._csvRows=null;
   }
   logAudit(L('استيراد CSV','CSV import'),added+' '+L('سجل','records')+' ('+type+')');
-  save();closeModal();isProduct?views.products():(isSupplier?views.suppliers():views.customers());
-  toast('✅ '+L('تم استيراد','Imported')+' '+added+' '+L('سجل','records')+(skipped?' · '+L('صفوف اتخطت','rows skipped')+': '+skipped:''));
+  const org=CURRENT_ORG,user=CURRENT_UID;
+  const target=isProduct?'products':isSupplier?'suppliers':'customers';
+  closeModal();
+  await save();
+  if(org!==CURRENT_ORG||user!==CURRENT_UID)return;
+  if(current===target)views[target]();
+  if(org&&fatGetMode()!=='offline'&&V2_CONFLICT_ORG===org)return;
+  const synced=!org||fatGetMode()==='offline'||imported.every(row=>V2_SNAP[target]?.[row.id]===snapStr(row));
+  const message=synced?L('تم استيراد','Imported'):L('في انتظار تأكيد المزامنة للاستيراد','Import awaiting sync confirmation');
+  toast(message+' '+added+' '+L('سجل','records')+(skipped?' · '+L('صفوف اتخطت','rows skipped')+': '+skipped:''));
 }
 /* template download */
 
@@ -14780,14 +15046,14 @@ function csvImportModal(){
   :
     '<div style="font-size:12.5px;color:var(--muted);background:var(--bg);border-radius:9px;padding:10px;margin-bottom:12px">'+
       L('الأعمدة المطلوبة','Required columns')+': <b>name</b><br>'+
-      L('اختيارية','Optional')+': sku, price, cost, qty, min, cat, unit, expiry</div>')+
+      L('اختيارية','Optional')+': sku, price, cost, qty, min, cat, unit, expiry, warehouse</div>')+
   '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">💡 '+L('السطر الأول يجب أن يكون رؤوس الأعمدة (header row)','First row must be column headers')+'</div>'+
   '<input type="file" accept="'+(isProduct?'.xlsx,':'')+'.csv,.txt,.tsv" aria-label="'+L('ملف CSV','CSV file')+'" id="csvFile" onchange="csvFileChosen(this)" style="margin-bottom:10px">'+
   '</div>'+
   '<div class="modal-f"><button type="button" class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>');
   window._csvMode=isProduct?'products':(isSupplier?'suppliers':'customers');window._csvRows=null;}
 
-const SNS_RELEASE_ID='2026.11.25-r25';
+const SNS_RELEASE_ID='2026.11.25-r27';
 
 function setSyncStatus(state){
   var el=document.getElementById('syncDot');if(!el)return;
@@ -29096,7 +29362,8 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       { key: 'cat', label: 'التصنيف', labelEn: 'Category', names: COL_ALIASES.cat },
       { key: 'unit', label: 'الوحدة', labelEn: 'Unit', names: COL_ALIASES.unit },
       { key: 'min', label: 'الحد الأدنى', labelEn: 'Minimum', names: COL_ALIASES.min },
-      { key: 'expiry', label: 'الصلاحية', labelEn: 'Expiry', names: COL_ALIASES.expiry }
+      { key: 'expiry', label: 'الصلاحية', labelEn: 'Expiry', names: COL_ALIASES.expiry },
+      { key: 'warehouse', label: 'المخزن', labelEn: 'Warehouse', names: COL_ALIASES.warehouse }
     ],
     customers: [
       { key: 'name', label: 'الاسم', labelEn: 'Name', required: true, names: ['name', 'الاسم', 'customer', 'العميل'] },
@@ -29223,47 +29490,10 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     }
 
     if(st.kind==='products')return csvDoImport('products',st.rows,st.map);
-    var made = 0, skipped = 0, dupes = 0;
-    var existingKey = {};
-    for(const customer of db.customers){
-      const key=String(customer.phone||customer.name||'').trim().toLowerCase();
-      if(key)existingKey[key]=1;
-    }
-
-    st.rows.forEach(function (r) {
-      var rec = {};
-      fields.forEach(function (f) {
-        var idx = st.map[f.key];
-        var v = (idx > -1 && idx < r.length) ? String(r[idx] || '').trim() : '';
-        if (f.num) v = +String(v).replace(/[^\d.\-]/g, '') || 0;
-        rec[f.key] = v;
-      });
-      if (!rec.name) { skipped++; return; }
-
-      var key = (rec.phone || rec.name).toLowerCase();
-      if (key && existingKey[key]) { dupes++; return; }
-      if (key) existingKey[key] = 1;
-
-      rec.id = (typeof uid === 'function' ? uid() : String(Date.now()) + Math.random());
-      const party={id:rec.id,name:rec.name,phone:rec.phone||'',address:rec.address||'',balance:r2(rec.balance)};
-      snsMarkOpeningParty(party);
-      db.customers.push(party);
-      made++;
-    });
-
-    try {
-      logAudit(L('استيراد بيانات', 'Data import'),
-        (st.kind === 'products' ? L('أصناف', 'Products') : L('عملاء', 'Customers')) + ' — ' + made);
-    } catch (e) {}
-    save(); closeModal();
-    toast('✅ ' + L('اتستوردت', 'Imported') + ' ' + made +
-      (dupes ? ' · ' + dupes + ' ' + L('مكرر اتجاهل', 'duplicates skipped') : '') +
-      (skipped ? ' · ' + skipped + ' ' + L('صف ناقص اتجاهل', 'incomplete rows skipped') : ''));
-    window._impState = null;
-    try {
-      if (st.kind === 'products' && current === 'products') views.products();
-      if (st.kind === 'customers' && current === 'customers') views.customers();
-    } catch (e) {}
+    const headers=fields.map(field=>field.key);
+    const rows=st.rows.map(row=>headers.map(key=>row[st.map[key]]??''));
+    window._impState=null;
+    return csvPreview('customers',{headers,rows,lineNumbers:st.lineNumbers});
   };
 
   /* ══════════════════════════════════════════
