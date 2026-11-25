@@ -1055,3 +1055,97 @@ test('warehouse rent and cheque reminders follow dates without posting cash or l
   await expect(panel).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test('cutting jobs copy dimensions from an invoice and track delivery without financial side effects', async ({ page }) => {
+  const errors = await openWorkspace(page);
+  await page.evaluate(() => {
+    const branch=activeBranch();
+    const sale={id:'finished-cut-fixture',no:91,date:today(),branch,customerName:'عميل القص',total:200,paidAmount:50,dueAmount:150,
+      items:[{pid:'cloth',name:'إسفنج 120 × 200 × 18 سم',qty:.864,price:200/.864,note:'اقطع بالتساوي',
+        measure:{mode:'piece',count:2,width:120,length:2,height:18,lengthInputUnit:'cm'}},
+      {pid:'cloth',name:'إكسسوار جاهز',qty:1,price:20}]};
+    db.sales=[sale];
+    viewInvoice('sale',sale.id);
+  });
+  const modal = page.locator('#modal');
+  await modal.getByRole('button', { name:'أمر قص وتجهيز', exact:true }).click();
+  await expect(modal.getByRole('checkbox')).toHaveCount(1);
+  await modal.getByRole('textbox', { name:'تعليمات القص أو التسليم' }).fill('التواصل قبل التسليم');
+  await modal.getByRole('button', { name:'حفظ أمر القص', exact:true }).click();
+  await expect(modal).toContainText('بانتظار القص');
+  await expect(modal).toContainText('120 × 200 × 18');
+  await expect(modal).not.toContainText('إكسسوار جاهز');
+  expect(await page.evaluate(() => db.serviceOrders.map(row=>[row.items[0].count,row.status]))).toEqual([[2,'received']]);
+
+  await page.evaluate(() => viewInvoice('sale','finished-cut-fixture'));
+  await modal.getByRole('button', { name:'عرض أمر القص' }).click();
+  await modal.getByRole('button', { name:'تعديل الموعد' }).click();
+  const due=await page.evaluate(() => snsCommitmentDate(today(),2));
+  await modal.locator('[name="due"]').fill(due);
+  await modal.getByRole('button', { name:'حفظ الموعد' }).click();
+  await expect(modal).toContainText(due);
+  await page.evaluate(() => {
+    window.open=()=>({document:{write(html){window.printedCut=html;},close(){}},focus(){},print(){}});
+  });
+  await modal.getByRole('button', { name:'طباعة ورقة القص' }).click();
+  const print=await page.evaluate(() => window.printedCut);
+  expect(print).toContain('120 × 200 × 18');
+  expect(print).not.toContain('150');
+  expect(print).toContain('اقطع بالتساوي');
+
+  await page.evaluate(() => {
+    db.returns.push({type:'sale',refId:'finished-cut-fixture'});
+    snsCutDetail('cut-finished-cut-fixture');
+  });
+  await expect(modal.getByRole('alert')).toContainText('فيه مرتجع');
+  await expect(modal.getByRole('button', { name:'طباعة ورقة القص' })).toHaveCount(0);
+  await expect(modal.getByRole('button', { name:'جاري التجهيز', exact:true })).toHaveCount(0);
+  await page.evaluate(() => {
+    db.returns=[];
+    snsCutDetail('cut-finished-cut-fixture');
+  });
+  await modal.getByRole('button', { name:'جاري التجهيز', exact:true }).click();
+  await modal.getByRole('button', { name:'جاهز للتسليم', exact:true }).click();
+  expect(await page.evaluate(() => snsCutAlerts().length)).toBe(1);
+  await modal.getByRole('button', { name:'تم التسليم', exact:true }).click();
+  await expect(modal).toContainText('تم التسليم');
+  await modal.getByRole('button', { name:'قائمة أوامر القص' }).click();
+  await page.getByRole('combobox', { name:'حالة أمر القص' }).selectOption('delivered');
+  await expect(page.locator('#content')).toContainText('عميل القص');
+  expect(await page.evaluate(() => ({
+    orders:db.serviceOrders.length,sales:db.sales.length,cash:db.cash.length,stock:db.stockMoves.length,qty:findProduct('cloth').qty,
+  }))).toEqual({orders:1,sales:1,cash:0,stock:0,qty:10});
+  await page.evaluate(() => { window._fatMyBranch='another-warehouse';views.cutJobs(); });
+  await expect(page.locator('#content')).not.toContainText('عميل القص');
+  expect(errors).toEqual([]);
+});
+
+test('upholstery shows one filter per category and opens the cashier carton and box picker', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const errors = await openWorkspace(page);
+  await page.evaluate(() => {
+    const branch=activeBranch();
+    db.products.push(
+      {id:'fixture-roll',name:'رول فيبر تجريبي',cat:'فيبر رول',qty:2,min:0,price:30,cost:20},
+      {id:'fixture-loose',name:'فيبر سايب تجريبي',cat:'فيبر سايب',qty:5,min:0,price:30,cost:20},
+      {id:'fixture-foam',name:'إسفنج تجريبي',cat:'الاسفنج',qty:5,min:0,price:30,cost:20},
+      {id:'fixture-boxes',name:'علب مسامير تجريبية',cat:'مستلزمات تنجيد',boxStock:true,packSize:12,qty:60,min:0,price:10,cost:5,bq:{[branch]:60}}
+    );
+    _rebuildProdIdx();go('products');
+  });
+  const filters=page.locator('.sns-stock-filters');
+  await expect(filters.getByRole('button',{name:'إسفنج',exact:true})).toHaveCount(1);
+  await expect(filters.getByRole('button',{name:'أقمشة',exact:true})).toHaveCount(1);
+  await expect(filters.getByRole('button',{name:'الأتواب',exact:true})).toHaveCount(0);
+  await filters.getByRole('button',{name:'فيبر',exact:true}).click();
+  await expect(page.locator('#prodTable')).toContainText('رول فيبر تجريبي');
+  await expect(page.locator('#prodTable')).toContainText('فيبر سايب تجريبي');
+  await page.evaluate(() => {go('pos');posTap('fixture-boxes');});
+  await page.locator('#pickCartons').fill('1');
+  await page.locator('#pickQty').fill('4');
+  await expect(page.locator('#pickInfo')).toContainText('16 علبة');
+  await expect(page.locator('[data-box-balance]')).toContainText('3 كرتونة + 8 علبة');
+  await page.getByRole('button',{name:'أضف للسلة',exact:true}).click();
+  expect(await page.evaluate(() => cart[0].qty)).toBe(16);
+  expect(errors).toEqual([]);
+});

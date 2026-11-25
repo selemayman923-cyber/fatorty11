@@ -719,6 +719,24 @@ async function verifyCommitmentSync(pg) {
   process.stdout.write('PASS warehouse reminders sync under accountant permissions, with cashier writes rejected\n');
 }
 
+async function verifyCutJobSync(pg) {
+  const id='cut-fixture-invoice';
+  const job={type:'upholsteryCut',invoiceId:'fixture-invoice',branch:'main',status:'received',due:'2026-11-28'};
+  const create=()=>request([change('serviceOrders',id,null,job)]);
+  await applyBatch(pg,ids.cashier,ids.mainShop,create());
+  const saved=await databaseRecord(pg,ids.mainShop,'serviceOrders',id);
+  assert.equal(saved.data.status,'received');
+  await assert.rejects(applyBatch(pg,ids.secondCashier,ids.mainShop,create()), /SNS_SYNC_CONFLICT/);
+  await assert.rejects(applyBatch(pg,ids.cashier,ids.mainShop,request([
+    change('serviceOrders','cut-forbidden-branch',null,{...job,branch:'different'})
+  ])), /SNS_SYNC_FORBIDDEN/);
+  await applyBatch(pg,ids.cashier,ids.mainShop,request([
+    change('serviceOrders',id,saved.data,{...job,status:'working'})
+  ]));
+  assert.equal((await databaseRecord(pg,ids.mainShop,'serviceOrders',id)).data.status,'working');
+  process.stdout.write('PASS cutting job sync, duplicate protection and branch write permissions\n');
+}
+
 async function main() {
   await verifySyncMigration();
   const pg = await createAccountingDatabase();
@@ -728,6 +746,7 @@ async function main() {
     await verifyPurchaseCostAndOpenings(pg);
     await verifyStockkeeperPurchase(pg);
     await verifyCommitmentSync(pg);
+    await verifyCutJobSync(pg);
     await verifySubscriptionWriteGate(pg);
     process.stdout.write('PASS month close, invoice and return reload, cross-period settlements, backup restore, shop isolation, concurrent sale retry, print audit, opening balances, stockkeeper purchase and purchase costing using PostgreSQL\n');
     process.stdout.write(JSON.stringify(balances) + '\n');

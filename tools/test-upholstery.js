@@ -370,7 +370,7 @@ ev(()=>{cart=[];renderCart();});
 // One stock unit per SKU: fixed net-weight cartons and loose weight share kilograms.
 ev(()=>{go('products');productForm();});
 input('f_name','فيبر رولات تجريبي');
-change('f_cat','فيبر رول');
+change('f_cat','فيبر');
 ev(()=>{document.getElementById('f_byweight').checked=true;toggleWeightUI();});
 input('f_cartonKg','4.5');
 input('f_price','25');
@@ -494,6 +494,74 @@ el('up_pick_add').click();
 assert.equal(ev(()=>cart[0].qty),1);
 assert.equal(ev(()=>posCalc().total),3456);
 assert.equal(ev(()=>db.sales.at(-1).total),15120);
+// Historical categories are unified without changing stock or IDs.
+ev(()=>{
+ db.products.push(
+  {id:'old-roll',name:'رول فيبر تجريبي',cat:'فيبر رول',qty:10,unit:'رول'},
+  {id:'old-loose',name:'فيبر سايب تجريبي',cat:'فيبر سايب',qty:7,unit:'كجم'},
+  {id:'old-boxes',name:'علب مسامير',cat:'الاكسسوارات',qty:60,bq:{main:60},unit:'قطعة',cost:5,price:10,min:0},
+  {id:'old-sheet',name:'لوح إسفنج قديم',cat:'الاسفنج',qty:3,bq:{main:3},unit:'لوح',cost:100,price:200,min:0}
+ );
+ db.categories.push({id:'duplicate-foam',name:'الأسفنج'},{id:'old-fabric-cat',name:'الأتواب'});
+ _rebuildProdIdx();
+ go('products');
+ window.confirmBox=async()=>true;
+});
+assert.equal(ev(()=>getAllCats().filter(c=>c==='إسفنج').length),1);
+assert.equal(ev(()=>getAllCats().filter(c=>c.includes('فيبر')).length),1);
+await ev(()=>snsUpholsteryCategoryCleanup());
+assert.deepEqual(json(()=>['old-roll','old-loose','old-boxes','old-sheet'].map(id=>[findProduct(id).cat,findProduct(id).qty])),
+ [['فيبر',10],['فيبر',7],['مستلزمات تنجيد',60],['إسفنج',3]]);
+assert.equal(ev(()=>db.products.some(p=>p.cat==='إكسسوارات')),false);
+assert.ok(ev(()=>getAllCats().includes('إكسسوارات')));
+assert.equal(ev(()=>snsUpholsteryCategoryCleanupCount()),0);
+
+// Five cartons of twelve: sell four boxes, buy two cartons, then return two boxes.
+ev(()=>productForm('old-boxes'));
+input('f_boxesPerCarton','12');
+await ev(()=>saveProduct('old-boxes'));
+assert.equal(ev(()=>findProduct('old-boxes').qty),60);
+ev(()=>{go('pos');cart=[];renderCart();posTap('old-boxes');});
+input('pickQty','4');
+assert.match(el('pickInfo').textContent,/4 كرتونة \+ 8 علبة/);
+ev(()=>pickerConfirm());
+assert.equal(ev(()=>cart[0].qty),4);
+await ev(()=>posCheckout());
+const boxInvoice=ev(()=>db.sales.at(-1).id);
+assert.equal(ev(()=>findProduct('old-boxes').qty),56);
+assert.equal(ev(()=>db.sales.at(-1).items[0].boxStock),true);
+ev(id=>{returnForm('sale',id);retLines[0].ret=2;saveReturn();},boxInvoice);
+assert.equal(ev(()=>findProduct('old-boxes').qty),58);
+ev(()=>{
+ invoiceForm('purchase',null,'supplier');
+ setLineProduct(0,'old-boxes');
+ window.__cartonAnswers=['2','125'];
+ window.promptBox=async()=>window.__cartonAnswers.shift();
+});
+assert.match(el('invBody').textContent,/إدخال بالكراتين/);
+await ev(()=>snsBoxesPurchase(0));
+assert.equal(ev(()=>invLines[0].qty),24);
+assert.equal(ev(()=>r2(invLines[0].qty*invLines[0].price)),250);
+await ev(()=>saveInvoice());
+assert.equal(ev(()=>findProduct('old-boxes').qty),82);
+
+// An imported foam sheet opts into a dedicated cubic-metre tariff; quantity and cost remain per sheet.
+ev(()=>{closeModal();go('products');productForm('old-sheet');});
+assert.equal(el('up_foamPiece').hidden,false);
+input('up_pieceVolumeRate','6000');
+await ev(()=>saveProduct('old-sheet'));
+assert.deepEqual(json(()=>[findProduct('old-sheet').qty,findProduct('old-sheet').price,
+ findProduct('old-sheet').upholstery.kind]),[3,200,'foamPiece']);
+ev(()=>{go('pos');cart=[];renderCart();posTap('old-sheet');});
+input('up_pick_width','120');
+input('up_pick_length','200');
+input('up_pick_height','18');
+input('up_pick_discount','10');
+assert.match(el('up_pick_info').textContent,/2,332\.80/);
+el('up_pick_add').click();
+await ev(()=>posCheckout());
+assert.equal(ev(()=>db.sales.at(-1).total),2332.8);
+assert.equal(ev(()=>fatBQOf(findProduct('old-sheet'),'main')),2);
 assert.deepEqual(errors,[]);
 console.log('PASS guided setup, first invoice, stock preview, product forms, barcode, yards, foam dimensions and weight, held sales, branch stock, POS cash and credit, returns, closed periods, open-period settlements and partial purchase receipts');
 }finally{dom.window.close();}
