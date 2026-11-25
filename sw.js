@@ -1,5 +1,5 @@
 /* SNS service worker. Prefer revalidated network assets and keep an offline copy. */
-const CACHE = 'sns-production-audit-v19';
+const CACHE = 'sns-production-audit-v25';
 const ASSETS = [
   '/',
   '/index.html',
