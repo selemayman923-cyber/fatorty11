@@ -1544,6 +1544,7 @@ body.pos-pro .pos>.cart>#cartItems{
 @media(max-width:700px){body .pos>.cart,body.pos-pro .pos>.cart{max-height:none!important;height:auto!important;overflow-y:visible!important}}
 
 </style>
+<style>#snsPBApply[hidden],#snsPBReport[hidden]{display:none}</style>
 </head>
 <body>
 <div class="app">
@@ -1942,7 +1943,7 @@ const DATA_TABLE='user_data';           // per-account row, protected by RLS (le
 const V2_RECORDS='v2_records';          // per-record rows (v2 storage)
 const V2_SETTINGS='v2_settings';        // single settings row per account (v2)
 // collections stored as individual records in v2_records (keyed by `kind`)
-const V2_KINDS=['products','categories','employees','purchaseOrders','targets','customers','suppliers','sales','purchases','returns','quotes','expenses','cash','stockMoves','branches','shifts','heldSales','editLog','banks','recurring','bundles','audit','users','promoters','memberships','serviceOrders','waste','attendance','reservations','shiftSessions','stockTakes','schedule','recurringExpenses','accounts','journal','trash','transfers','promos','payClaims'];
+const V2_KINDS=['products','categories','employees','purchaseOrders','targets','customers','suppliers','sales','purchases','returns','quotes','expenses','cash','stockMoves','branches','shifts','heldSales','editLog','banks','recurring','bundles','audit','users','promoters','memberships','serviceOrders','waste','attendance','reservations','shiftSessions','stockTakes','schedule','recurringExpenses','accounts','journal','trash','transfers','promos','payClaims','partyBalanceHistory'];
 // non-array settings-like keys kept together in v2_settings
 const V2_SETTINGS_KEYS=['settings','seq'];
 const LEGACY_KEY='hesaby_db';           // old shared row (for one-time import only)
@@ -2432,6 +2433,11 @@ async function save(){
         snsSaveOutbox(V2_PENDING_BATCH);
         setSyncStatus('err');
         toast(L('الخادم رفض المزامنة: فيه حركة بتاريخ داخل فترة مقفولة. راجع العملية قبل إعادة المحاولة.','Sync rejected: a transaction is dated in a locked period. Review it before retrying.'),'err');
+      }
+      if(e.message==='SNS_BALANCE_FORBIDDEN'||e.message==='SNS_BALANCE_MOVEMENT_REQUIRED'){
+        V2_CONFLICT_ORG=CURRENT_ORG;
+        snsSaveOutbox(V2_PENDING_BATCH);
+        toast(L('تعذر حفظ تغيير الرصيد. راجع المستند أو صلاحية التسوية ثم المزامنة.','Balance change rejected. Review the source document or posting permission and sync.'),'err');
       }
       if(e.message==='SNS_SYNC_CONFLICT'){
         V2_CONFLICT_ORG=CURRENT_ORG;
@@ -8412,17 +8418,356 @@ function waMemberWeekly(id){const m=db.memberships.find(x=>x.id===id);const c=fi
   const msg=lines.join('\n');
   waSendMsg(num,msg,{title:L('ملخص أسبوعي','Weekly summary')});}
 
+/* Party balances use their own transactions. The existing signed balance remains the settlement total. */
+function snsPartyBalanceSides(p,isCustomer){
+  const net=r2((isCustomer?1:-1)*(+p.balance||0));
+  const due=p.partyBalance?.due??Math.max(net,0);
+  const credit=p.partyBalance?.credit??Math.max(-net,0);
+  const diff=r2(net-(due-credit));
+  const currentDue=r2(Math.max(0,due+Math.min(diff,0))+Math.max(0,diff-credit));
+  return {due:currentDue,credit:r2(currentDue-net),net};
+}
+function snsPartyBalanceCards(list,isCustomer){
+  const totals=list.reduce((sum,p)=>{
+    const {due,credit}=snsPartyBalanceSides(p,isCustomer);
+    return {due:r2(sum.due+due),credit:r2(sum.credit+credit)};
+  },{due:0,credit:0});
+  return [
+    [isCustomer?L('مستحق على العملاء','Due from customers'):L('مستحق على الموردين','Due from suppliers'),totals.due],
+    [isCustomer?L('مستحق للعملاء','Owed to customers'):L('مستحق للموردين','Owed to suppliers'),totals.credit]
+  ].map(([label,value])=>`<div class="card kpi-3"><div class="lbl">${label}</div><div class="val">${money(value)}</div></div>`).join('');
+}
+function snsPartyBalanceColumns(){
+  return `<th>${L('عليه','Due from party')}</th><th>${L('له','Owed to party')}</th><th>${L('صافي الرصيد','Net balance')}</th>`;
+}
+function snsPartyBalanceCells(p,isCustomer){
+  const {due,credit,net}=snsPartyBalanceSides(p,isCustomer);
+  return `<td class="t-num">${money(due)}</td><td class="t-num">${money(credit)}</td><td class="t-num">${money(Math.abs(net))} <small>${net>0?L('عليه','Due'):net<0?L('له','Credit'):''}</small></td>`;
+}
+function snsPBPartyHistory(kind,id){
+  return (db.partyBalanceHistory||[]).filter(batch=>batch.kind===kind).flatMap(batch=>
+    batch.changes.filter(change=>change.id===id).map(change=>({batch,change})));
+}
+function snsPBHistoryHtml(kind,party){
+  const history=snsPBPartyHistory(kind,party.id);
+  if(!history.length)return '';
+  return `<details class="no-print"><summary>${L('سجل تعديلات الرصيد','Balance adjustment history')}</summary><table><thead><tr>
+    <th>${L('التاريخ','Date')}</th><th>${L('المرجع','Reference')}</th><th>${L('قبل (عليه / له)','Before (due / credit)')}</th>
+    <th>${L('بعد (عليه / له)','After (due / credit)')}</th></tr></thead><tbody>
+    ${history.slice().reverse().map(({batch,change})=>{
+      const sideText=record=>{
+        if(!record)return '—';
+        const {due,credit}=snsPartyBalanceSides(record,kind==='customers');
+        return money(due)+' / '+money(credit);
+      };
+      return `<tr><td>${esc(batch.date)}<br><small>${esc(batch.createdAt||'')}</small></td><td>${esc(batch.ref)}<br><small>${esc(batch.actor||'')}</small></td><td>${sideText(change.before)}</td><td>${sideText(change.after)}</td></tr>`;
+    }).join('')}</tbody></table></details>`;
+}
+function snsPBName(value){
+  return String(value??'').toLowerCase().replace(/[أإآ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي')
+    .replace(/[ً-ْٰـ]/g,'').trim().replace(/\s+/g,' ');
+}
+function snsPBPhone(value){
+  const digits=snsDigits(String(value??'')).replace(/[^0-9]/g,'');
+  return /^(0020|20)1[0-9]{9}$/.test(digits)?'0'+digits.slice(-10):digits;
+}
+function snsPBAmount(value,signed=false){
+  const input=snsDigits(String(value??'')).trim().replace(/٫/g,'.');
+  const pattern=signed?/^[+-]?\d{1,12}(\.\d{1,2})?$/:/^\d{1,12}(\.\d{1,2})?$/;
+  return pattern.test(input)?+input:null;
+}
+function snsPBReportHeaders(headers){
+  const markers=['الرصيد المطبوع','konnash_balance','الرصيد المقترح (للمراجعة فقط)','إجمالي التقرير','ال عليا','ال ليا بره'];
+  return headers.some(heading=>markers.some(marker=>snsPBName(heading).includes(snsPBName(marker))));
+}
+function snsPBPreview(text,parties,allowCreate=false){
+  const parsed=csvParse(text,true);
+  const {headers:rawHeaders,rows,lineNumbers}=parsed;
+  if(!rows?.length||rows.length>500)throw new Error(L('استخدم ملفًا من 1 إلى 500 صف بيانات','Use a file with 1 to 500 data rows'));
+  const headers=rawHeaders.map(value=>snsPBName(value));
+  const col=(...names)=>{
+    const aliases=names.map(snsPBName);
+    const matches=headers.flatMap((heading,index)=>aliases.includes(heading)?[index]:[]);
+    if(matches.length>1)throw new Error(L('فيه أكتر من عمود لنفس الحقل.','More than one column represents the same field.'));
+    return matches[0]??-1;
+  };
+  const idCol=col('معرف الحساب','id','account_id'),nameCol=col('الاسم','name'),phoneCol=col('الهاتف','phone');
+  const dueCol=col('رصيد عليه','عليه','due'),creditCol=col('رصيد له','له','credit'),netCol=col('صافي الرصيد','net');
+  const printedCol=col('الرصيد المطبوع','konnash_balance'),proposedCol=col('الرصيد المقترح (للمراجعة فقط)');
+  const reviewOnly=snsPBReportHeaders(headers);
+  if(new Set(headers).size!==headers.length||idCol<0&&(nameCol<0||!reviewOnly&&phoneCol<0)||!reviewOnly&&(dueCol<0||creditCol<0))
+    throw new Error(L('راجع عناوين الأعمدة في النموذج.','Check the template column headings.'));
+  const result=rows.map((row,index)=>{
+    const get=column=>String(row[column]??'').trim();
+    const line=lineNumbers[index]??index+2,id=get(idCol),name=get(nameCol),phone=get(phoneCol);
+    const key=snsPBName(name),digits=snsPBPhone(phone);
+    const byName=key?parties.filter(p=>snsPBName(p.name)===key):[];
+    const byPhone=digits?parties.filter(p=>[p.phone,p.phone2].some(value=>snsPBPhone(value)===digits)):[];
+    const byId=id?parties.find(p=>p.id===id):null;
+    const matchByPhone=byName.length===1&&byPhone.length===1&&byName[0]===byPhone[0];
+    const reviewByName=reviewOnly&&byName.length===1&&(!byPhone.length||byPhone.includes(byName[0]));
+    const party=id?byId:(matchByPhone||reviewByName)?byName[0]:null;
+    const printed=snsPBAmount(get(printedCol),true),proposed=snsPBAmount(get(proposedCol),true);
+    const due=snsPBAmount(get(dueCol)),credit=snsPBAmount(get(creditCol));
+    const net=get(netCol)?snsPBAmount(get(netCol),true):undefined;
+    const entry={line,name:party?.name||name,id:party?.id||id,party,printed,proposed,due,credit,
+      token:party?'id:'+party.id:key&&digits?'new:'+key+'|'+digits:''};
+    if(row.length!==headers.length)return {...entry,status:'rejected',reason:L('عدد الأعمدة غير مطابق','Column count mismatch')};
+    if(phone&&!reviewOnly&&(!/^[0-9+ ().-]+$/.test(snsDigits(phone))||digits.length<7||digits.length>17))
+      return {...entry,status:'rejected',reason:L('رقم الهاتف غير صالح','Invalid phone number')};
+    if(id&&(!party||(key&&snsPBName(party.name)!==key)||(digits&&!byPhone.includes(party))))
+      return {...entry,status:'rejected',reason:L('المعرّف غير موجود أو بياناته مختلفة','Unknown ID or identity conflict')};
+    if(!party&&(byName.length||byPhone.length))
+      return {...entry,status:'rejected',reason:L('مطابقة ملتبسة، راجع الحساب وأضف المعرّف','Ambiguous match: verify and supply the account ID')};
+    if(reviewOnly){
+      return {...entry,status:'skipped',reason:!party?L('حساب غير مطابق','Unmatched account'):
+        id||matchByPhone?L('للمطابقة فقط','Reconciliation only'):L('مطابقة اسم للمراجعة اليدوية','Name match for manual review')};
+    }
+    if(due===null||credit===null||net!==undefined&&net!==r2(due-credit))
+      return {...entry,status:'rejected',reason:L('مبلغ غير صالح أو الصافي غير مطابق','Invalid amount or inconsistent net')};
+    if(party)return {...entry,status:'updated',payload:{id:party.id,due,credit,expected:r2(+party.balance||0),expectedRef:party.partyBalance?.ref||''}};
+    if(!allowCreate)return {...entry,status:'skipped',reason:L('حساب غير موجود والإضافة غير مفعلة','No match; account creation is off')};
+    if(key.length<2||digits.length<7||digits.length>17)return {...entry,status:'rejected',reason:L('بيانات الحساب الجديد ناقصة','Incomplete new account identity')};
+    return {...entry,status:'added',key,digits,payload:{create:true,name,phone,due,credit}};
+  });
+  const counts=new Map();
+  const count=(key)=>{if(key)counts.set(key,(counts.get(key)||0)+1);};
+  result.forEach(entry=>{
+    count(entry.token);
+    if(entry.status==='added'){count('name:'+entry.key);count('phone:'+entry.digits);}
+  });
+  for(const entry of result){
+    if(counts.get(entry.token)>1||entry.status==='added'&&(counts.get('name:'+entry.key)>1||counts.get('phone:'+entry.digits)>1)){
+      entry.status='rejected';entry.reason=L('الحساب مكرر داخل الملف','Account repeated in this file');delete entry.payload;
+    }
+  }
+  return {rows:result,reviewOnly};
+}
+function snsPBReady(){
+  return !!(sb&&CURRENT_UID&&CURRENT_ORG&&V2_READY&&fatGetMode()!=='offline');
+}
+async function snsPBAllowed(){
+  if(!snsPBReady())return false;
+  const org=CURRENT_ORG,user=CURRENT_UID;
+  try{
+    const {data,error}=await sb.rpc('sns_can_manage_party_balances',{p_org:org});
+    return !error&&data===true&&org===CURRENT_ORG&&user===CURRENT_UID;
+  }catch(error){return false;}
+}
+let snsPBSession=null;
+function snsPBSetup(kind,id=''){
+  if(snsViewAccess(kind)!=='open')return;
+  const party=db[kind].find(p=>p.id===id);
+  const sides=party?snsPartyBalanceSides(party,kind==='customers'):null;
+  snsPBSession={kind,id,preview:null,org:CURRENT_ORG,user:CURRENT_UID,revision:0};
+  const counterparts=(db.accounts||[]).filter(a=>['expense','revenue','equity'].includes(a.type)&&a.code!=='3350');
+  openModal(`<div class="modal-h"><h3>${L('مطابقة وتعديل الأرصدة','Reconcile and adjust balances')} ${party?'· '+esc(party.name):''}</h3>
+    <button type="button" class="x" onclick="closeModal()">×</button></div><div class="modal-b">
+    <p class="hint">${L('عليه يعني مستحق للمحل. له يعني مستحق للطرف الآخر. الصافي في الملف = عليه ناقص له. استخدم أرقامًا دون فواصل آلاف.','Due is owed to the shop. Credit is owed to the party. File net = due minus credit. Use numbers without thousands separators.')}</p>
+    ${party?`<div class="grid2"><label class="field">${L('عليه','Due')}<input id="snsPBDue" inputmode="decimal" value="${sides.due}"></label>
+      <label class="field">${L('له','Credit')}<input id="snsPBCredit" inputmode="decimal" value="${sides.credit}"></label></div>`:
+      `<div class="row-acts"><button class="btn btn-ghost" type="button" onclick="snsPBDownload(true)">${L('تنزيل نموذج بالمُعرّفات والأرصدة الحالية','Download template with IDs and current balances')}</button></div>
+      <label class="field">${L('ملف الأرصدة CSV بترميز UTF‑8','UTF‑8 balances CSV')}<input id="snsPBFile" type="file" accept=".csv,.tsv,.txt"></label>
+      <label><input id="snsPBCreate" type="checkbox"> ${L('السماح بإضافة حسابات جديدة بعد المطابقة','Allow new accounts after matching')}</label>`}
+    <div class="grid2"><label class="field">${L('نوع القيد','Posting mode')}
+      <select id="snsPBMode" onchange="snsPBChangeMode(this.value)">
+        <option value="replace">${L('استبدال الرصيد بقيد فرق','Replace balance using a difference entry')}</option>
+        <option value="opening">${L('افتتاحي لحساب بدون حركات','Opening balance for an unused account')}</option>
+        <option value="adjust">${L('تسوية فرق معتمد (أدخل قيمة الفرق)','Post an approved difference (enter the difference)')}</option>
+      </select></label>
+    <label class="field">${L('الحساب المقابل','Counterpart account')}<select id="snsPBCounter"><option value="">${L('اختر حساب القيد المقابل','Select the counterpart account')}</option><option value="3350">${L('3350 — مقابل الأرصدة الافتتاحية','3350 — Opening balance clearing')}</option>${counterparts.map(a=>`<option value="${esc(a.code)}">${esc(a.code+' '+a.name)}</option>`).join('')}</select></label>
+    <label class="field">${L('تاريخ الرصيد أو التسوية','Balance or posting date')}<input type="date" id="snsPBDate" max="${today()}" value="${today()}"></label>
+    <label class="field">${L('مرجع فريد ومعتمد','Approved unique reference')}<input id="snsPBRef" minlength="3" maxlength="100"></label></div>
+    ${CURRENT_ORG_OWNED&&snsPBReady()? `<button type="button" class="btn btn-ghost" onclick="snsPBEditors()">${L('إدارة صلاحية الأرصدة','Manage balance permission')}</button>`:''}
+    <div id="snsPBResults" aria-live="polite"></div>
+    </div><div class="modal-f"><button type="button" class="btn btn-primary" onclick="snsPBReview()">${L('معاينة','Preview')}</button>
+    <button type="button" class="btn btn-ghost" onclick="snsPBDownload(false)" id="snsPBReport" hidden>${L('تصدير تقرير المطابقة','Export reconciliation')}</button>
+    <button type="button" class="btn btn-accent" onclick="snsPBApply(this)" id="snsPBApply" hidden>${L('اعتماد وقيد الأرصدة','Approve and post balances')}</button></div>`,true);
+  for(const element of document.querySelectorAll('#modal input,#snsPBCounter'))element.addEventListener('input',snsPBInvalidate);
+}
+async function snsPBEditors(){
+  if(!snsPBReady()||!CURRENT_ORG_OWNED)return;
+  const org=CURRENT_ORG,user=CURRENT_UID;
+  try{
+    const {data,error}=await sb.from('org_members').select('user_id,role,email,branch_id').eq('org_id',org);
+    if(org!==CURRENT_ORG||user!==CURRENT_UID)return;
+    if(error)throw error;
+    const members=data.filter(m=>m.user_id!==user&&!m.branch_id&&['manager','accountant'].includes(m.role));
+    openModal(`<div class="modal-h"><h3>${L('صلاحية تعديل الأرصدة','Balance editing permission')}</h3><button class="x" onclick="closeModal()">×</button></div>
+      <div class="modal-b"><label class="field">${L('محاسب أو مدير على مستوى المنشأة','Organization-wide accountant or manager')}
+      <select id="snsPBEditor">${members.map(m=>`<option value="${esc(m.user_id)}">${esc(m.email||m.user_id)}</option>`).join('')}</select></label>
+      <p class="hint">${members.length?L('المنح يسمح بتعديل أرصدة العملاء والموردين لكل المنشأة.','This grants balance changes throughout this organization.'):L('مفيش عضو مؤهل حاليًا.','There are no eligible members.')}</p></div>
+      <div class="modal-f"><button class="btn btn-primary" onclick="snsPBSetEditor(this,true)" ${members.length?'':'disabled'}>${L('منح الصلاحية','Grant')}</button>
+      <button class="btn btn-ghost" onclick="snsPBSetEditor(this,false)" ${members.length?'':'disabled'}>${L('سحب الصلاحية','Revoke')}</button></div>`);
+  }catch(error){toast(L('تعذر تحميل أعضاء المنشأة','Could not load organization members'),'err');}
+}
+async function snsPBSetEditor(button,grant){
+  if(button.disabled||!snsPBReady()||!CURRENT_ORG_OWNED)return;
+  const member=document.getElementById('snsPBEditor').value;
+  const org=CURRENT_ORG;
+  button.disabled=true;
+  try{
+    const {error}=await sb.rpc('sns_grant_party_balance_editor',{p_org:org,p_user:member,p_grant:grant});
+    if(org===CURRENT_ORG)toast(error?L('لم يتم تحديث الصلاحية','Permission update failed'):
+      grant?L('تم منح الصلاحية','Permission granted'):L('تم سحب الصلاحية','Permission revoked'),error?'err':undefined);
+  }catch(error){if(org===CURRENT_ORG)toast(L('تعذّر تأكيد الصلاحية','Could not confirm permission'),'err');}
+  finally{button.disabled=false;}
+}
+function snsPBChangeMode(mode){
+  const counterpart=document.getElementById('snsPBCounter');
+  counterpart.disabled=mode==='opening';
+  counterpart.value=mode==='opening'?'3350':'';
+  if(snsPBSession.id){
+    const party=db[snsPBSession.kind].find(p=>p.id===snsPBSession.id);
+    const sides=snsPartyBalanceSides(party,snsPBSession.kind==='customers');
+    document.getElementById('snsPBDue').value=mode==='replace'?sides.due:0;
+    document.getElementById('snsPBCredit').value=mode==='replace'?sides.credit:0;
+  }
+  snsPBInvalidate();
+}
+function snsPBInvalidate(){
+  snsPBSession.revision++;
+  snsPBSession.preview=null;
+  document.getElementById('snsPBApply').hidden=true;
+  document.getElementById('snsPBReport').hidden=true;
+  document.getElementById('snsPBResults').textContent='';
+}
+async function snsPBReview(){
+  const session=snsPBSession;
+  const results=document.getElementById('snsPBResults');
+  if(!results)return;
+  snsPBInvalidate();
+  const revision=session.revision;
+  const doc=id=>document.getElementById(id);
+  try{
+    const mode=doc('snsPBMode').value;
+    let review;
+    if(session.id){
+      const party=db[session.kind].find(p=>p.id===session.id);
+      if(!party)throw new Error(L('الحساب غير موجود','Account not found'));
+      const due=snsPBAmount(doc('snsPBDue').value),credit=snsPBAmount(doc('snsPBCredit').value);
+      if(due===null||credit===null)throw new Error(L('أدخل رقمًا صالحًا في الحقلين','Enter valid values in both fields'));
+      review={rows:[{line:1,id:party.id,name:party.name,party,due,credit,status:'updated',
+        payload:{id:party.id,due,credit,expected:r2(+party.balance||0),expectedRef:party.partyBalance?.ref||''}}]};
+    }else{
+      const file=doc('snsPBFile').files[0];
+      const allowCreate=doc('snsPBCreate').checked&&mode!=='adjust';
+      if(!file||file.size>1024*1024)throw new Error(L('اختار ملف CSV حجمه أقل من 1 ميجابايت','Choose a CSV file smaller than 1 MB'));
+      review=snsPBPreview(new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer()),db[session.kind],allowCreate);
+    }
+    if(session!==snsPBSession||revision!==session.revision||results!==doc('snsPBResults'))return;
+    const allowed=review.reviewOnly?false:await snsPBAllowed();
+    if(session!==snsPBSession||revision!==session.revision||results!==doc('snsPBResults'))return;
+    session.preview=review;
+    session.mode=mode;
+    const reconciliation=review.reviewOnly;
+    const columns=reconciliation?[L('صافي SNS','SNS net'),L('رصيد Konnash المطبوع','Printed Konnash balance'),L('صافي Konnash المقترح','Proposed Konnash net'),L('الفرق المقترح','Proposed difference')]:
+      [L('عليه حاليًا','Current due'),L('له حاليًا','Current credit'),L('عليه في الملف','File due'),L('له في الملف','File credit')];
+    results.innerHTML=`<p class="hint">${reconciliation?L('للمطابقة فقط. قارن المبالغ بعد تأكيد اتجاه الرصيد المطبوع.','Reconciliation only. Confirm the printed balance convention before acting.'):
+      allowed?L('راجع الصفوف والمرجع قبل القيد. الصفوف المرفوضة تتطلب مراجعة.','Review the rows and reference before posting. Resolve rejected rows first.'):L('المعاينة متاحة. الحفظ يتطلب اتصالًا وصلاحية الأرصدة على الخادم.','Preview is available. Posting requires a connection and server-side permission.')}</p>
+      <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>${L('الحساب','Account')}</th>${columns.map(label=>`<th>${label}</th>`).join('')}<th>${L('الحالة','Status')}</th></tr></thead><tbody>
+      ${review.rows.map(entry=>{
+        const values=snsPBReportValues(entry,session.kind,reconciliation);
+        return `<tr><td>${entry.line}</td><td>${esc(entry.name||entry.id||'—')}</td>${values.map(value=>`<td class="t-num">${value==null?'—':money(value)}</td>`).join('')}<td>${esc(entry.reason||snsPBStatus(entry.status))}</td></tr>`;
+      }).join('')}</tbody></table></div>`;
+    doc('snsPBReport').hidden=false;
+    doc('snsPBApply').hidden=!allowed||review.rows.some(entry=>entry.status==='rejected')||!review.rows.some(entry=>entry.payload);
+  }catch(error){
+    if(results===doc('snsPBResults'))results.textContent=error.message||L('الملف غير صالح','Invalid file');
+  }
+}
+function snsPBStatus(status){
+  return {updated:L('تحديث','Update'),added:L('إضافة','Add'),skipped:L('متخطى','Skipped'),rejected:L('مرفوض','Rejected')}[status];
+}
+function snsPBReportValues(entry,kind,reconciliation){
+  const sides=entry.party?snsPartyBalanceSides(entry.party,kind==='customers'):null;
+  if(!reconciliation)return [sides?.due,sides?.credit,entry.due,entry.credit];
+  const tentative=entry.printed!=null&&entry.proposed!=null&&Math.abs(entry.proposed)===Math.abs(entry.printed)?entry.proposed:null;
+  return [sides?.net,entry.printed,tentative,sides&&tentative!=null?r2(tentative-sides.net):null];
+}
+function snsPBDownload(template){
+  const {kind,preview}=snsPBSession;
+  const safe=value=>typeof value==='string'&&/^\s*[=+\-@\t\r\n]/.test(value)?"'"+value:value;
+  const head=['معرف الحساب','الاسم','الهاتف','رصيد عليه','رصيد له','صافي الرصيد'];
+  if(template){
+    downloadCSV('SNS-'+kind+'-balances.csv',[head,...db[kind].map(p=>{
+      const sides=snsPartyBalanceSides(p,kind==='customers');
+      return [safe(p.id),safe(p.name),safe(p.phone),sides.due,sides.credit,sides.net];
+    })]);
+  }else if(preview){
+    const headers=preview.reviewOnly?['صافي SNS','رصيد Konnash المطبوع','صافي Konnash المقترح','فرق للمراجعة']:['عليه حاليًا','له حاليًا','عليه في الملف','له في الملف'];
+    downloadCSV('SNS-'+kind+'-reconciliation.csv',[['الصف','معرف الحساب','الاسم',...headers,'الحالة'],
+      ...preview.rows.map(row=>[row.line,safe(row.id),safe(row.name),...snsPBReportValues(row,kind,preview.reviewOnly),safe(row.reason||snsPBStatus(row.status))])]);
+  }
+}
+async function snsPBApply(button){
+  const session=snsPBSession;
+  const org=session.org,user=session.user;
+  const revision=session.revision;
+  const active=()=>session===snsPBSession&&revision===session.revision&&org===CURRENT_ORG&&user===CURRENT_UID;
+  const date=document.getElementById('snsPBDate').value;
+  const reference=document.getElementById('snsPBRef').value.trim();
+  const mode=document.getElementById('snsPBMode').value;
+  const counterpart=document.getElementById('snsPBCounter').value;
+  const results=document.getElementById('snsPBResults');
+  const preview=session.preview;
+  if(!counterpart)return toast(L('اختر الحساب المقابل قبل اعتماد التسوية.','Choose the counterpart account before posting.'),'err');
+  if(button.disabled||!active()||!preview||preview.reviewOnly||mode!==session.mode||!date||date>today()||reference.length<3||
+    !snsCanPost(date))return toast(L('راجع التاريخ والمرجع والمعاينة','Check the date, reference and preview'),'err');
+  const rows=preview.rows.filter(entry=>entry.payload);
+  if(!rows.length||preview.rows.some(entry=>entry.status==='rejected'))return;
+  button.disabled=true;
+  try{
+    if(!await snsPBAllowed()||!active())throw new Error(L('صلاحية الأرصدة غير متاحة','Balance management permission unavailable'));
+    await save();
+    if(!active()||window._syncLock||snsReadOutbox()||V2_CONFLICT_ORG===org)
+      throw new Error(L('أكمل مزامنة العمليات السابقة ثم أعد المعاينة','Finish syncing earlier changes and preview again'));
+    if(rows.some(entry=>entry.party&&!db[session.kind].some(p=>p.id===entry.payload.id&&
+      r2(+p.balance||0)===entry.payload.expected&&(p.partyBalance?.ref||'')===entry.payload.expectedRef)))
+      throw new Error(L('الرصيد اتغير بعد المعاينة. أعد المعاينة.','Balance changed after preview. Preview again.'));
+    const response=await sb.rpc('sns_apply_party_balances',{p_org:org,p_kind:session.kind,p_date:date,p_reference:reference,
+      p_mode:mode,p_counterpart:counterpart,p_rows:rows.map(entry=>entry.payload)});
+    if(response.error){
+      const code=response.error.message;
+      const messages={
+        SNS_BALANCE_STALE:L('الرصيد اتغير على جهاز آخر. زامن البيانات وأعد المعاينة.','The balance changed on another device. Sync and preview again.'),
+        SNS_BALANCE_REFERENCE_USED:L('المرجع مستخدم بالفعل. راجع سجل الرصيد قبل أي تسوية جديدة.','Reference already used. Review history before posting again.'),
+        SNS_BALANCE_OPENING_EXISTS:L('أحد الحسابات له رصيد سابق أو حركات. راجع الاختيار واستخدم الاستبدال عند الحاجة.','An account has prior balances or activity. Review and choose replacement if appropriate.'),
+        SNS_ACCOUNTING_PERIOD_LOCKED:L('تاريخ القيد داخل فترة مقفولة','The posting date is in a closed period'),
+        SNS_BALANCE_AMBIGUOUS_ACCOUNT:L('حساب جديد مشابه لحساب موجود على الخادم. راجع المطابقة.','A proposed account matches an existing account on the server. Review the match.')
+      };
+      throw new Error(messages[code]||L('تعذر تأكيد القيد. راجع المرجع والمزامنة قبل إعادة المحاولة.','Could not confirm the posting. Check the reference and sync before retrying.'));
+    }
+    if(!active())return;
+    let refreshFailed=false;
+    try{await pullV2();cacheLocal(user);}catch(error){refreshFailed=true;}
+    if(!active()||!results.isConnected)return;
+    const {updated,added,skipped}=response.data;
+    const report=[
+      [L('محدث','Updated'),updated],[L('مضاف','Added'),added],
+      [L('متخطى','Skipped'),skipped+preview.rows.filter(entry=>entry.status==='skipped').length],[L('مرفوض','Rejected'),0]
+    ];
+    results.innerHTML=`<p class="hint">${L('تم تأكيد العملية على الخادم','Server confirmed the operation')} · <b>${esc(reference)}</b></p>
+      <ul>${report.map(([label,total])=>`<li>${label} ${total}</li>`).join('')}</ul>${refreshFailed?`<p class="hint">${L('تم الحفظ. أعد تحميل الصفحة لتحديث العرض.','Saved. Reload the page to update the view.')}</p>`:''}`;
+    session.preview=null;
+    button.hidden=true;
+    document.getElementById('snsPBReport').hidden=true;
+    if(!refreshFailed&&current===session.kind)views[session.kind]();
+  }catch(error){if(active()&&results.isConnected)toast(error.message,'err');}
+  finally{button.disabled=false;}
+}
+
 views.customers=()=>{
-  const debt=db.customers.reduce((sum,c)=>sum+Math.max(0,+c.balance||0),0);
   document.getElementById('topActions').innerHTML=`
     <button type="button" class="btn btn-primary" onclick="partyForm('customer')">+ ${L('عميل جديد','New customer')}</button>
     <button type="button" class="btn btn-ghost" onclick="receivablesAging()">${L('ذمم العملاء','Receivables')}</button>
     <button type="button" class="btn btn-ghost" onclick="snsImportOptions('customers')">${L('استيراد العملاء','Import customers')}</button>
+    <button type="button" class="btn btn-ghost" onclick="snsPBSetup('customers')">${L('مطابقة الأرصدة','Reconcile balances')}</button>
     <button type="button" class="btn btn-ghost" onclick="snsCustomerTools(this)">${L('أدوات العملاء','Customer tools')}</button>`;
   document.getElementById('content').innerHTML=`
     <div class="cards sns-balance-strip">
       <div class="card kpi-1"><div class="lbl">${L('عدد العملاء','Customers')}</div><div class="val">${db.customers.length}</div></div>
-      <div class="card kpi-3"><div class="lbl">${L('المستحق لك','Receivables')}</div><div class="val">${money(debt)}</div></div>
+      ${snsPartyBalanceCards(db.customers,true)}
     </div>
     <div class="panel">
       <div class="panel-h sns-list-tools">
@@ -8448,7 +8793,7 @@ function renderCustomersList(){
     button.setAttribute('aria-pressed',String(active));
   });
   document.getElementById('snsCustomersList').innerHTML=list.length
-    ?`<table><thead><tr><th>${L('الاسم','Name')}</th><th>${L('الهاتف','Phone')}</th><th>${L('الرصيد','Balance')}</th>${loyOn?`<th>${L('النقاط','Points')}</th>`:''}<th>${L('الحالة','Status')}</th><th>${L('الإجراءات','Actions')}</th></tr></thead>
+    ?`<table><thead><tr><th>${L('الاسم','Name')}</th><th>${L('الهاتف','Phone')}</th>${snsPartyBalanceColumns()}${loyOn?`<th>${L('النقاط','Points')}</th>`:''}<th>${L('الحالة','Status')}</th><th>${L('الإجراءات','Actions')}</th></tr></thead>
     <tbody>${list.slice(0,_cap('customers')).map(c=>{
       const balance=+c.balance||0;
       const [status,style]=c.creditLimit>0&&balance>=c.creditLimit?[L('تخطى الحد','Over limit'),'danger']
@@ -8459,7 +8804,7 @@ function renderCustomersList(){
           ${c.bday&&c.bday.slice(5)===today().slice(5)?` <span class="badge warn">${L('عيد ميلاد اليوم','Birthday today')}</span>`:''}
           ${c.creditLimit>0?`<div class="muted">${L('حد الائتمان','Credit limit')} ${money(c.creditLimit)}</div>`:''}
         </td>
-        <td>${esc(c.phone)||'—'}</td><td class="t-num">${money(Math.abs(balance))}</td>
+        <td>${esc(c.phone)||'—'}</td>${snsPartyBalanceCells(c,true)}
         ${loyOn?`<td class="t-num">${c.points||0}</td>`:''}<td><span class="badge ${style}">${status}</span></td>
         <td><div class="sns-record-controls" data-id="${esc(c.id)}">
           <button type="button" class="btn btn-ghost btn-sm" onclick="fatCustProfile(this.parentElement.dataset.id)">${L('عرض','View')}</button>
@@ -8588,9 +8933,8 @@ async function snsSettleParty(kind,id,{fromPos=false}={}){
   toast(L('تم تسجيل الدفعة','Payment recorded'));
 }
 function collect(id){return snsSettleParty('sale',id);}
-views.suppliers=()=>{document.getElementById('topActions').innerHTML=`<button class="btn btn-accent" onclick="partyForm('supplier')">+ ${L('مورد','Supplier')}</button> <button class="btn btn-ghost" onclick="snsImportOptions('suppliers')">📥 ${L('استيراد الموردين CSV','Import suppliers CSV')}</button>`;
-  const due=db.suppliers.reduce((s,c)=>s+Math.max(0,c.balance),0);
-  document.getElementById('content').innerHTML=`<div class="cards" style="grid-template-columns:repeat(2,1fr)"><div class="card kpi-2"><div class="lbl">${L('عدد الموردين','Suppliers')}</div><div class="val">${db.suppliers.length}</div></div><div class="card kpi-4"><div class="lbl">${L('المستحق عليك','Payables')}</div><div class="val" style="font-size:22px;color:var(--danger)">${money(due)}</div></div></div>
+views.suppliers=()=>{document.getElementById('topActions').innerHTML=`<button class="btn btn-accent" onclick="partyForm('supplier')">+ ${L('مورد','Supplier')}</button> <button class="btn btn-ghost" onclick="snsImportOptions('suppliers')">📥 ${L('استيراد الموردين CSV','Import suppliers CSV')}</button> <button type="button" class="btn btn-ghost" onclick="snsPBSetup('suppliers')">${L('مطابقة الأرصدة','Reconcile balances')}</button>`;
+  document.getElementById('content').innerHTML=`<div class="cards sns-balance-strip"><div class="card kpi-2"><div class="lbl">${L('عدد الموردين','Suppliers')}</div><div class="val">${db.suppliers.length}</div></div>${snsPartyBalanceCards(db.suppliers,false)}</div>
     <div class="panel"><div class="panel-h sns-list-tools"><h3>${L('الموردون','Suppliers')}</h3>
       <input type="search" aria-label="${L('بحث في الموردين','Search suppliers')}" placeholder="${L('الاسم أو الهاتف','Name or phone')}" value="${esc(_rowQ.suppliers||'')}" oninput="renderSuppliers(this.value)">
     </div><div class="panel-b" id="snsSupplierList"></div></div>`;
@@ -8600,8 +8944,8 @@ function renderSuppliers(query){
   _rowQ.suppliers=query;
   const list=db.suppliers.filter(supplier=>matches([supplier.name,supplier.phone].join(' '),query));
   document.getElementById('snsSupplierList').innerHTML=`
-    ${list.length?`<table><thead><tr><th>${L('الاسم','Name')}</th><th>${L('الهاتف','Phone')}</th><th>${L('الرصيد','Balance')}</th><th>${L('الحالة','Status')}</th><th></th></tr></thead><tbody>
-    ${list.slice(0,_cap('suppliers')).map(c=>`<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.phone)||'—'}</td><td class="t-num">${money(Math.abs(c.balance))}</td><td>${c.balance>0?`<span class="badge danger">${L('مستحق عليك','You owe')}</span>`:c.balance<0?`<span class="badge info">${L('رصيد مقدّم للمورد','Supplier advance')}</span>`:`<span class="badge ok">${L('مسدد','Settled')}</span>`}</td><td><div class="row-acts"><button type="button" class="btn btn-ghost btn-sm" onclick="statement('supplier','${c.id}')">${L('كشف حساب','Statement')}</button>${c.balance>0&&snsSupplierPaymentsAllowed()?`<button class="btn btn-ghost btn-sm" onclick="payy('${c.id}')">${L('سداد','Pay')}</button>`:''}<button class="iconbtn" onclick="partyForm('supplier','${c.id}')">✏️</button><button class="iconbtn del" onclick="delParty('supplier','${c.id}')">🗑️</button></div></td></tr>`).join('')}</tbody></table>${_moreBtn('suppliers',list.length)}`:`<div class="empty"><span class="big">🚚</span>${L('مفيش موردين مطابقين','No matching suppliers')}</div>`}`;
+    ${list.length?`<table><thead><tr><th>${L('الاسم','Name')}</th><th>${L('الهاتف','Phone')}</th>${snsPartyBalanceColumns()}<th>${L('الحالة','Status')}</th><th></th></tr></thead><tbody>
+    ${list.slice(0,_cap('suppliers')).map(c=>`<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.phone)||'—'}</td>${snsPartyBalanceCells(c,false)}<td>${c.balance>0?`<span class="badge danger">${L('مستحق عليك','You owe')}</span>`:c.balance<0?`<span class="badge info">${L('رصيد مقدّم للمورد','Supplier advance')}</span>`:`<span class="badge ok">${L('مسدد','Settled')}</span>`}</td><td><div class="row-acts"><button type="button" class="btn btn-ghost btn-sm" onclick="statement('supplier','${c.id}')">${L('كشف حساب','Statement')}</button>${c.balance>0&&snsSupplierPaymentsAllowed()?`<button class="btn btn-ghost btn-sm" onclick="payy('${c.id}')">${L('سداد','Pay')}</button>`:''}<button class="iconbtn" onclick="partyForm('supplier','${c.id}')">✏️</button><button class="iconbtn del" onclick="delParty('supplier','${c.id}')">🗑️</button></div></td></tr>`).join('')}</tbody></table>${_moreBtn('suppliers',list.length)}`:`<div class="empty"><span class="big">🚚</span>${L('مفيش موردين مطابقين','No matching suppliers')}</div>`}`;
 }
 
 function payy(id){return snsSettleParty('purchase',id);}
@@ -8626,7 +8970,7 @@ function snsMarkOpeningParty(party){
   party.openingBalance=party.balance;
   party.openingDate=today();
 }
-function saveParty(kind,id){const name=document.getElementById('p_name').value.trim();if(!name)return toast(L('اكتب الاسم','Enter name'),'err');
+async function saveParty(kind,id){const name=document.getElementById('p_name').value.trim();if(!name)return toast(L('اكتب الاسم','Enter name'),'err');
   const d={name,phone:document.getElementById('p_phone').value.trim(),phone2:((document.getElementById('p_phone2')||{}).value||'').trim(),address:document.getElementById('p_addr').value.trim(),address2:((document.getElementById('p_addr2')||{}).value||'').trim(),balance:+document.getElementById('p_bal').value||0};
   if(kind==='customer'){d.creditLimit=+document.getElementById('p_climit').value||0;d.tier=document.getElementById('p_tier').value||'';d.bday=document.getElementById('p_bday').value||'';}
   const discountInput=document.getElementById('p_invoiceDiscount');
@@ -8642,7 +8986,13 @@ function saveParty(kind,id){const name=document.getElementById('p_name').value.t
     if(r2(previous.balance)!==d.balance)return toast(L('عدّل الرصيد من التحصيل أو التسوية المحاسبية','Use a payment or accounting adjustment to change the balance'),'err');
     Object.assign(previous,d);
   }else{
-    if(d.balance&&!snsCanPost(today()))return;
+    if(d.balance){
+      if(!snsCanPost(today()))return;
+      const editor=document.getElementById('p_name');
+      if(CURRENT_ORG&&(!await snsPBAllowed()||!editor.isConnected||editor.value.trim()!==name))
+        return toast(L('الرصيد الافتتاحي يحتاج صلاحية الأرصدة واتصالًا بالخادم.','An opening balance requires balance permission and a server connection.'),'err');
+      if(!CURRENT_ORG&&!isManager())return;
+    }
     const party={id:uid(),...d,points:0};
     snsMarkOpeningParty(party);
     list.push(party);
@@ -8653,7 +9003,7 @@ async function delParty(kind,id){
   const parties=isCustomer?db.customers:db.suppliers;
   const party=parties.find(row=>row.id===id);
   if(!party)return;
-  const hasHistory=()=>party.openingDate||Math.abs(party.balance||0)>0.009||
+  const hasHistory=()=>party.partyBalance||party.openingDate||Math.abs(party.balance||0)>0.009||
     (isCustomer?db.sales:db.purchases).some(row=>(isCustomer?row.customerId:row.supplierId)===id)||
     db.cash.some(row=>row.ref===id);
   if(hasHistory())return toast(L('السجل مرتبط بحركات أو رصيد افتتاحي','This record has transactions or an opening balance'),'err');
@@ -8678,6 +9028,9 @@ function snsPartyStatementRows(kind,party){
     fromPosting(party.openingDate,L('رصيد افتتاحي','Opening balance'),[
       snsPostingLine(account,(isCustomer?1:-1)*party.openingBalance)
     ]);
+  }
+  for(const {batch,change} of snsPBPartyHistory(isCustomer?'customers':'suppliers',party.id)){
+    fromPosting(batch.date,L('تسوية رصيد','Balance adjustment')+' · '+batch.ref,change.lines);
   }
   for(const invoice of invoices){
     const title=L(isCustomer?'فاتورة بيع':'فاتورة شراء',isCustomer?'Sale':'Purchase')+' '+invNo(invoice);
@@ -8707,6 +9060,7 @@ function statement(kind,id){
   const p=(isC?db.customers:db.suppliers).find(x=>x.id===id);
   if(!p)return;
   const rows=snsPartyStatementRows(kind,p);
+  const sides=snsPartyBalanceSides(p,isC);
   const balance=r2(p.balance);
   const balanceLabel=balance===0?L('الحساب مسدّد','Settled balance'):
     (isC?(balance>0?L('مستحق لك من العميل','Customer owes you'):L('رصيد للعميل عندك','Customer credit')):
@@ -8714,10 +9068,14 @@ function statement(kind,id){
   let bal=0;const body=rows.map(r=>{bal=r2(bal+r.debit-r.credit);return `<tr><td>${dsp(r.date)}</td><td>${esc(r.desc)}</td><td class="t-num">${money(r.debit)}</td><td class="t-num">${money(r.credit)}</td><td class="t-num">${money(bal)}</td></tr>`}).join('');
   openModal(`<div class="modal-h no-print"><h3>📄 ${L('كشف حساب','Statement')}: ${esc(p.name)}</h3><button class="x" onclick="closeModal()">×</button></div>
   <div class="modal-b" id="printArea"><div style="border-bottom:2px solid var(--primary);padding-bottom:10px;margin-bottom:14px"><h2 style="color:var(--primary-d)">${esc(db.settings.company)}</h2><div style="font-size:13px">${L('كشف حساب','Statement')}: <b>${esc(p.name)}</b> ${p.phone?'• '+esc(p.phone):''}</div></div>
-  ${rows.length?`<table><thead><tr><th>${L('التاريخ','Date')}</th><th>${L('البيان','Description')}</th><th>${isC?L('عليه','Debit'):L('له','Credit')}</th><th>${isC?L('له','Credit'):L('عليه','Debit')}</th><th>${L('الرصيد','Balance')}</th></tr></thead><tbody>${body}</tbody></table>`:`<div class="empty">${L('لا حركات','No transactions')}</div>`}
+  ${rows.length?`<table><thead><tr><th>${L('التاريخ','Date')}</th><th>${L('البيان','Description')}</th><th>${L('مدين','Debit')}</th><th>${L('دائن','Credit')}</th><th>${L('الرصيد','Balance')}</th></tr></thead><tbody>${body}</tbody></table>`:`<div class="empty">${L('لا حركات','No transactions')}</div>`}
   ${Math.abs(r2((isC?bal:-bal)-p.balance))>0.009?`<p class="hint">${L('فيه فرق بين كشف الحساب والرصيد المسجّل. راجع الأرصدة الافتتاحية والحركات القديمة.','The statement differs from the recorded balance. Review opening balances and legacy movements.')}</p>`:''}
-  <div class="inv-totals" style="margin-top:14px"><div class="row grand"><span>${balanceLabel}</span><span>${money(Math.abs(balance))}</span></div></div></div>
+  <div class="inv-totals" style="margin-top:14px"><div class="row"><span>${L('عليه','Due')}</span><span>${money(sides.due)}</span></div>
+    <div class="row"><span>${L('له','Credit')}</span><span>${money(sides.credit)}</span></div>
+    <div class="row grand"><span>${L('الصافي','Net')} · ${balanceLabel}</span><span>${money(Math.abs(balance))}</span></div></div>
+  ${snsPBHistoryHtml(isC?'customers':'suppliers',p)}</div>
   <div class="modal-f" data-party-id="${esc(p.id)}">
+    ${snsPBReady()? `<button type="button" class="btn btn-ghost" onclick="snsPBSetup('${isC?'customers':'suppliers'}',this.parentElement.dataset.partyId)">${L('تعديل الرصيد','Adjust balance')}</button>`:''}
     ${balance>0&&(isC||snsSupplierPaymentsAllowed())?`<button type="button" class="btn btn-primary" onclick="snsSettleParty('${isC?'sale':'purchase'}',this.parentElement.dataset.partyId)">${isC?L('تحصيل','Collect'):L('سداد','Pay')}</button>`:''}
     <button class="btn btn-ghost" onclick="window.print()">🖨️ ${L('طباعة','Print')}</button><button class="btn btn-primary" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`,true);
   document.getElementById('modal').classList.add('sns-invoice-preview');
@@ -14535,9 +14893,9 @@ function exportPayrollExcel(){
 
 
 /* ===== CSV IMPORT (استيراد CSV) ===== */
-function csvParse(text){
+function csvParse(text,strict=false){
   const lineNumbers=[];
-  const parsed=fatCSVParse(text,lineNumbers);
+  const parsed=fatCSVParse(text,lineNumbers,strict);
   const [header=[],...rows]=parsed;
   return {headers:header.map(cell=>cell.trim().replace(/^['"]|['"]$/g,'').toLowerCase()),rows,lineNumbers:lineNumbers.slice(1)};
 }
@@ -14670,6 +15028,10 @@ function csvPreview(type,text){
   if(!rows.length)return toast(L('الملف فارغ','File is empty'),'err');
   var isProduct=csvIsProduct(type);
   const isSupplier=type==='supplier'||type==='suppliers';
+  if(!isProduct&&snsPBReportHeaders(h)){
+    snsPBSetup(isSupplier?'suppliers':'customers');
+    return toast(L('ملف تقرير. ارفعه في شاشة مطابقة الأرصدة للمعاينة.','Upload the report in Reconcile balances for preview.'));
+  }
   var fields=isProduct?['name','sku','price','cost','qty','min','cat','unit','expiry','warehouse']:
     (isSupplier?['name','phone','address']:['name','phone','address','balance']);
   var label=isProduct?L('أصناف','Products'):(isSupplier?L('موردين','Suppliers'):L('عملاء','Customers'));
@@ -14994,6 +15356,11 @@ async function csvDoImport(type,rows,colMap,button,openingDate){
       }
     }
     if(!review.ready.length)return toast(L('مفيش سجلات صالحة للاستيراد','No valid records to import'),'err');
+    if(review.ready.some(entry=>entry.balance)){
+      if(CURRENT_ORG&&(!await snsPBAllowed()||window._csvRows!==rows||!document.getElementById('modalBg').classList.contains('open')))
+        return toast(L('استيراد الأرصدة الافتتاحية يحتاج صلاحية الأرصدة واتصالًا بالخادم.','Opening balances require balance permission and a server connection.'),'err');
+      if(!CURRENT_ORG&&!isManager())return;
+    }
     for(const entry of review.ready){
       const identity=snsPartyImportIdentity(entry.name,entry.phone);
       const party={id:importIds.get(identity)||uid(),...entry};
@@ -15053,7 +15420,7 @@ function csvImportModal(){
   '<div class="modal-f"><button type="button" class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>');
   window._csvMode=isProduct?'products':(isSupplier?'suppliers':'customers');window._csvRows=null;}
 
-const SNS_RELEASE_ID='2026.11.25-r27';
+const SNS_RELEASE_ID='2026.11.26-r28';
 
 function setSyncStatus(state){
   var el=document.getElementById('syncDot');if(!el)return;
@@ -15328,6 +15695,15 @@ function fatBuildJournal(from,to){
       if(diff<0){ J.push({date:tk.date,ref:L('\u062c\u0631\u062f','Count'),desc:L('\u0639\u062c\u0632 \u062c\u0631\u062f','Count shortage')+': '+(it.name||''),lines:[{acct:L('\u0639\u062c\u0632 \u0648\u0641\u0631\u0648\u0642 \u062c\u0631\u062f','Stock count variance'),debit:val,credit:0},{acct:L('\u0627\u0644\u0645\u062e\u0632\u0648\u0646','Inventory'),debit:0,credit:val}]}); }
       else{ J.push({date:tk.date,ref:L('\u062c\u0631\u062f','Count'),desc:L('\u0632\u064a\u0627\u062f\u0629 \u062c\u0631\u062f','Count overage')+': '+(it.name||''),lines:[{acct:L('\u0627\u0644\u0645\u062e\u0632\u0648\u0646','Inventory'),debit:val,credit:0},{acct:L('\u0639\u062c\u0632 \u0648\u0641\u0631\u0648\u0642 \u062c\u0631\u062f','Stock count variance'),debit:0,credit:val}]}); }
     }); });
+  for(const batch of db.partyBalanceHistory||[]){
+    if(!inR(batch.date))continue;
+    for(const change of batch.changes){
+      if(!change.lines.length)continue;
+      J.push({date:batch.date,ref:batch.ref,
+        desc:L('تسوية رصيد','Party balance adjustment')+' · '+change.after.name,
+        lines:change.lines.map(line=>({...line,acct:snsAccountLabel(line.code)}))});
+    }
+  }
   (db.journal||[]).forEach(function(je){ if(!inR(je.date)) return; J.push({date:je.date,ref:je.ref||L('يدوي','Manual'),desc:(je.desc||L('قيد يدوي','Manual entry'))+' ✍️',lines:(je.lines||[]).map(function(l){return {acct:l.acct,debit:+l.debit||0,credit:+l.credit||0};}),manual:true,id:je.id}); });
   J.sort(function(a,b){return String(a.date).localeCompare(String(b.date));});
   return J;
@@ -19582,6 +19958,7 @@ views.shiftSessions=function(){
 /* ───────── 1) بروفايل العميل 360 ───────── */
 window.fatCustProfile=function(id){
   var c=db.customers.find(function(x){return x.id===id;});if(!c)return;
+  const sides=snsPartyBalanceSides(c,true);
   var sales=bf(db.sales).filter(function(s){return s.customerId===id&&!s.subKind;});
   var totSpend=r2(sales.reduce(function(a,s){return a+(+s.total||0);},0));
   var lastVisit=sales.length?sales.map(function(s){return s.date;}).sort().slice(-1)[0]:null;
@@ -19611,7 +19988,9 @@ window.fatCustProfile=function(id){
     kpi(L('عدد الفواتير','Invoices'),sales.length)+
     kpi(L('متوسط الفاتورة','Avg basket'),money(avg))+
     kpi(L('آخر زيارة','Last visit'),lastVisit||'\u2014')+
-    kpi(L('الرصيد','Balance'),money(Math.abs(c.balance||0))+(c.balance>0?' '+L('عليه','owes'):c.balance<0?' '+L('له','credit'):''),c.balance>0?'var(--danger)':'var(--ok)')+
+    kpi(L('عليه','Due'),money(sides.due))+
+    kpi(L('له','Credit'),money(sides.credit))+
+    kpi(L('صافي الرصيد','Net balance'),money(Math.abs(c.balance||0))+(c.balance>0?' '+L('عليه','owes'):c.balance<0?' '+L('له','credit'):''),c.balance>0?'var(--danger)':'var(--ok)')+
     kpi(L('النقاط','Points'),c.points||0)+
   '</div>'+
   '<h4 style="margin:0 0 8px">\ud83d\uded2 '+L('الأصناف اللي بيشتريها','Items they buy')+'</h4>'+
@@ -29313,28 +29692,32 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
      ══════════════════════════════════════════ */
 
   // بارسر CSV بسيط بيراعي الفواصل جوه علامات التنصيص
-  window.fatCSVParse = function (text,lineNumbers) {
+  window.fatCSVParse = function (text,lineNumbers,strict=false) {
     text=String(text||'').replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n');
     const candidates=[',',';','\t'];
     const header=text.trimStart().match(/^(?:"(?:[^"]|"")*"|[^"\n])*/)?.[0]||'';
     const delimiters=header.replace(/"(?:[^"]|"")*"/g,'');
     const separator=candidates.reduce((best,ch)=>delimiters.split(ch).length>delimiters.split(best).length?ch:best,',');
     const rows=[];
-    let row=[],cell='',quoted=false,line=1,startLine=1;
+    let row=[],cell='',quoted=false,closed=false,line=1,startLine=1;
     const pushRow=()=>{
       row.push(cell);
       if(row.some(value=>value.trim())){rows.push(row);lineNumbers?.push(startLine);}
-      row=[];cell='';
+      row=[];cell='';closed=false;
     };
     for(let i=0;i<text.length;i++){
       const ch=text[i];
       if(quoted&&ch==='"'&&text[i+1]==='"'){cell+='"';i++;continue;}
-      if(ch==='"'){quoted=!quoted;continue;}
-      if(!quoted&&ch===separator){row.push(cell);cell='';continue;}
+      if(ch==='"'){
+        if(strict&&!quoted&&(cell.length||closed))throw new Error(L('صيغة اقتباس CSV غير صالحة','Invalid CSV quotes'));
+        quoted=!quoted;closed=!quoted;continue;
+      }
+      if(!quoted&&ch===separator){row.push(cell);cell='';closed=false;continue;}
       if(ch==='\n'){
         line++;
         if(!quoted){pushRow();startLine=line;continue;}
       }
+      if(strict&&closed)throw new Error(L('صيغة اقتباس CSV غير صالحة','Invalid CSV quotes'));
       cell+=ch;
     }
     if(quoted)throw new Error('CSV_UNCLOSED_QUOTE');
@@ -29400,6 +29783,10 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
         const lineNumbers=[];
         var rows = window.fatCSVParse(String(e.target.result || ''),lineNumbers);
         if (rows.length < 2) return toast(L('الملف فاضي أو مفيهوش بيانات', 'File is empty or has no data'), 'err');
+        if(kind==='customers'&&snsPBReportHeaders(rows[0])){
+          snsPBSetup('customers');
+          return toast(L('ملف تقرير. ارفعه في شاشة مطابقة الأرصدة للمعاينة.','Upload the report in Reconcile balances for preview.'));
+        }
         window._impState = { kind: kind, headers: rows[0], rows: rows.slice(1), lineNumbers: lineNumbers.slice(1), map: {} };
         window.fatImportMapUI();
       } catch (er) { toast(L('تعذّر قراءة الملف', 'Could not read the file'), 'err'); }
