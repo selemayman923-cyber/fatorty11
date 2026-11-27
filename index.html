@@ -7798,6 +7798,16 @@ const snsInvoiceFilters={sales:{query:'',from:'',to:''},purchases:{query:'',from
 function snsDigits(value){
   return String(value??'').replace(/[٠-٩۰-۹]/g,digit=>String(digit.charCodeAt(0)%16));
 }
+const snsInvoiceSearchCache=new WeakMap();
+function snsInvoiceSearchText(invoice,name){
+  const raw=`${invNo(invoice)} #${invoice.no} ${name||''}`;
+  let entry=snsInvoiceSearchCache.get(invoice);
+  if(entry?.raw!==raw){
+    entry={raw,text:norm(snsDigits(raw))};
+    snsInvoiceSearchCache.set(invoice,entry);
+  }
+  return entry.text;
+}
 function snsInvoiceListRecords(collection){
   const {query,from,to}=snsInvoiceFilters[collection];
   const terms=norm(snsDigits(query)).trim().split(/\s+/).filter(Boolean);
@@ -7809,7 +7819,7 @@ function snsInvoiceListRecords(collection){
     if((db.branches.length>1&&branch!=='__ALL__'&&invoice.branch&&invoice.branch!==branch)||!inRange(invoice.date,from,to))continue;
     if(terms.length){
       const name=sale?invoice.customerName:invoice.supplierName;
-      const searchable=norm(snsDigits(`${invNo(invoice)} #${invoice.no} ${name||''}`));
+      const searchable=snsInvoiceSearchText(invoice,name);
       if(!terms.every(term=>searchable.includes(term)))continue;
     }
     records.push(invoice);
@@ -15046,27 +15056,31 @@ var HELP_TOPICS=[
   {q:'النظام بطيء، أعمل إيه؟',a:'1) اقفل التطبيق وافتحه تاني. 2) اتأكد إن النت كويس. 3) لو عندك بيانات كتير جدًا (آلاف الفواتير)، النظام بيعرض أحدث البيانات الأول للسرعة. 4) جرّب تنضّف الكاش من إعدادات المتصفح.',cat:'net'},
   {q:'نسيت كلمة السر، أعمل إيه؟',a:'في صفحة الدخول اضغط «نسيت كلمة السر؟»، اكتب إيميلك، وهيوصلك رابط لإعادة التعيين. افتح الرابط من نفس المتصفح.',cat:'account'}
 ];
-function helpCenter(cat){
-  window._helpSearch=window._helpSearch||'';window._helpCat=cat||window._helpCat||'all';
-  var cats={all:'الكل',pos:'الكاشير',products:'المنتجات',print:'الطباعة',net:'الإنترنت',staff:'الموظفين',data:'البيانات',reports:'التقارير',account:'الحساب'};
+function snsHelpResults(){
   var q=(window._helpSearch||'').trim().toLowerCase();
   var filtered=HELP_TOPICS.filter(function(t){
     if(window._helpCat!=='all'&&t.cat!==window._helpCat)return false;
     if(q&&(t.q.toLowerCase().indexOf(q)<0&&t.a.toLowerCase().indexOf(q)<0))return false;
     return true;});
+  return filtered.length?filtered.map(function(t,i){return '<details style="border:1px solid var(--line);border-radius:10px;padding:0;margin-bottom:8px;overflow:hidden"><summary style="padding:12px 14px;cursor:pointer;font-weight:600;font-size:13.5px;list-style:none;display:flex;justify-content:space-between;align-items:center">'+esc(t.q)+'<span style="color:var(--muted)">▾</span></summary><div style="padding:0 14px 14px;font-size:13px;line-height:1.7;color:var(--ink)">'+esc(t.a)+'</div></details>';}).join(''):'<div style="text-align:center;padding:30px;color:var(--muted)">مفيش نتائج — جرّب كلمة تانية أو كلّمنا على واتساب</div>';
+}
+
+function helpCenter(cat){
+  window._helpSearch=window._helpSearch||'';
+  window._helpCat=cat||window._helpCat||'all';
+  var cats={all:'الكل',pos:'الكاشير',products:'المنتجات',print:'الطباعة',net:'الإنترنت',staff:'الموظفين',data:'البيانات',reports:'التقارير',account:'الحساب'};
   var catBtns=Object.keys(cats).map(function(k){return '<button class="btn '+(window._helpCat===k?'btn-primary':'btn-ghost')+' btn-sm" onclick="_helpCat=\''+k+'\';helpCenter()">'+cats[k]+'</button>';}).join(' ');
-  var items=filtered.length?filtered.map(function(t,i){return '<details style="border:1px solid var(--line);border-radius:10px;padding:0;margin-bottom:8px;overflow:hidden"><summary style="padding:12px 14px;cursor:pointer;font-weight:600;font-size:13.5px;list-style:none;display:flex;justify-content:space-between;align-items:center">'+esc(t.q)+'<span style="color:var(--muted)">▾</span></summary><div style="padding:0 14px 14px;font-size:13px;line-height:1.7;color:var(--ink)">'+esc(t.a)+'</div></details>';}).join(''):'<div style="text-align:center;padding:30px;color:var(--muted)">مفيش نتائج — جرّب كلمة تانية أو كلّمنا على واتساب</div>';
   openModal('<div class="modal-h"><h3>📖 مركز المساعدة</h3><button class="x" onclick="closeModal()">×</button></div>'+
   '<div class="modal-b">'+
-    '<input id="helpSearchInput" placeholder="🔍 ابحث عن مشكلتك..." value="'+esc(window._helpSearch||'')+'" oninput="_helpSearch=this.value;_helpCatScroll=true;helpCenter()" style="width:100%;padding:11px 14px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);font-size:14px;margin-bottom:12px">'+
+    '<input id="helpSearchInput" placeholder="🔍 ابحث عن مشكلتك..." value="'+esc(window._helpSearch||'')+'" aria-label="ابحث في مركز المساعدة" oninput="_helpSearch=this.value;document.getElementById(&quot;snsHelpResults&quot;).innerHTML=snsHelpResults()" style="width:100%;padding:11px 14px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);font-size:14px;margin-bottom:12px">'+
     '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:14px">'+catBtns+'</div>'+
-    items+
+    '<div id="snsHelpResults">'+snsHelpResults()+'</div>'+
     '<div style="margin-top:16px;text-align:center;padding:14px;background:var(--primary-soft);border-radius:10px">'+
       '<div style="font-size:13px;margin-bottom:8px">ملقتش حل لمشكلتك؟</div>'+
       '<a href="https://wa.me/201012364189?text='+encodeURIComponent('محتاج مساعدة في SNS')+'" target="_blank" style="display:inline-flex;align-items:center;gap:7px;background:#25D366;color:#fff;padding:9px 18px;border-radius:10px;font-size:13.5px;font-weight:700;text-decoration:none">💬 كلّمنا على واتساب</a>'+
     '</div>'+
   '</div>',true);
-  setTimeout(function(){var inp=document.getElementById('helpSearchInput');if(inp&&window._helpCatScroll){inp.focus();var v=inp.value;inp.value='';inp.value=v;window._helpCatScroll=false;}},30);}
+}
 
 /* Self-diagnostic tool */
 function runSelfDiagnostic(){
@@ -15799,7 +15813,7 @@ function csvImportModal(){
   '<div class="modal-f"><button type="button" class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>');
   window._csvMode=isProduct?'products':(isSupplier?'suppliers':'customers');window._csvRows=null;}
 
-const SNS_RELEASE_ID='2026.11.27-r31';
+const SNS_RELEASE_ID='2026.11.27-r32';
 
 function setSyncStatus(state){
   var el=document.getElementById('syncDot');if(!el)return;
@@ -22964,22 +22978,17 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
      ═══════════════════════════════════════════════════ */
 
   window.fatEnsureBarcodeLib = function () {
+    if (window.JsBarcode) return Promise.resolve(window.JsBarcode);
     if (window._fatBcLibP) return window._fatBcLibP;
-    window._fatBcLibP = new Promise(function (res, rej) {
-      if (window.JsBarcode) return res(window.JsBarcode);
-      var srcs = [
-        '/vendor/jsbarcode.min.js',
-        'https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js'
-      ];
-      var i = 0;
-      (function next() {
-        if (i >= srcs.length) { window._fatBcLibP = null; return rej(new Error('barcode lib unavailable')); }
-        var s = document.createElement('script');
-        s.src = srcs[i++];
-        s.onload = function () { window.JsBarcode ? res(window.JsBarcode) : next(); };
-        s.onerror = next;
-        document.head.appendChild(s);
-      })();
+    window._fatBcLibP = new Promise(function (resolve, reject) {
+      const script = document.createElement('script');
+      script.src = '/vendor/jsbarcode.min.js';
+      script.onload = () => window.JsBarcode ? resolve(window.JsBarcode) : reject(new Error('barcode lib unavailable'));
+      script.onerror = () => reject(new Error('barcode lib unavailable'));
+      document.head.appendChild(script);
+    }).catch(error => {
+      window._fatBcLibP = null;
+      throw error;
     });
     return window._fatBcLibP;
   };
@@ -22992,7 +23001,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       window.JsBarcode(el, String(code), o);
       return el.outerHTML;
     } catch (e) {
-      return '<div style="font-size:13px;font-weight:700;font-family:monospace">' + String(code) + '</div>';
+      return '<div style="font-size:13px;font-weight:700;font-family:monospace">' + esc(code) + '</div>';
     }
   };
 
@@ -23030,9 +23039,10 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     var code = fatLabelCode(p);
     if (!code) return toast(L('أضف كود/باركود للصنف أولًا', 'Add a SKU/barcode first'), 'err');
 
+    var w = window.open('', '_fatbc1', 'width=620,height=540');
+    if (!w) return toast(L('اسمح بالنوافذ المنبثقة', 'Allow pop-ups'), 'err');
     window.fatEnsureBarcodeLib().then(function () {
-      var w = window.open('', '_fatbc1', 'width=620,height=540');
-      if (!w) return toast(L('اسمح بالنوافذ المنبثقة', 'Allow pop-ups'), 'err');
+      if (w.closed) return;
       var css = '@page{size:50mm 30mm;margin:0}body{margin:0;font-family:Arial,Tahoma,sans-serif}' +
         LBL_BASE +
         '.lbl{width:50mm;height:30mm;padding:1.5mm;gap:.5mm}' +
@@ -23040,6 +23050,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       w.document.write(fatLabelDoc(fatLabelHTML(p, code), css));
       w.document.close();
     })['catch'](function () {
+      w.close();
       toast(L('تعذّر تحميل مكتبة الباركود — جرّب تاني', 'Barcode library failed to load'), 'err');
     });
   };
@@ -23051,12 +23062,13 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     var el = document.getElementById('bcQty');
     var qty = Math.max(1, Math.min(200, parseInt(el && el.value, 10) || 12));
 
+    var w = window.open('', '_fatbcbulk', 'width=820,height=680');
+    if (!w) return toast(L('اسمح بالنوافذ المنبثقة', 'Allow pop-ups'), 'err');
     window.fatEnsureBarcodeLib().then(function () {
+      if (w.closed) return;
       var one = fatLabelHTML(p, code);
       var all = '';
       for (var i = 0; i < qty; i++) all += one;
-      var w = window.open('', '_fatbcbulk', 'width=820,height=680');
-      if (!w) return toast(L('اسمح بالنوافذ المنبثقة', 'Allow pop-ups'), 'err');
       var css = '@page{size:A4;margin:6mm}' +
         'body{margin:0;font-family:Arial,Tahoma,sans-serif;display:flex;flex-wrap:wrap;gap:2mm;align-content:flex-start}' +
         LBL_BASE +
@@ -23067,12 +23079,13 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       w.document.close();
       try { closeModal(); } catch (e) {}
     })['catch'](function () {
+      w.close();
       toast(L('تعذّر تحميل مكتبة الباركود — جرّب تاني', 'Barcode library failed to load'), 'err');
     });
   };
 
   // تحميل مسبق هادي بعد الإقلاع — أول طباعة تبقى فورية
-  setTimeout(function () { try { window.fatEnsureBarcodeLib(); } catch (e) {} }, 4000);
+  setTimeout(() => { window.fatEnsureBarcodeLib().catch(() => {}); }, 4000);
 
 
   /* ═══════════════════════════════════════════════════
