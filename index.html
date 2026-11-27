@@ -2192,6 +2192,8 @@ async function authSignOut(){
   try{
     const {error}=await sb.auth.signOut({scope:'local'});
     if(error)throw error;
+    IS_ADMIN=false;SNS_BILLING_REVIEWER=false;snsAdminRender++;AFFILIATES=[];
+    if(current==='admin'){document.getElementById('content').replaceChildren();closeModal();}
     location.reload();
   }catch(e){
     toast(L('تسجيل الخروج ما تمش. جرّب تاني.','Sign out failed. Try again.'),'err');
@@ -2701,20 +2703,13 @@ async function resolveOrg(uid){
     CURRENT_ROLE=CURRENT_ORG_OWNED?'manager':(chosen.role||'cashier');
     return;
   }
-  // A failed membership insert on the first sign-in may leave an owned shop.
-  const {data:existing,error:existingError}=await sb.from('orgs').select('id').eq('owner_id',uid)
-    .order('created_at',{ascending:true}).limit(1).maybeSingle();
-  if(existingError)throw existingError;
-  let org=existing;
-  if(!org){
-    const {data:created,error}=await sb.from('orgs').insert({name:'محلي',owner_id:uid}).select('id').single();
-    if(error)throw error;
-    org=created;
-  }
-  CURRENT_ORG=org.id; CURRENT_ROLE='manager';
-  const {error:joinError}=await sb.from('org_members').insert({org_id:CURRENT_ORG,user_id:uid,role:'manager',email:db.settings.cloudEmail||null});
-  if(joinError&&joinError.code!=='23505')throw joinError;
-  CURRENT_ORG_OWNED=true;
+  const {data,error}=await sb.rpc('sns_ensure_owner_shop');
+  if(error)throw error;
+  const shop=data?.[0];
+  if(CURRENT_UID!==uid||!shop?.org_id)throw new Error('SNS_SHOP_MEMBERSHIP_FAILED');
+  CURRENT_ORG=shop.org_id;
+  CURRENT_ROLE=shop.role;
+  CURRENT_ORG_OWNED=shop.owned===true;
 }
 
 /* Make sure the shop has a subscription (creates a 14-day trial on first run),
@@ -3673,40 +3668,85 @@ function contactUpgrade(planKey){
 /* ===== Admin panel (super-admin only): manage shop subscriptions ===== */
 const PLAN_LABEL={trial:L('تجربة','Trial'),starter:'Starter',growth:'Growth',pro:'Pro',enterprise:'Enterprise'};
 const PLAN_PRICE={starter:299,growth:699,pro:1499,enterprise:0};
+let snsAdminRender=0;
+const snsAdminPending=new Set();
+function snsAdminLoadMessage(error){
+  if(error?.code==='42501')return L('الحساب الحالي محتاج صلاحية مراجعة الاشتراكات على الخادم.','This account needs billing review permission on the server.');
+  if(['PGRST202','42883'].includes(error?.code))return L('وظائف مراجعة الاشتراكات تحتاج تهيئة على الخادم.','Billing review functions need server setup.');
+  return L('تعذّر تحميل المنشآت. راجع الاتصال واضغط تحديث.','Could not load shops. Check the connection and refresh.');
+}
 views.admin=async()=>{
-  const c=document.getElementById('content');
-  if(!(IS_ADMIN||SNS_BILLING_REVIEWER)){c.innerHTML=`<div class="panel" style="max-width:560px"><div class="panel-b pad"><div class="hint">${L('غير مصرّح','Not authorized')}</div></div></div>`;return;}
-  c.innerHTML=`<div class="panel" style="max-width:920px"><div class="panel-h"><h3>🛡️ ${L('اشتراكات المحلات','Shop Subscriptions')}</h3><button class="btn btn-ghost btn-sm" onclick="views.admin()">↻ ${L('تحديث','Refresh')}</button></div><div class="panel-b pad" id="adminBody">${L('جارٍ التحميل…','Loading…')}</div></div>
-  ${IS_ADMIN?`<div class="panel" style="max-width:920px;margin-top:16px"><div class="panel-h"><h3>🤝 ${L('المسوّقين','Affiliates')}</h3><button class="btn btn-primary btn-sm" onclick="affiliateForm()">+ ${L('مسوّق جديد','New affiliate')}</button></div><div class="panel-b pad" id="affBody">${L('جارٍ التحميل…','Loading…')}</div></div>`:''}`;
-  if(IS_ADMIN)renderAffiliates();
+  const content=document.getElementById('content');
+  const user=CURRENT_UID;
+  const admin=IS_ADMIN;
+  const render=++snsAdminRender;
+  const currentRender=()=>render===snsAdminRender&&user===CURRENT_UID&&current==='admin'&&(IS_ADMIN||SNS_BILLING_REVIEWER);
+  if(!(admin||SNS_BILLING_REVIEWER)||!sb){
+    content.textContent=L('غير مصرّح','Not authorized');
+    return;
+  }
+  AFFILIATES=[];
+  content.innerHTML=`<section class="panel" style="max-width:1120px">
+    <div class="panel-h"><h3>${L('اشتراكات المنشآت','Shop subscriptions')}</h3>
+    <button type="button" class="btn btn-ghost btn-sm" onclick="views.admin()">${L('تحديث','Refresh')}</button></div>
+    <div class="panel-b pad" id="adminBody" aria-live="polite">${L('جارٍ التحميل…','Loading…')}</div></section>
+    ${admin?`<section class="panel" style="max-width:1120px;margin-top:16px"><div class="panel-h">
+    <h3>${L('المسوّقين','Affiliates')}</h3><button type="button" class="btn btn-primary btn-sm" onclick="affiliateForm()">${L('مسوّق جديد','New affiliate')}</button></div>
+    <div class="panel-b pad" id="affBody" aria-live="polite">${L('جارٍ التحميل…','Loading…')}</div></section>`:''}`;
+  if(admin)renderAffiliates();
+  const body=document.getElementById('adminBody');
   try{
-    const {data:orgs,error}=await sb.rpc('sns_billing_shops');
-    if(error)throw error;
-    const body=document.getElementById('adminBody');
-    if(!body)return;
-    if(!orgs?.length){body.textContent=L('لا توجد محلات بعد','No shops yet');return;}
-    const rows=orgs.map(o=>{
-      const s=o.plan?o:null;
-      const d=s?.expires_at?Math.ceil((Date.parse(s.expires_at)-Date.now())/86400000):null;
-      let badge;
-      if(!s){badge=`<span class="badge muted">${L('بدون','None')}</span>`;}
-      else if(snsSubscriptionInactive(s)){badge=`<span class="badge" style="background:var(--danger);color:#fff">${L('غير نشط','Inactive')}</span>`;}
-      else if(s.status==='trialing'){badge=`<span class="badge ok">${L('تجربة','Trial')} · ${d}${L('ي','d')}</span>`;}
-      else{badge=`<span class="badge ok">${L('مفعّل','Active')} · ${d}${L('ي','d')}</span>`;}
-      const exp=s&&s.expires_at?new Date(s.expires_at).toLocaleDateString():'—';
-      return `<tr>
-        <td><b>${esc(o.name||'—')}</b><div class="hint">${esc(s?(PLAN_LABEL[s.plan]||s.plan):'')} · ${exp}</div></td>
-        <td>${badge}</td>
-        <td>
-          <button class="btn btn-primary btn-sm" onclick="adminTransferForm('${o.org_id}')">${L('مراجعة تحويل','Review transfer')}</button>
-          ${s&&!snsSubscriptionInactive(s)?`<button class="btn btn-ghost btn-sm" onclick="adminBillingStop('${o.org_id}','suspended')">${L('إيقاف','Suspend')}</button>`:''}
-          ${s&&s.status!=='cancelled'?`<button class="btn btn-danger btn-sm" onclick="adminBillingStop('${o.org_id}','cancelled')">${L('إلغاء','Cancel')}</button>`:''}
-        </td></tr>`;
-    }).join('');
-    document.getElementById('adminBody').innerHTML=`
-      <div class="hint">${L('طابق رقم العملية والمبلغ مع سجل التحويل عندك، ثم سجّل قرار المراجعة.','Match the reference and amount to your transfer statement, then record the review decision.')}</div>
-      <table><thead><tr><th>${L('المحل','Shop')}</th><th>${L('الحالة','Status')}</th><th style="text-align:left">${L('إجراء','Action')}</th></tr></thead><tbody>${rows}</tbody></table>`;
-  }catch(e){const body=document.getElementById('adminBody');if(body)body.innerHTML=`<div class="hint" style="color:var(--danger)">${L('تعذّر التحميل','Load failed')}: ${esc(e.message||'')}</div>`;}
+    const contacts=admin?Promise.resolve().then(()=>sb.rpc('sns_admin_shop_contacts')).catch(error=>({error})):null;
+    const response=await sb.rpc('sns_billing_shops');
+    if(!currentRender()||!body.isConnected)return;
+    if(response.error)throw response.error;
+    const shops=response.data||[];
+    if(!shops.length){body.textContent=L('لا توجد منشآت مسجلة','No registered shops');return;}
+    const renderShops=(emails,contactStatus)=>{
+      const rows=shops.map(shop=>{
+        const hasPlan=!!shop.plan;
+        const expiry=Date.parse(shop.expires_at);
+        const days=Number.isFinite(expiry)?Math.ceil((expiry-Date.now())/86400000):null;
+        const currentPlan=hasPlan&&!snsSubscriptionInactive(shop);
+        const status=!hasPlan?L('بلا اشتراك','No subscription'):
+          ({suspended:L('موقوف','Suspended'),cancelled:L('ملغي','Cancelled'),canceled:L('ملغي','Cancelled')})[shop.status]||
+          (!currentPlan?L('غير نشط','Inactive'):shop.status==='trialing'?L('تجربة','Trial'):L('مفعّل','Active'));
+        const email=emails?.get(shop.org_id);
+        return `<tr data-org="${esc(shop.org_id)}"><td><b>${esc(shop.name||'—')}</b><div class="hint">
+          ${esc(hasPlan?PLAN_LABEL[shop.plan]||shop.plan:'')}${days!==null?' · '+new Date(expiry).toLocaleDateString():''}</div></td>
+          ${admin?`<td><bdi>${esc(email||(contactStatus?'—':L('غير مسجّل','Not recorded')))}</bdi></td>`:''}
+          <td><span class="badge ${currentPlan?'ok':'muted'}">${status}${currentPlan&&days!==null?' · '+days+L('ي','d'):''}</span></td>
+          <td><div class="row-acts">
+          <button type="button" class="btn btn-primary btn-sm" onclick="adminTransferForm(this.closest('tr').dataset.org)">${L('مراجعة تحويل','Review transfer')}</button>
+          ${currentPlan?`<button type="button" class="btn btn-ghost btn-sm" onclick="adminBillingStop(this,'suspended')">${L('إيقاف','Suspend')}</button>`:''}
+          ${hasPlan&&!['cancelled','canceled'].includes(shop.status)?`<button type="button" class="btn btn-danger btn-sm" onclick="adminBillingStop(this,'cancelled')">${L('إلغاء الاشتراك','Cancel subscription')}</button>`:''}
+          </div></td></tr>`;
+      }).join('');
+      body.innerHTML=`${admin?fatHealthWidget(fatHealthCompute(shops.map(shop=>({id:shop.org_id})),shops.filter(shop=>shop.plan))):''}
+        ${contactStatus?`<p class="hint" id="snsAdminContactStatus">${esc(contactStatus)}</p>`:''}
+        <div class="sns-table-scroll"><table><thead><tr><th>${L('المنشأة','Shop')}</th>
+        ${admin?`<th>${L('بريد صاحب المنشأة','Shop owner email')}</th>`:''}
+        <th>${L('الحالة','Status')}</th><th>${L('الإجراءات','Actions')}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    };
+    if(!admin){renderShops(null,'');return;}
+    renderShops(null,L('جارٍ تحميل بريد أصحاب المنشآت…','Loading owner emails…'));
+    const details=await contacts;
+    if(!currentRender()||!body.isConnected||!IS_ADMIN)return;
+    if(details?.error){
+      const notice=body.querySelector('#snsAdminContactStatus');
+      notice.textContent=details.error.code==='42501'
+        ?L('بريد أصحاب المنشآت يحتاج تصريح صاحب السيستم على الخادم.','Owner email requires platform contact permission on the server.')
+        :L('تعذّر تحميل البريد. راجع تهيئة الدالة والاتصال، ثم اضغط تحديث.','Owner email could not load. Check server setup and the connection, then refresh.');
+      return;
+    }
+    const emails=new Map((details?.data||[]).map(row=>[row.org_id,row.owner_email]));
+    body.querySelectorAll('tbody tr[data-org]').forEach(row=>{
+      row.cells[1].querySelector('bdi').textContent=emails.get(row.dataset.org)||L('غير مسجّل','Not recorded');
+    });
+    body.querySelector('#snsAdminContactStatus')?.remove();
+  }catch(error){
+    if(currentRender()&&body.isConnected)body.textContent=snsAdminLoadMessage(error);
+  }
 };
 function adminTransferForm(org){
   if(!(IS_ADMIN||SNS_BILLING_REVIEWER))return;
@@ -3732,11 +3772,14 @@ async function adminReviewTransfer(form,decision){
   if(!(IS_ADMIN||SNS_BILLING_REVIEWER)||form.dataset.busy||!['accepted','rejected'].includes(decision))return;
   const result=form.querySelector('#snsTransferResult');
   const values=new FormData(form);
+  const org=form.dataset.org,user=CURRENT_UID,key=user+':'+org;
+  if(snsAdminPending.has(key))return;
   if(decision==='accepted'&&!values.has('verified')){
     result.textContent=L('أكد إنك راجعت التحويل الأول.','Confirm that you verified the transfer first.');
     return;
   }
   form.dataset.busy='1';
+  snsAdminPending.add(key);
   const buttons=[...form.querySelectorAll('button[type=submit]')];
   buttons.forEach(button=>button.disabled=true);
   try{
@@ -3745,6 +3788,7 @@ async function adminReviewTransfer(form,decision){
       p_months:Number(values.get('months')),p_amount:Number(values.get('amount')),p_decision:decision});
     if(error)throw error;
     if(!data||data.decision!==decision)throw new Error('Unexpected transfer review result');
+    if(user!==CURRENT_UID||!form.isConnected)return;
     result.textContent=data.replayed
       ?L('القرار ده متسجل بالفعل. الاشتراك ما اتمددش مرة تانية.','This decision already exists. The subscription was not extended again.')
       :decision==='accepted'
@@ -3757,73 +3801,131 @@ async function adminReviewTransfer(form,decision){
       :error.code==='23505'?L('رقم العملية له مراجعة سابقة. راجع السجل قبل تسوية جديدة.','This reference already has a review. Check it before starting another review.')
       :L('تعذّر حفظ القرار. راجع البيانات والاتصال وصلاحية المراجعة.','Could not record the decision. Check the data, connection, and permissions.');
   }finally{
+    snsAdminPending.delete(key);
     delete form.dataset.busy;
     buttons.forEach(button=>button.disabled=false);
   }
 }
-async function adminBillingStop(org,status){
-  if(!(IS_ADMIN||SNS_BILLING_REVIEWER)||!await confirmBox(L('تأكيد إيقاف الاشتراك؟ سجل التحويلات هيفضل محفوظ.','Stop this subscription? Transfer history stays available.')))return;
+async function adminBillingStop(button,status){
+  if(!(IS_ADMIN||SNS_BILLING_REVIEWER)||!['suspended','cancelled'].includes(status))return;
+  const org=button.closest('tr')?.dataset.org,user=CURRENT_UID,key=user+':'+org;
+  if(!org||snsAdminPending.has(key))return;
+  snsAdminPending.add(key);
+  button.disabled=true;
   try{
+    const stop=status==='suspended';
+    const approved=await confirmBox(stop
+      ?L('تأكيد إيقاف الاشتراك؟ سجل التحويلات هيفضل محفوظ.','Suspend this subscription? Transfer history stays available.')
+      :L('تأكيد إلغاء الاشتراك؟ سجل التحويلات هيفضل محفوظ.','Cancel this subscription? Transfer history stays available.'),{danger:!stop});
+    if(!approved||user!==CURRENT_UID||current!=='admin'||!button.isConnected||!(IS_ADMIN||SNS_BILLING_REVIEWER))return;
     const {error}=await sb.rpc('sns_billing_stop',{p_org:org,p_status:status});
     if(error)throw error;
-    toast(L('تم تحديث حالة الاشتراك','Subscription status updated'));views.admin();
-  }catch(e){toast(L('تعذّر تحديث الاشتراك','Could not update the subscription'),'err');}
+    if(user!==CURRENT_UID||current!=='admin')return;
+    toast(stop?L('تم إيقاف الاشتراك','Subscription suspended'):L('تم إلغاء الاشتراك','Subscription cancelled'));
+    views.admin();
+  }catch(error){
+    if(user===CURRENT_UID)toast(L('تعذّر تحديث الاشتراك','Could not update the subscription'),'err');
+  }finally{
+    snsAdminPending.delete(key);
+    button.disabled=false;
+  }
 }
 
 /* ===== Affiliates (admin only) ===== */
 let AFFILIATES=[];
 async function renderAffiliates(){
-  const box=document.getElementById('affBody'); if(!box)return;
+  const box=document.getElementById('affBody'),user=CURRENT_UID;
+  if(!box||!IS_ADMIN)return;
+  const revision=Number(box.dataset.request||0)+1;
+  box.dataset.request=revision;
+  const active=()=>box.isConnected&&Number(box.dataset.request)===revision&&user===CURRENT_UID&&IS_ADMIN;
   try{
-    const {data,error}=await sb.rpc('admin_list_affiliates'); if(error)throw error;
+    const {data,error}=await sb.rpc('admin_list_affiliates');
+    if(!active())return;
+    if(error)throw error;
     AFFILIATES=data||[];
     if(!AFFILIATES.length){box.innerHTML=`<div class="hint">${L('مفيش مسوّقين بعد. اضغط «مسوّق جديد» لإضافة أول واحد.','No affiliates yet. Click “New affiliate” to add one.')}</div>`;return;}
-    const rows=AFFILIATES.map(a=>`<tr>
+    const rows=AFFILIATES.map(a=>`<tr data-affiliate="${esc(a.id)}">
       <td><b>${esc(a.name)}</b>${a.phone?`<div style="font-size:11px;color:var(--muted)">📞 ${esc(a.phone)}</div>`:''}</td>
       <td><span class="badge ok" style="font-family:monospace">${esc(a.code)}</span></td>
       <td style="text-align:center">${a.percent}%</td>
       <td style="text-align:center">${a.shops||0}</td>
       <td style="text-align:center;font-weight:700">${fmt(Math.round(a.commission||0))}</td>
       <td style="text-align:left;white-space:nowrap">
-        <button class="btn btn-ghost btn-sm" onclick='affiliateForm(${JSON.stringify(a).replace(/'/g,"&#39;")})'>✏️</button>
-        <button class="btn btn-danger btn-sm" onclick="delAffiliate('${a.id}','${esc(a.name)}')">🗑️</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="affiliateAction(this,'edit')">${L('تعديل','Edit')}</button>
+        <button type="button" class="btn btn-danger btn-sm" onclick="affiliateAction(this,'delete')">${L('حذف','Delete')}</button>
       </td></tr>`).join('');
     box.innerHTML=`<div style="overflow-x:auto"><table class="tbl" style="width:100%"><thead><tr>
       <th>${L('المسوّق','Affiliate')}</th><th>${L('الكود','Code')}</th><th style="text-align:center">${L('النسبة','%')}</th><th style="text-align:center">${L('محلات','Shops')}</th><th style="text-align:center">${L('العمولة','Commission')}</th><th></th>
     </tr></thead><tbody>${rows}</tbody></table></div>
     <div class="hint" style="margin-top:10px">💡 ${L('العمولة = نسبة المسوّق × سعر باقة كل محل جابه. الأرقام بتتحدّث تلقائيًا مع كل تفعيل.','Commission = affiliate % × plan price of each shop they brought. Updates automatically on each activation.')}</div>`;
-  }catch(e){box.innerHTML=`<div class="hint" style="color:var(--danger)">${L('تعذّر التحميل','Load failed')}: ${esc(e.message||'')}</div>`;}
+  }catch(error){
+    if(active())box.textContent=L('تعذّر تحميل المسوّقين. اضغط تحديث للمحاولة تاني.','Could not load affiliates. Refresh to retry.');
+  }
+}
+function affiliateAction(button,action){
+  if(!IS_ADMIN)return;
+  const affiliate=AFFILIATES.find(row=>String(row.id)===button.closest('tr')?.dataset.affiliate);
+  if(!affiliate)return;
+  if(action==='edit')affiliateForm(affiliate);
+  else if(action==='delete')delAffiliate(affiliate.id,affiliate.name);
 }
 function affiliateForm(a){
+  if(!IS_ADMIN)return;
   const ed=a&&a.id;
-  openModal(`<h3 style="margin-bottom:14px">${ed?L('تعديل مسوّق','Edit affiliate'):L('مسوّق جديد','New affiliate')}</h3>
+  openModal(`<form id="snsAffiliateForm" data-id="${esc(ed||'')}" onsubmit="event.preventDefault();saveAffiliate(this)"><h3 style="margin-bottom:14px">${ed?L('تعديل مسوّق','Edit affiliate'):L('مسوّق جديد','New affiliate')}</h3>
     <div class="field"><label>${L('الاسم','Name')}</label><input id="af_name" value="${ed?esc(a.name):''}" placeholder="${L('مثلًا: أحمد','e.g. Ahmed')}"></div>
     <div class="grid2">
       <div class="field"><label>${L('كود الخصم','Discount code')}</label><input id="af_code" value="${ed?esc(a.code):''}" placeholder="AHMED20" style="font-family:monospace;text-transform:uppercase"></div>
-      <div class="field"><label>${L('نسبة العمولة %','Commission %')}</label><input id="af_pct" type="number" inputmode="decimal" step="0.5" value="${ed?a.percent:''}" placeholder="20"></div>
+      <div class="field"><label>${L('نسبة العمولة %','Commission %')}</label><input id="af_pct" type="number" inputmode="decimal" step="0.5" min="0" max="100" value="${ed?esc(a.percent):''}" placeholder="20"></div>
     </div>
     <div class="field"><label>${L('تليفون (اختياري)','Phone (optional)')}</label><input id="af_phone" type="tel" inputmode="tel" value="${ed&&a.phone?esc(a.phone):''}" placeholder="01xxxxxxxxx"></div>
     <div style="display:flex;gap:8px;margin-top:8px">
-      <button class="btn btn-primary" onclick="saveAffiliate(${ed?`'${a.id}'`:'null'})">${L('حفظ','Save')}</button>
-      <button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button>
-    </div>`);
+      <button type="submit" class="btn btn-primary">${L('حفظ','Save')}</button>
+      <button type="button" class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button>
+    </div></form>`);
 }
-async function saveAffiliate(id){
+async function saveAffiliate(form){
+  if(!IS_ADMIN||form.dataset.busy)return;
+  const id=form.dataset.id||null,user=CURRENT_UID;
   const name=document.getElementById('af_name').value.trim();
   const code=document.getElementById('af_code').value.trim().toUpperCase();
-  const pct=parseFloat(document.getElementById('af_pct').value)||0;
+  const pct=Number(document.getElementById('af_pct').value);
   const phone=document.getElementById('af_phone').value.trim();
   if(!name||!code)return toast(L('اكتب الاسم والكود','Enter name and code'),'err');
+  if(!Number.isFinite(pct)||pct<0||pct>100)return toast(L('نسبة العمولة لازم تكون من صفر إلى 100','Commission must be between zero and 100'),'err');
+  form.dataset.busy='1';
+  const button=form.querySelector('button[type=submit]');
+  button.disabled=true;
   try{
     const {error}=await sb.rpc('upsert_affiliate',{p_id:id,p_name:name,p_code:code,p_percent:pct,p_phone:phone});
     if(error)throw error;
-    closeModal();toast(L('تم الحفظ','Saved'));renderAffiliates();
-  }catch(e){toast((e&&e.message&&e.message.includes('duplicate'))?L('الكود ده مستخدم قبل كده','Code already used'):(e.message||L('فشل الحفظ','Failed')),'err');}
+    if(user!==CURRENT_UID)return;
+    if(form.isConnected)closeModal();
+    toast(L('تم الحفظ','Saved'));renderAffiliates();
+  }catch(error){
+    if(user===CURRENT_UID)toast(error?.code==='23505'||error?.message?.includes('duplicate')
+      ?L('الكود ده مستخدم قبل كده','Code already used'):L('فشل حفظ المسوّق','Could not save affiliate'),'err');
+  }finally{
+    delete form.dataset.busy;
+    button.disabled=false;
+  }
 }
 async function delAffiliate(id,name){
-  if(!await confirmBox(L(`حذف المسوّق «${name}»؟ المحلات اللي جابها هتفضل زي ما هي.`,`Delete affiliate “${name}”? Shops they brought stay as is.`)))return;
-  try{const {error}=await sb.rpc('delete_affiliate',{p_id:id});if(error)throw error;toast(L('تم الحذف','Deleted'));renderAffiliates();}
-  catch(e){toast((e&&e.message)||L('فشل الحذف','Failed'),'err');}
+  if(!IS_ADMIN)return;
+  const user=CURRENT_UID,key=user+':affiliate:'+id;
+  if(snsAdminPending.has(key))return;
+  snsAdminPending.add(key);
+  try{
+    const approved=await confirmBox(L(`حذف المسوّق «${name}»؟`,`Delete affiliate “${name}”?`),{danger:true});
+    if(!approved||user!==CURRENT_UID||!IS_ADMIN||current!=='admin')return;
+    const {error}=await sb.rpc('delete_affiliate',{p_id:id});
+    if(error)throw error;
+    if(user!==CURRENT_UID)return;
+    toast(L('تم الحذف','Deleted'));renderAffiliates();
+  }catch(error){
+    if(user===CURRENT_UID)toast(L('فشل حذف المسوّق','Could not delete affiliate'),'err');
+  }finally{snsAdminPending.delete(key);}
 }
 
 // Branch filter: only narrows when more than one branch exists (single-branch users see everything)
@@ -4134,12 +4236,12 @@ views.pos=()=>{try{if(_activeShift&&_activeShift.openDate&&_activeShift.openDate
   }, 50);
 };
 function snsPosProductCodes(product){
-  return [product.barcode,product.sku,product.code,product.upholstery?.roll,upholsteryRollLabel(product)]
+  return [product.barcode,product.sku,product.code,product.upholstery?.roll,upholsteryRollLabel(product),product.cartonIdentity?.code]
     .filter(value=>value!==null&&value!==undefined&&String(value).trim()!=='');
 }
 function snsPosMatches(product,query,terms=norm(query).trim().split(/\s+/).filter(Boolean)){
   if(!terms.length)return true;
-  const name=norm(product.name);
+  const name=norm(snsCartonItemName(product));
   if(terms.every(term=>name.includes(term)))return true;
   return snsPosProductCodes(product).some(code=>{
     const normalized=norm(code);
@@ -4479,7 +4581,8 @@ function renderPosGrid(q){
     return `<button type="button" class="pos-card sns-pos-product ${available<=0?'out':''}" data-pid="${esc(product.id)}" onclick="posTap(this.dataset.pid)">
       ${image}${code?`<span class="sns-pos-code"><bdi>${esc(code)}</bdi></span>`:''}
       <span class="nm">${esc(product.name)}</span>
-      ${upholsteryRollLabel(product)?`<span class="q">${esc(upholsteryRollLabel(product))}</span>`:''}
+      ${upholsteryRollLabel(product)||snsCartonLabel(product)?`<span class="q">${esc(upholsteryRollLabel(product)||snsCartonLabel(product))}</span>`:''}
+      ${snsLegacyFoamSheet(product)?`<span class="q">${L('بيع ثابت · إعداد تسعير المقاس','Fixed price · Configure dimensions')}</span>`:''}
       <span class="pr">${money(product.upholstery?.kind==='foamPiece'?product.upholstery.volumeRate:effPrice(product))}${snsFinishedBedding(upholsteryKind(product))?' / '+snsBeddingRateUnit(snsBeddingBasis(upholsteryKind(product),product.upholstery.priceBasis)):product.byWeight?` / ${L('كجم','kg')}`:''}</span>
       <span class="sns-pos-availability ${below?'is-low':''}">${esc(stockLabel)}${product.variants?.length?' · '+L('له اختيارات','Variants'):''}</span>
     </button>`;
@@ -4662,18 +4765,18 @@ function renderPriceTier(){
 }
 const lineUnit=c=>{
   const rate=_safeNum(c.measure?upholsteryPrice(c,findProduct(c.pid)):(c.price!=null?c.price:effPrice(findProduct(c.pid))));
-  if(c.lineDiscPct<=0||!c.lineDiscPct)return rate;
+  if(c.lineDiscPct<=0||!c.lineDiscPct)return c.measure&&c.qty>0?r2(rate*c.qty)/c.qty:rate;
   if(c.measure&&c.qty>0){
     const gross=r2(rate*c.qty);
     return r2(gross-r2(gross*c.lineDiscPct/100))/c.qty;
   }
   return _safeNum(rate*(1-c.lineDiscPct/100));
 };
-const lineName=c=>c.label||(findProduct(c.pid)?.name||'');
+const lineName=c=>c.label||snsCartonItemName(findProduct(c.pid));
 function cartUsedQty(pid){return cart.filter(c=>c.pid===pid).reduce((s,c)=>s+c.qty,0);}
 function addToCart(pid){const p=findProduct(pid);if(!p)return;
   if(upholsteryKind(p))return upholsteryPicker(p);
-  if(upholsteryCartonSize(p))return openItemPicker(pid);
+  if(upholsteryCartonSize(p)||upholsteryCartonKg(p))return openItemPicker(pid);
   const ex=cart.find(c=>c.pid===pid&&c.price==null&&!c.byWeight);
   if(!posStockAvailable([...cart,{pid,qty:1}],fatCurBranch(),[],snsStockHoldRef(cart)))return;
   if(ex)ex.qty++;else cart.push({lid:uid(),pid,qty:1});renderCart();
@@ -4702,6 +4805,7 @@ function cartUndoRemove(){var u=window._cartUndo;if(!u||!u.item)return;if(Date.n
 /* ---- Tap product: open picker if weight/variants, else add ---- */
 let pickProd=null,pickVar=-1,pickEditLid=null;
 function posTap(pid){const p=findProduct(pid);if(!p)return;
+  if(snsLegacyFoamSheet(p)&&fatCan('editProduct'))return snsLegacyFoamChoice(p);
   if(upholsteryKind(p)||upholsteryCartonSize(p)||p.byWeight||(p.variants&&p.variants.length))openItemPicker(pid);else addToCart(pid);}
 function openItemPicker(pid,editLid){const p=findProduct(pid);if(!p)return;
   if(editLid&&cart.some(line=>line.lid===editLid&&line.stockHoldRef))
@@ -4719,7 +4823,7 @@ if(upholsteryKind(p))return upholsteryPicker(p,editLid);pickProd=p;pickEditLid=e
   const startGrams=editLine&&editLine.byWeight?Math.round(looseQty*1000):cartonKg?0:(presets[0]||250);
   const boxStock=!!snsCartonBoxes(p);
   const startQty=editLine&&!editLine.byWeight?looseQty:cartonSize?0:1;
-  openModal(`<div class="modal-h"><h3>${p.byWeight?'⚖️':'🏷️'} ${esc(p.name)}</h3><div style="display:flex;gap:6px;align-items:center">${(typeof isManager!=='function'||isManager())?`<button class="iconbtn" title="${L('تعديل المنتج','Edit product')}" onclick="editProductFromPos('${p.id}')" style="font-size:16px">✏️</button>`:''}<button class="x" onclick="closeModal()">×</button></div>
+  openModal(`<div class="modal-h"><h3>${p.byWeight?'⚖️':'🏷️'} ${esc(snsCartonItemName(p))}</h3><div style="display:flex;gap:6px;align-items:center">${(typeof isManager!=='function'||isManager())?`<button class="iconbtn" title="${L('تعديل المنتج','Edit product')}" onclick="editProductFromPos('${p.id}')" style="font-size:16px">✏️</button>`:''}<button class="x" onclick="closeModal()">×</button></div>
   <div class="modal-b">
     ${hasVar?`<div class="field"><label>${L('النوع / المتغيّر','Type / Variant')}</label>
       <div id="pickVars" style="display:flex;gap:6px;flex-wrap:wrap">${p.variants.map((v,i)=>`<span class="cat-chip ${i===pickVar?'active':''}" onclick="pickVar=${i};pickerRefresh()">${esc(v.name)}${v.extra?` (+${fmt(v.extra)})`:''}</span>`).join('')}</div></div>`:''}
@@ -4796,7 +4900,7 @@ function pickerRefresh(){const c=pickerCompute();const el=document.getElementByI
 function pickerConfirm(){const c=pickerCompute();const p=pickProd;
   if(c.qty<=0)return toast(p.byWeight?L('أدخل وزنًا','Enter a weight'):L('أدخل كمية','Enter a quantity'),'err');
   if(!posStockAvailable([...cart.filter(line=>line.lid!==pickEditLid),{pid:p.id,qty:c.qty}],fatCurBranch(),[],snsStockHoldRef(cart)))return;
-  const line={pid:p.id,qty:c.qty,price:c.netUnit,label:c.label,byWeight:!!p.byWeight,grams:c.grams,cartons:c.cartons,cartonUnitQty:c.cartonUnitQty,boxStock:!!snsCartonBoxes(p),variant:pickVar>=0?p.variants[pickVar].name:''};
+  const line={pid:p.id,qty:c.qty,price:c.netUnit,label:snsCartonLabel(p)?c.label+' · '+snsCartonLabel(p):c.label,byWeight:!!p.byWeight,grams:c.grams,cartons:c.cartons,cartonUnitQty:c.cartonUnitQty,boxStock:!!snsCartonBoxes(p),variant:pickVar>=0?p.variants[pickVar].name:''};
   // السعر المخصص: بيتحفظ في البند فقط — السعر الأصلي للمنتج يفضل كما هو
   var _cp=+(document.getElementById('pickCustomPrice')?.value)||0;
   if(_cp>0){line.customPrice=_cp;line._customPriced=true;}
@@ -5064,7 +5168,7 @@ function snsSaleStockQuantities(lines,silent=false){
     for(const component of components){
       const stockItem=findProduct(component.pid);
       const units=Number(component.qty)*line.qty;
-      if(!stockItem||!Number.isFinite(units)||units<=0){
+      if(!stockItem||!Number.isFinite(units)||units<=0||(snsCartonBoxes(stockItem)&&!Number.isSafeInteger(units))){
         if(!silent)toast(L('راجع مكونات الصنف','Check the item components')+' — '+product.name,'err');
         return null;
       }
@@ -5908,7 +6012,7 @@ function snsUpholsteryCategory(name,moveAccessories=false){
   return name;
 }
 function snsUpholsteryCategoryCleanupCount(){
-  if(!upholsteryActive()||!isManager()||db.settings.upholsteryCategories19)return 0;
+  if(!upholsteryActive()||!isManager()||db.settings.upholsteryCategories29)return 0;
   return db.products.filter(p=>p.cat!==snsUpholsteryCategory(p.cat,true)).length+
     db.categories.filter(c=>c.name!==snsUpholsteryCategory(c.name,true)).length;
 }
@@ -5920,8 +6024,12 @@ async function snsUpholsteryCategoryCleanup(){
   if(!snsUpholsteryCategoryCleanupCount())return;
   db.products.forEach(p=>{if(p.cat)p.cat=snsUpholsteryCategory(p.cat,true);});
   db.categories.forEach(c=>{if(c.name)c.name=snsUpholsteryCategory(c.name,true);});
-  if(db.settings.hiddenActivityCategories?.upholstery)db.settings.hiddenActivityCategories.upholstery=[];
+  if(db.settings.hiddenActivityCategories?.upholstery){
+    db.settings.hiddenActivityCategories.upholstery=db.settings.hiddenActivityCategories.upholstery.filter(
+      name=>!['إكسسوارات','مستلزمات تنجيد'].includes(snsUpholsteryCategory(name)));
+  }
   db.settings.upholsteryCategories19=true;
+  db.settings.upholsteryCategories29=true;
   prodCatFilter='';posCatFilter='';
   logAudit(L('ترتيب تصنيفات الأقمشة','Organize upholstery categories'),String(count)+' '+L('أصناف نُقلت لمستلزمات التنجيد','items moved to upholstery supplies'));
   save();closeModal();views.products();toast(L('تم ترتيب التصنيفات','Categories organized'));
@@ -6087,7 +6195,7 @@ async function _rwSave(){
 }
 function fatFindDupes(){
   var map={};
-  (db.products||[]).forEach(function(p){var k=norm(p.name||'');if(!k||upholsteryKind(p))return;(map[k]=map[k]||[]).push(p);});
+  (db.products||[]).forEach(function(p){var k=norm(p.name||'');if(!k||upholsteryKind(p)||p.cartonIdentity||p.boxStock)return;(map[k]=map[k]||[]).push(p);});
   return Object.keys(map).filter(function(k){return map[k].length>1;}).map(function(k){return map[k];});
 }
 function dupMergeModal(){
@@ -6209,6 +6317,7 @@ views.products=()=>{
   document.getElementById('topActions').innerHTML=
     (isManager()&&snsUnusedExamples().length?`<button class="btn btn-ghost btn-sm" onclick="snsRemoveUnusedExamples()">${L('مراجعة الأصناف التجريبية','Review sample items')}</button>`:'')+
     (snsCanRegisterFoamCut()?`<button class="btn btn-ghost" onclick="snsOpenFoamCut()">${L('تسجيل ناتج القص','Record cutting output')}</button><button class="btn btn-ghost" onclick="snsFoamCutLog()">${L('سجل ناتج القص','Cutting results')}</button>`:'')+
+    (upholsteryActive()?`<button type="button" class="btn btn-ghost" onclick="snsCartonRegister()">${L('كراتين الألوان','Color cartons')}</button>`:'')+
     `<button class="btn btn-ghost btn-sm" onclick="catManageModal()">🗂️ ${L('التصنيفات','Categories')}</button>`+
     (db.branches.length>1?`<button type="button" class="btn btn-ghost" onclick="stockTransferForm()">${L('تحويل بين الفروع','Branch transfer')}</button>`:'')+
     `<button class="btn btn-ghost btn-sm" onclick="bundlesPanel()">🎁 ${L('تجميعات','Bundles')}${db.bundles&&db.bundles.length?` (${db.bundles.length})`:''}</button>`+
@@ -6218,7 +6327,7 @@ views.products=()=>{
     ((['restaurant','cafe','bakery'].indexOf(db.settings.businessType)>=0||db.products.some(function(p){return p.components&&p.components.length;}))?
       `<button class="btn btn-primary btn-sm" onclick="restWizard()" title="${L('إعداد المطعم: تصنيف + وصفات + مخزون','Restaurant setup wizard')}">🍔 ${L('إعداد المطعم','Restaurant Setup')}</button>`+
       `<button class="btn btn-ghost btn-sm" onclick="bulkClassifyModal()" title="${L('تحديد نوع كل صنف','Classify items')}">🏷️ ${L('تصنيف','Classify')}</button>`:'')+
-    `<button class="btn btn-primary" onclick="productForm()">+ ${L('صنف جديد','New Item')}</button>`;
+    `<button class="btn btn-primary" onclick="productForm('', '', prodCatFilter)">+ ${L('صنف جديد','New Item')}</button>`;
   const sv=db.products.reduce((s,p)=>s+p.cost*p.qty,0);
   const fixedPrice=db.products.filter(p=>!snsFinishedBedding(upholsteryKind(p)));
   const hasBedding=fixedPrice.length!==db.products.length;
@@ -6254,7 +6363,7 @@ views.products=()=>{
 function renderProductsTab(q){_rowQ.products=q;
   if(prodTab==='moves'){renderStockMoves(q);return;}
   let list=db.products.filter(p=>
-    (matches(p.name,q)||matches(p.cat,q)||matches(p.sku,q))&&
+    (matches(snsCartonItemName(p),q)||matches(p.cat,q)||matches(p.sku,q))&&
     (!prodCatFilter||(p.upholstery?.kind==='fabric'?'أقمشة':snsUpholsteryCategory(p.cat))===prodCatFilter));
   if(prodTab==='list') renderProductsList(list);
   else if(prodTab==='profit') renderProductsProfit(list);
@@ -6367,7 +6476,7 @@ function renderProductsList(list){var _full=list;list=list.slice(0,_cap('product
       const low=fatShowsInStock(p)&&p.qty<=p.min;
       const stockVal=p.cost*p.qty;
       return `<tr>
-        <td><div style="display:flex;align-items:center;gap:9px">${p.img?`<img src="${p.img}" style="width:34px;height:34px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">`:''}<div><b>${esc(p.name)}</b>${fatItemTypeBadge(p)}${p.byWeight?` <span class="badge info" style="font-size:10.5px">⚖️</span>`:''}${(p.variants&&p.variants.length)?` <span class="badge muted" style="font-size:10.5px">🏷️ ${p.variants.length}</span>`:''}${expiryBadge(p)}<div style="font-size:11px;color:var(--muted)">${esc(prodUnit(p))||''}${p.location?' · 📍 '+esc(p.location):''}${p.expiry?' · 📅 '+p.expiry:''}${(p.variants&&p.variants.length)?' · '+p.variants.map(v=>esc(v.name)).join('، '):''}</div></div></div></td>
+        <td><div style="display:flex;align-items:center;gap:9px">${p.img?`<img src="${p.img}" style="width:34px;height:34px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">`:''}<div><b>${esc(p.name)}</b>${fatItemTypeBadge(p)}${p.byWeight?` <span class="badge info" style="font-size:10.5px">⚖️</span>`:''}${(p.variants&&p.variants.length)?` <span class="badge muted" style="font-size:10.5px">🏷️ ${p.variants.length}</span>`:''}${expiryBadge(p)}<div style="font-size:11px;color:var(--muted)">${esc(prodUnit(p))||''}${snsCartonLabel(p)?' · '+esc(snsCartonLabel(p)):''}${p.location?' · 📍 '+esc(p.location):''}${p.expiry?' · 📅 '+p.expiry:''}${(p.variants&&p.variants.length)?' · '+p.variants.map(v=>esc(v.name)).join('، '):''}</div></div></div></td>
         <td style="font-size:12px">${esc(p.sku)||'—'}</td>
         <td>${p.cat?`<span class="badge muted">${esc(snsUpholsteryCategory(p.cat))}</span>`:'—'}</td>
         <td class="t-num">${money(p.cost)}${p.byWeight?`<span style="font-size:10px;color:var(--muted)">/${L('كجم','kg')}</span>`:''}</td>
@@ -6470,7 +6579,7 @@ function catManageModal(){
       <input id="newCatInput" placeholder="${L('اسم التصنيف الجديد','New category name')}" style="flex:1;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink)">
       <button class="btn btn-primary" onclick="addCatFromModal()">${L('إضافة','Add')}</button>
     </div>
-    ${snsUpholsteryCategoryCleanupCount()?`<p><button class="btn btn-primary btn-sm" onclick="snsUpholsteryCategoryCleanup()">${L('ترتيب التصنيفات القديمة','Organize old categories')}</button></p>`:''}
+    ${snsUpholsteryCategoryCleanupCount()?`<p><button class="btn btn-primary btn-sm" onclick="snsUpholsteryCategoryCleanup()">${L('نقل الإكسسوارات الحالية إلى مستلزمات التنجيد','Move existing accessories to upholstery supplies')}</button></p>`:''}
     <div id="catList">${renderCatListHTML(cats)}</div>
   </div>
   <div class="modal-f"><button class="btn btn-ghost" onclick="closeModal()">${L('إغلاق','Close')}</button></div>`);}
@@ -6568,8 +6677,122 @@ function snsStartUpholsteryItem(kind){
   productForm('',kind);
 }
 function upholsteryKind(p){return p?.upholstery?.kind||'';}
+function snsLegacyFoamSheet(p){
+  return upholsteryActive()&&!!p&&!upholsteryKind(p)&&snsUpholsteryCategory(p.cat)==='إسفنج'&&
+    !p.byWeight&&!p.boxStock&&!p.components?.length&&fatItemType(p)==='simple'&&
+    ['قطعه','لوح','قطعه اسفنج','pc','pcs','piece','sheet'].includes(norm(p.unit||''));
+}
+function snsLegacyFoamChoice(p){
+  openModal(`<div class="modal-h"><h3>${esc(p.name)}</h3><button class="x" onclick="closeModal()">×</button></div>
+    <div class="modal-b"><p>${L('الصنف محفوظ بسعر للقطعة. لإظهار حاسبة المقاس، أدخل سعر المتر المكعب في بطاقة الصنف.','This item has a fixed piece price. Enter a rate per cubic metre on the item to use the dimensions calculator.')}</p></div>
+    <div class="modal-f" data-pid="${esc(p.id)}"><button class="btn btn-primary" onclick="editProductFromPos(this.parentElement.dataset.pid);document.getElementById('up_pieceVolumeRate')?.focus()">${L('إعداد سعر المتر المكعب','Set cubic metre rate')}</button>
+    <button class="btn btn-ghost" onclick="openItemPicker(this.parentElement.dataset.pid)">${L('بيع بسعر القطعة المسجل','Sell at saved piece price')}</button></div>`);
+}
 function upholsteryRollLabel(p){
   return upholsteryKind(p)==='fabric'?[p.upholstery.roll,p.upholstery.color].filter(Boolean).join(' / '):'';
+}
+function snsCartonLabel(p){
+  const carton=p?.cartonIdentity;
+  return carton?[carton.code,carton.color,carton.contents!==p.name?carton.contents:''].filter(Boolean).join(' · '):'';
+}
+function snsCartonItemName(p){
+  const label=snsCartonLabel(p);
+  return p?p.name+(label?' · '+label:''):'';
+}
+function snsCartonRegister(){
+  if(!upholsteryActive()||snsViewAccess('products')!=='open')return;
+  const warehouses=window._fatMyBranch?fatBranchList().filter(b=>b.id===window._fatMyBranch):fatBranchList();
+  const cartons=db.products.filter(p=>p.cartonIdentity);
+  openModal(`<div class="modal-h"><h3>${L('كراتين الألوان','Color cartons')}</h3><button type="button" class="x" onclick="closeModal()">×</button></div>
+    <div class="modal-b"><div class="sns-table-scroll"><table><thead><tr>
+      <th>${L('الصنف ومحتويات الكرتونة','Item and carton contents')}</th>
+      ${warehouses.map(b=>`<th>${esc(b.name)}</th>`).join('')}
+      <th>${L('إجمالي العلب','Total boxes')}</th></tr></thead><tbody>
+      ${cartons.map(p=>`<tr><td>${esc(snsCartonItemName(p))}</td>${warehouses.map(b=>{
+        const qty=fatBQOf({...p},b.id);
+        return `<td>${esc(snsBoxEquivalent(qty,p.packSize))}</td>`;
+      }).join('')}<td>${window._fatMyBranch?fatBQOf({...p},window._fatMyBranch):p.qty}</td></tr>`).join('')}
+    </tbody></table></div>${cartons.length?'':`<p>${L('مفيش كراتين بأكواد وألوان متسجلة لسه.','No cartons with codes and colors have been recorded yet.')}</p>`}</div>
+    <div class="modal-f">${fatCan('editProduct')?`<button class="btn btn-primary" onclick="productForm('', 'carton', 'إكسسوارات')">${L('إضافة كرتونة بلون','Add a color carton')}</button>`:''}
+    ${isManager()&&snsCartonSplitSources().length?`<button class="btn btn-ghost" onclick="snsCartonSplitForm()">${L('توزيع رصيد موجود على ألوان','Split existing stock by color')}</button>`:''}</div>`,true);
+}
+function snsCartonSplitSources(){
+  return db.products.filter(p=>snsCartonBoxes(p)&&!p.cartonIdentity&&fatItemType(p)==='simple'&&
+    !p.variants?.length&&!p.components?.length&&!p.batches?.length&&!p.trackBatch&&!p.trackSerial&&
+    fatUnitFactor(p)===1&&Number.isSafeInteger(p.qty)&&p.qty>0);
+}
+function snsCartonSplitForm(){
+  const branch=fatCurBranch();
+  if(!upholsteryActive()||!isManager()||!db.branches.some(b=>b.id===branch))
+    return toast(L('اختار المخزن اللي فيه الرصيد قبل التوزيع','Select the warehouse before splitting stock'),'err');
+  openModal(`<div class="modal-h"><h3>${L('توزيع رصيد موجود على كراتين ألوان','Split existing stock into color cartons')}</h3><button class="x" onclick="closeModal()">×</button></div>
+    <div class="modal-b" id="snsCartonSplit" data-branch="${esc(branch)}">
+      <p class="hint">${esc(branchName(branch))} · ${L('العلب تُخصم من الصنف الأصلي بنفس التكلفة. اكتب الكمية الفعلية لكل لون.','Boxes move from the original item at the same cost. Enter the actual count for each color.')}</p>
+      <label class="field">${L('الصنف الأصلي','Original item')}<select id="snsCartonSplitSource">
+        ${snsCartonSplitSources().map(p=>`<option value="${esc(p.id)}">${esc(p.name)} · ${snsWarehouseSellable(p,branch)} ${L('علبة متاحة','sellable boxes')}</option>`).join('')}
+      </select></label><div id="snsCartonSplitRows"></div>
+      <button type="button" class="btn btn-ghost" onclick="snsAddCartonSplitRow()">${L('إضافة لون','Add color')}</button>
+    </div><div class="modal-f"><button type="button" class="btn btn-primary" onclick="snsApplyCartonSplit(this)">${L('مراجعة واعتماد التوزيع','Review and confirm split')}</button></div>`,true);
+  snsAddCartonSplitRow();
+}
+function snsAddCartonSplitRow(){
+  const rows=document.getElementById('snsCartonSplitRows');
+  if(rows.children.length>=50)return;
+  const row=document.createElement('div');
+  row.className='grid2';
+  row.innerHTML=`<label class="field">${L('كود الكرتونة','Carton code')}<input data-carton-code maxlength="100"></label>
+    <label class="field">${L('اللون','Color')}<input data-carton-color maxlength="100"></label>
+    <label class="field">${L('عدد العلب','Boxes')}<input data-carton-qty type="number" min="1" step="1"></label>
+    <button type="button" class="btn btn-ghost" onclick="this.parentElement.remove()">${L('حذف السطر','Remove row')}</button>`;
+  rows.append(row);
+}
+async function snsApplyCartonSplit(button){
+  if(button.disabled||!upholsteryActive()||!isManager())return;
+  const form=document.getElementById('snsCartonSplit');
+  const branch=form.dataset.branch;
+  const id=document.getElementById('snsCartonSplitSource').value;
+  const source=snsCartonSplitSources().find(p=>p.id===id);
+  if(!source||branch!==fatCurBranch()||!snsCanPost(today()))return;
+  const rows=[...document.getElementById('snsCartonSplitRows').children].map(row=>({
+    code:row.querySelector('[data-carton-code]').value.trim(),color:row.querySelector('[data-carton-color]').value.trim(),
+    qty:Number(row.querySelector('[data-carton-qty]').value)
+  }));
+  const occupied=new Set(db.products.flatMap(p=>snsPosProductCodes(p).map(fatNorm)));
+  for(const row of rows){
+    const code=fatNorm(row.code);
+    if(!code||!row.color||!Number.isSafeInteger(row.qty)||row.qty<=0||occupied.has(code))
+      return toast(L('اكتب لون وعدد علب صحيح وكود مختلف لكل كرتونة','Enter a color, whole box count and unique code on every row'),'err');
+    occupied.add(code);
+  }
+  const total=rows.reduce((sum,row)=>sum+row.qty,0);
+  if(!rows.length||!Number.isSafeInteger(total)||total>snsWarehouseSellable(source,branch))
+    return toast(L('إجمالي العلب أكبر من الرصيد المتاح، أو الجدول فارغ','The total exceeds available boxes or the list is empty'),'err');
+  const max=maxProducts();
+  if(max>=0&&db.products.length+rows.length>max)
+    return toast(L('عدد الكراتين الجديدة يتعدى حد الأصناف في الباقة','The new cartons exceed the plan’s item limit'),'err');
+  const org=CURRENT_ORG,user=CURRENT_UID,before=snapStr(source);
+  button.disabled=true;
+  try{
+    const approved=await confirmBox(L('هنوزع','Split')+' '+total+' '+L('علبة على','boxes across')+' '+rows.length+' '+L('كراتين في','cartons at')+' '+branchName(branch));
+    if(!approved||!form.isConnected||org!==CURRENT_ORG||user!==CURRENT_UID||branch!==fatCurBranch()||
+      document.getElementById('snsCartonSplitSource')?.value!==id||
+      snapStr(findProduct(id))!==before||total>snsWarehouseSellable(source,branch)||!snsCanPost(today()))return;
+    if(rows.some(row=>db.products.some(p=>snsPosProductCodes(p).some(code=>fatNorm(code)===fatNorm(row.code))))||
+      max>=0&&db.products.length+rows.length>max)
+      return toast(L('رصيد الأصناف أو الكود اتغير. أعد المراجعة.','The item count or a code changed. Review the split again.'),'err');
+    const ref=uid(),note=L('توزيع علب على أكواد ألوان','Reclassify stock into color cartons');
+    moveStock(id,-total,'adjust',note,ref);
+    for(const {code,color,qty} of rows){
+      const carton={id:uid(),name:source.name,cat:source.cat,sku:code,itemType:'simple',boxStock:true,unit:source.unit,
+        packName:source.packName,packSize:source.packSize,qty:0,cost:source.cost,price:source.price,
+        onlinePrice:source.onlinePrice,wholeSalePrice:source.wholeSalePrice,min:0,
+        expiry:source.expiry,location:source.location,cartonIdentity:{code,color,contents:source.name}};
+      db.products.push(carton);
+      moveStock(carton.id,qty,'adjust',note,ref);
+    }
+    logAudit(note,branchName(branch)+' · '+ref);
+    save();snsCartonRegister();toast(L('تم توزيع الرصيد','Existing stock split'));
+  }finally{button.disabled=false;}
 }
 function snsCartonBoxes(p){return p?.boxStock?upholsteryCartonSize(p):0;}
 function snsBoxEquivalent(quantity,size){
@@ -6638,7 +6861,7 @@ function upholsteryFields(p,id,initialKind){
   const kind=upholsteryKind(p)||initialKind||'', u=p.upholstery||{};
   const field=(key,label,type='number')=>'<label class="field">'+label+'<input id="up_'+key+'" type="'+type+'" min="0" step="any" value="'+esc(u[key]??'')+'"></label>';
   return '<div class="field"><label for="up_kind">'+L('وحدة البيع المتخصصة','Specialised sale type')+'</label>'+
-    '<select id="up_kind" onchange="upholsteryProductMode()" '+(id?'disabled':'')+'>'+
+    '<select id="up_kind" onchange="snsPickUpholsteryCategory(this.value);upholsteryProductMode()" '+(id?'disabled':'')+'>'+
     ['','fabric','foam','pillow','mattress','foamPiece'].map((key,i)=>'<option value="'+key+'" '+(key===kind?'selected':'')+'>'+[L('صنف عادي','Standard item'),L('توب قماش','Fabric roll'),L('إسفنج','Foam'),L('مخدة بالمقاس','Sized pillow'),L('مرتبة بالمقاس','Sized mattress'),L('إسفنج بالمقاس — المخزون بالقطعة','Sized foam with piece inventory')][i]+'</option>').join('')+'</select></div>'+
     '<div id="up_fabric">'+field('roll',L('كود التوب (إلزامي)','Roll code (required)'),'text')+field('color',L('اللون','Colour'),'text')+
     field('family',L('الخامة لتجميع الأتواب (اختياري)','Material for grouping rolls (optional)'),'text')+
@@ -6660,6 +6883,11 @@ function upholsteryFields(p,id,initialKind){
       <p class="hint">${L('ضبط الأبعاد يخلّي الصنف يظهر في البحث عن البواقي. استخدمه لصنف منفصل رصيده متسجل بالفعل. تعبئة الأبعاد لا تضيف رصيد.','Dimensions make a stocked piece searchable as an offcut. Use a separately recorded item; dimensions do not add stock.')}</p>
       <div class="grid2">${[['width','العرض (سم)','Width (cm)'],['length','الطول (سم)','Length (cm)'],['height','السُمك (سم)','Thickness (cm)'],['density','الكثافة','Density']].map(([key,ar,en])=>
         `<label class="field">${L(ar,en)}<input id="foam_offcut_${key}" type="number" min="0.001" step="any" value="${esc(p.foamOffcut?.[key]??'')}"></label>`).join('')}</div></details>`;
+}
+function snsPickUpholsteryCategory(kind){
+  const select=document.getElementById('f_cat');
+  const category=({fabric:'أقمشة',foam:'إسفنج',foamPiece:'إسفنج',pillow:'مخدات',mattress:'مراتب'})[kind];
+  if(select&&!select.value&&[...select.options].some(option=>option.value===category))select.value=category;
 }
 function upholsteryProductMode(){
   const kind=document.getElementById('up_kind')?.value;
@@ -6741,6 +6969,8 @@ function upholsteryPrice(line,p){
   if(line.price!=null)return +line.price;
   const u=p.upholstery;
   if(line.measure.mode==='finished')return line.measure.rate*line.measure.factor;
+  if(Number.isFinite(line.measure.rate)&&Number.isFinite(line.measure.billable)&&line.qty>0)
+    return line.measure.rate*line.measure.billable/line.qty;
   if(u.kind==='fabric'&&u.remnantAt>0&&u.remnantPrice>0&&(fatCurBranch()?fatBQOf(p,fatCurBranch()):p.qty)<=u.remnantAt)return u.remnantPrice;
   if(!['kg','kg_size'].includes(line.measure.mode))return effPrice(p);
   const rate=(posPriceTier==='wholesale'&&u.kgWholesale>0)?u.kgWholesale:u.kgPrice||effPrice(p)/u.density;
@@ -6889,8 +7119,22 @@ function snsFindFoamOffcuts(form){
     ${L('المتاح','Available')} ${upholsteryAvailable({...p})-cartUsedQty(p.id)}${p.location?' · '+esc(p.location):''}</li>`).join('')}</ul>`:
     `<p>${L('مفيش قطعة مناسبة متاحة في المخزن الحالي.','No matching piece is available in the current warehouse.')}</p>`;
 }
-function upholsteryPicker(p,lid){
-  const line=cart.find(c=>c.lid===lid);
+function snsCloseInvoiceMeasurement(){
+  document.getElementById('snsInvoiceMeasurement')?.replaceChildren();
+}
+function snsInvoiceMeasureLine(){
+  const form=document.getElementById('up_picker');
+  return form?.dataset.invoice===undefined?null:invLines[+form.dataset.invoice];
+}
+function snsEditInvoiceMeasurement(index){
+  const line=invLines[index];
+  const p=findProduct(line?.pid);
+  if(!p||!upholsteryKind(p)||invKind==='purchase')return;
+  upholsteryPicker(p,'',index);
+}
+function upholsteryPicker(p,lid,invoiceIndex){
+  const inInvoice=invoiceIndex!==undefined;
+  const line=inInvoice?invLines[invoiceIndex]:cart.find(c=>c.lid===lid);
   const fabric=upholsteryKind(p)==='fabric', u=p.upholstery;
   const m=line?.measure||{};
   const finished=snsFinishedBedding(u.kind);
@@ -6901,16 +7145,25 @@ function upholsteryPicker(p,lid){
   const roll=fabric?' · '+esc(upholsteryRollLabel(p)):'';
   const lengthAsCm=m.lengthInputUnit?m.lengthInputUnit==='cm':finished;
   const lengthUnit='<label class="field">'+L('وحدة الطول','Length unit')+'<select id="up_pick_length_unit" onchange="upholsteryPreview()"><option value="m">'+L('متر','Metres')+'</option><option value="cm" '+(lengthAsCm?'selected':'')+'>'+L('سنتيمتر','Centimetres')+'</option></select></label>';
-  openModal('<div class="modal-h"><h3>'+esc(p.name)+roll+'</h3><button class="x" onclick="closeModal()">×</button></div>'+
-    '<div class="modal-b" id="up_picker" data-pid="'+esc(p.id)+'" data-lid="'+esc(lid||'')+'">'+
+  const title='<h3>'+esc(p.name)+roll+'</h3>';
+  const fields='<div class="modal-b" id="up_picker" data-pid="'+esc(p.id)+'" data-lid="'+esc(lid||'')+'"'+
+    (inInvoice?' data-invoice="'+invoiceIndex+'"':'')+'>'+
     '<label class="field">'+(finished?L('أساس التسعير','Pricing basis'):L('طريقة القياس','Measurement'))+'<select id="up_pick_mode" onchange="upholsteryPreview()">'+
     modes.map(([key,label])=>'<option value="'+key+'" '+(key===m.mode?'selected':'')+'>'+label+'</option>').join('')+'</select></label>'+
     '<div id="up_pick_amount_box">'+input('amount',L('الكمية بالوحدة المختارة','Quantity in selected unit'),m.amount)+'</div>'+
     '<div id="up_pick_size_box" class="grid3">'+input('width',L('العرض (سم)','Width (cm)'),m.width)+
     input('length',L('الطول','Length'),lengthAsCm&&m.length?Number((m.length*100).toPrecision(12)):m.length)+input('height',L('السُمك (سم)','Thickness (cm)'),m.height)+lengthUnit+'</div><div id="up_pick_count_box">'+input('count',L('عدد القطع بنفس المقاس','Pieces of the same size'),m.count||1)+'</div>'+
     (!fabric?input('discount',L('خصم الصنف (%)','Item discount (%)'),line?.lineDiscPct??0):'')+
-    '<p class="hint sns-sale-preview" id="up_pick_info" aria-live="polite"></p></div>'+
-    '<div class="modal-f"><button id="up_pick_add" class="btn btn-primary" onclick="upholsteryConfirm()">'+(lid?L('تحديث','Update'):L('أضف للسلة','Add to cart'))+'</button></div>');
+    '<p class="hint sns-sale-preview" id="up_pick_info" aria-live="polite"></p></div>';
+  const footer='<div class="modal-f"><button id="up_pick_add" type="button" class="btn btn-primary" onclick="upholsteryConfirm()">'+
+    (inInvoice?L('اعتماد المقاس في الفاتورة','Apply measurement to invoice'):lid?L('تحديث','Update'):L('أضف للسلة','Add to cart'))+'</button></div>';
+  if(inInvoice){
+    const target=document.getElementById('snsInvoiceMeasurement');
+    if(!target)return;
+    target.innerHTML='<div class="panel"><div class="panel-h">'+title+
+      '<button type="button" class="btn btn-ghost" onclick="snsCloseInvoiceMeasurement()">'+L('إغلاق القياس','Close measurements')+'</button></div>'+fields+footer+'</div>';
+    target.scrollIntoView?.({block:'nearest'});
+  }else openModal('<div class="modal-h">'+title+'<button class="x" onclick="closeModal()">×</button></div>'+fields+footer);
   upholsteryPreview();
 }
 function upholsteryReadPicker(){
@@ -6921,7 +7174,7 @@ function upholsteryReadPicker(){
   const [width,inputLength,height]=['width','length','height'].map(key=>+read(key));
   const lengthInputUnit=read('length_unit');
   const length=lengthInputUnit==='cm'?inputLength/100:inputLength;
-  const old=cart.find(c=>c.lid===form.dataset.lid);
+  const old=snsInvoiceMeasureLine()||cart.find(c=>c.lid===form.dataset.lid);
   const finished=mode==='finished';
   const basis=old?.measure?.basis||snsBeddingBasis(upholsteryKind(p),p.upholstery.priceBasis);
   const sized=['size','piece','kg_size'].includes(mode);
@@ -6946,6 +7199,13 @@ function upholsteryReadPicker(){
   if(mode==='piece'||mode==='kg_size')measure.count=count;
   if(mode==='kg_size')measure.amount=Number((volume*u.density).toPrecision(12));
   if(mode==='kg_size'&&(!Number.isFinite(measure.amount)||measure.amount<=0))return null;
+  if(!finished&&u.kind==='foam'){
+    const byKg=['kg','kg_size'].includes(mode);
+    const rate=byKg?(posPriceTier==='wholesale'&&u.kgWholesale>0?u.kgWholesale:u.kgPrice||effPrice(p)/u.density):effPrice(p);
+    measure.rate=old?.measure?.mode===mode?(old.measure.rate??rate):rate;
+    measure.billable=byKg?(mode==='kg'?amount:measure.amount):volume;
+    if(!Number.isFinite(measure.rate)||measure.rate<=0||!Number.isFinite(measure.billable)||measure.billable<=0)return null;
+  }
   const dimensions=width+' × '+inputLength+' × '+height+' '+(lengthInputUnit==='cm'?L('سم','cm'):L('(سم × م × سم)','(cm × m × cm)'));
   const pieces=count+' '+L('قطعة','pcs');
   const lengthText=inputLength+' '+(lengthInputUnit==='cm'?L('سم','cm'):L('م','m'));
@@ -6987,7 +7247,8 @@ function upholsteryPreview(){
   const finished=mode==='finished';
   const picker=document.getElementById('up_picker');
   const p=findProduct(picker.dataset.pid);
-  const basis=cart.find(row=>row.lid===picker.dataset.lid)?.measure?.basis||snsBeddingBasis(upholsteryKind(p),p.upholstery.priceBasis);
+  const invoiceLine=snsInvoiceMeasureLine();
+  const basis=(invoiceLine||cart.find(row=>row.lid===picker.dataset.lid))?.measure?.basis||snsBeddingBasis(upholsteryKind(p),p.upholstery.priceBasis);
   const size=finished||['size','piece','kg_size'].includes(mode);
   document.getElementById('up_pick_width').closest('label').hidden=finished&&basis==='linear';
   document.getElementById('up_pick_height').closest('label').hidden=finished&&basis!=='volume';
@@ -6996,8 +7257,12 @@ function upholsteryPreview(){
   document.getElementById('up_pick_size_box').style.display=size?'':'none';
   const line=upholsteryReadPicker();
   const price=line?lineUnit(line):0;
-  const otherLines=line?cart.filter(c=>c.lid!==line.lid):cart;
-  const available=line&&upholsteryStockCheck(otherLines.concat(line),true);
+  const otherLines=invoiceLine?invLines.filter(c=>c!==invoiceLine&&snsInvoiceLineIncluded(c)&&
+    (!upholsteryKind(findProduct(c.pid))||c.measure)):line?cart.filter(c=>c.lid!==line.lid):cart;
+  const prior=invoiceLine?snsSaleStockQuantities(editSaleCtx?.orig?.items||[],true):new Map();
+  const needed=line?snsSaleStockQuantities([...otherLines,line],true):null;
+  const shortages=invoiceLine&&needed?snsSaleStockShortages(needed,fatCurBranch(),prior||new Map()):[];
+  const available=line&&(invoiceLine?invKind==='quote'||!!needed&&!shortages.length:upholsteryStockCheck(otherLines.concat(line),true));
   const reserved=otherLines.filter(c=>c.pid===p.id).reduce((sum,c)=>sum+c.qty,0);
   const unit=upholsteryUnit(upholsteryKind(p));
   const remaining=upholsteryQty(p,Math.max(0,upholsteryAvailable(p)-reserved-(line?.qty||0)));
@@ -7005,10 +7270,11 @@ function upholsteryPreview(){
   amountLabel.firstChild.nodeValue=({m:L('الطول بالمتر','Length in metres'),yd:L('الطول بالياردة','Length in yards'),kg:L('الوزن بالكيلو','Weight in kg')})[mode]||'';
   document.getElementById('up_pick_add').disabled=!(line&&price>0&&available);
   document.getElementById('up_pick_info').textContent=!line?L('راجع المقاس ونسبة الخصم والحد المسموح','Check the measurement, discount and permitted limit'):
-    !available?snsSaleStockShortages(new Map([[p,reserved+line.qty]]),fatCurBranch(),new Map(),snsStockHoldRef(cart)).map(snsStockShortageText).join('\n')||L('راجع كميات السلة','Check the cart quantities'):
+    !available?(invoiceLine?shortages:snsSaleStockShortages(new Map([[p,reserved+line.qty]]),fatCurBranch(),new Map(),snsStockHoldRef(cart))).map(snsStockShortageText).join('\n')||L('راجع كميات السلة','Check the cart quantities'):
     price<=0?L('اضبط سعر البيع للوحدة المختارة','Set a selling price for the selected unit'):
     (finished?L('سعر وحدة القياس','Measurement rate')+' '+money(line.measure.rate)+' / '+snsBeddingRateUnit(basis)+'\n':
       size?L('الحجم الكلي','Total volume')+' '+line.qty+' '+unit+'\n':'')+
+    (!finished&&line.measure.rate?L('سعر وحدة القياس','Measurement rate')+' '+money(line.measure.rate)+' / '+(['kg','kg_size'].includes(mode)?L('كجم','kg'):L('م³','m³'))+'\n':'')+
     (mode==='kg_size'?L('الوزن المحسوب من الكثافة','Weight estimated from density')+' '+line.measure.amount+' '+L('كجم','kg')+'\n':'')+
     (finished||mode==='piece'?L('سعر القطعة بعد الخصم','Price per piece after discount')+' '+money(r2(price*line.qty)/line.measure.count)+'\n':'')+
     (line.lineDiscPct?L('قبل الخصم','Before discount')+' '+money(r2(upholsteryPrice(line,p)*line.qty))+' · '+L('الخصم','Discount')+' '+line.lineDiscPct+'%\n':'')+
@@ -7017,6 +7283,14 @@ function upholsteryPreview(){
 }
 function upholsteryConfirm(){
   const line=upholsteryReadPicker();
+  const invoiceLine=snsInvoiceMeasureLine();
+  if(invoiceLine){
+    if(!line||invoiceLine.pid!==line.pid||document.getElementById('up_pick_add').disabled)return;
+    Object.assign(invoiceLine,{qty:line.qty,price:lineUnit(line),label:line.label,measure:line.measure,lineDiscPct:line.lineDiscPct});
+    document.getElementById('snsInvoiceMeasurement').replaceChildren();
+    renderInvLines();calcInv();
+    return;
+  }
   if(!line||lineUnit(line)<=0||!upholsteryStockCheck(cart.filter(c=>c.lid!==line.lid).concat(line)))return;
   const i=cart.findIndex(c=>c.lid===line.lid);
   if(i<0)cart.push({...line,lid:uid()});
@@ -7116,20 +7390,32 @@ function upholsteryUsePicker(){
   return toast(L('استخدم نقطة البيع لاختيار قياس القماش أو الإسفنج','Use the POS to choose fabric or foam measurements'),'err');
 }
 
-function productForm(id,initialKind){
+function productForm(id,initialKind,initialCategory){
   const p=id?findProduct(id):{name:'',cat:'',sku:'',cost:'',price:'',qty:0,min:5,unit:L('قطعة','pc'),wholeSalePrice:0,notes:''};
+  if(!p)return;
   const cats=getAllCats();
   const isFabricShop=upholsteryActive();
+  const category= snsUpholsteryCategory(p.cat)||initialCategory||
+    (isFabricShop?({fabric:'أقمشة',foam:'إسفنج',foamPiece:'إسفنج',pillow:'مخدات',mattress:'مراتب'})[initialKind]:'');
+  const selectedCategory=cats.includes(category)?category:'';
   const margin=p.cost>0?Math.round((p.price-p.cost)/p.cost*100):0;
   prodImgData=p.img||'';
   prodVariants=(p.variants||[]).map(v=>({name:v.name,extra:+v.extra||0}));window._compSelf=id||'';window._compEdit=(p.components||[]).map(c=>({pid:c.pid,qty:+c.qty||1}));
   openModal(`<div class="modal-h"><h3>${id?L('تعديل صنف','Edit Item'):L('صنف جديد','New Item')}</h3><button class="x" onclick="closeModal()">×</button></div>
-  <div class="modal-b"${!id&&initialKind&&isFabricShop?' data-sns-first-item':''}>
+  <div class="modal-b"${!id&&initialKind&&initialKind!=='carton'&&isFabricShop?' data-sns-first-item':''}>
     <div class="grid2">
       <div class="field"><label>${L('اسم الصنف','Item name')}</label><input id="f_name" value="${esc(p.name)}"></div>
+      <div class="field"><label for="f_cat">${L('القسم (إلزامي)','Category (required)')}</label>
+        <select id="f_cat" required>
+          <option value="">${L('اختار القسم','Choose category')}</option>
+          ${cats.map(c=>`<option value="${esc(c)}" ${selectedCategory===c?'selected':''}>${esc(c)}</option>`).join('')}
+          <option value="__new__">${L('+ تصنيف جديد','+ New category')}</option>
+        </select>
+        <input id="f_cat_new" placeholder="${L('اسم التصنيف الجديد','New category name')}" style="display:none;margin-top:6px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)" oninput="">
+      </div>
       ${(typeof feat!=='function'||feat('barcode'))?`<div class="field"><label>${L('الكود الداخلي','Internal code')}</label><input id="f_sku" value="${esc(p.sku||'')}"></div><div class="field"><label>${L('باركود المنتج (اختياري)','Product barcode (optional)')}</label><input id="f_barcode" value="${esc(p.barcode||'')}" placeholder="${L('الباركود المطبوع على المنتج','Printed barcode')}"></div>`:`<input type="hidden" id="f_sku" value="${esc(p.sku||'')}"><input type="hidden" id="f_barcode" value="${esc(p.barcode||'')}">`}
     </div>
-    ${upholsteryFields(p,id,initialKind)}
+    ${upholsteryFields(p,id,initialKind==='carton'?'':initialKind)}
     <div ${isFabricShop&&fatItemType(p)==='simple'?'hidden':''} class="field" style="background:#f0f7f5;padding:10px;border-radius:10px;margin-bottom:10px">
       <label style="font-weight:700">${L('نوع الصنف','Item Type')}</label>
       <select id="f_itemType" onchange="fatItemTypeHint()">
@@ -7140,23 +7426,18 @@ function productForm(id,initialKind){
       <div id="f_itemTypeHint" style="font-size:11.5px;color:#0a2c56;margin-top:5px"></div>
     </div>
     <div class="grid2">
-      <div class="field"><label>${L('التصنيف','Category')}</label>
-        <select id="f_cat">
-          <option value="">${L('بدون تصنيف','No category')}</option>
-          ${cats.map(c=>`<option value="${esc(c)}" ${snsUpholsteryCategory(p.cat)===c?'selected':''}>${esc(c)}</option>`).join('')}
-          <option value="__new__">${L('+ تصنيف جديد','+ New category')}</option>
-        </select>
-        <input id="f_cat_new" placeholder="${L('اسم التصنيف الجديد','New category name')}" style="display:none;margin-top:6px;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)" oninput="">
-      </div>
       <div class="field"><label>${L('الوحدة','Unit')}</label><input id="f_unit" value="${esc(p.unit||L('قطعة','pc'))}"></div>
     </div>
-    <details style="margin-bottom:10px;background:#fafafa;border-radius:10px;padding:8px 12px">
+    <details ${p.cartonIdentity||initialKind==='carton'?'open':''} style="margin-bottom:10px;background:#fafafa;border-radius:10px;padding:8px 12px">
       <summary style="cursor:pointer;font-size:13px;color:#0a2c56;font-weight:600">${L('📦 وحدة الجملة (اختياري) — للشراء بالكرتونة','📦 Bulk unit (optional)')}</summary>
       <div class="grid2" style="margin-top:10px">
         <div class="field"><label>${L('اسم وحدة الجملة','Bulk unit name')}</label><input id="f_packName" placeholder="${L('كرتونة / صندوق','Carton / Box')}" value="${esc(p.packName||'')}"></div>
         <div class="field"><label>${L('كام وحدة فيها؟','Units per bulk')}</label><input id="f_packSize" type="number" inputmode="decimal" step="1" placeholder="${L('مثال: 24','e.g. 24')}" value="${p.packSize||''}"></div>
       </div>
       ${isFabricShop?`<label class="field">${L('عدد العلب في الكرتونة (اختياري)','Boxes in each carton (optional)')}<input id="f_boxesPerCarton" type="number" min="1" step="1" inputmode="numeric" value="${p.boxStock?p.packSize:''}"></label>
+      <div class="grid2">${[['code',L('كود الكرتونة','Carton code')],['color',L('لون الكرتونة','Carton color')],['contents',L('محتويات الكرتونة (اختياري)','Carton contents (optional)')]].map(([key,label])=>
+        `<label class="field">${label}<input id="f_carton_${key}" maxlength="100" value="${esc(p.cartonIdentity?.[key]||'')}"></label>`).join('')}</div>
+      <p class="hint">${L('سجّل كل لون بكود كرتونة مستقل. الكمية الفعلية تُسجل بالعلبة في المخزن المختار أعلى الشاشة.','Use a separate carton code per color. Record the actual quantity in boxes at the selected warehouse.')}</p>
       <p class="hint">${L('لما تستخدم عدد العلب، سجّل رصيد الصنف وتكلفته وسعره بالعلبة. لو الرصيد مكتوب بالكراتين، راجع الجرد وحوّله لعدد العلب عند إعداد الصنف.','When using inner boxes, enter stock, cost and price per box. If stock was recorded in cartons, reconcile it in boxes when setting up the item.')}</p>`:''}
       <div class="hint">${L('مثال: كرتونة المياه فيها 24 زجاجة. لما تشتري بالكرتونة، البرنامج هيحسب القطع تلقائي.','Example: a carton has 24 bottles. When buying by carton, units are auto-calculated.')}</div>
     </details>
@@ -7190,7 +7471,7 @@ function productForm(id,initialKind){
       <div style="font-size:12px;color:var(--muted);margin-top:4px">${L('تكلفة المكونات','Components cost')}: <b id="f_compCost">0</b></div>
     </div></div>
     <div class="grid2">
-      <div class="field"><label id="f_qtyLbl">${p.byWeight?L('الكمية (كجم)','Quantity (kg)'):L('الكمية','Quantity')}</label><input id="f_qty" type="number" inputmode="decimal" step="0.001" value="${p.qty}"></div>
+      <div class="field"><label id="f_qtyLbl">${p.byWeight?L('الكمية (كجم)','Quantity (kg)'):L('الكمية','Quantity')}</label><input id="f_qty" type="number" inputmode="decimal" step="0.001" value="${p.qty}" ${p.cartonIdentity?'readonly':''}></div>
       <div class="field"><label id="f_minLbl">${p.byWeight?L('حد التنبيه (كجم)','Min alert (kg)'):L('حد التنبيه','Min alert')}</label><input id="f_min" type="number" inputmode="decimal" step="0.001" value="${p.min}"></div>
     </div>
     ${snsWarehouseMinFields(p)}
@@ -7205,7 +7486,7 @@ function productForm(id,initialKind){
       <div class="field"><label>📅 ${L('انتهاء الصلاحية (اختياري)','Expiry date (optional)')}</label><input id="f_expiry" type="date" value="${esc(p.expiry||'')}"></div>
     </div>
     <div class="field"><label>${L('ملاحظات','Notes')}</label><input id="f_notes" value="${esc(p.notes||'')}"></div>
-    ${id?`<div class="hint">💡 ${L('تقدر تعدّل الكمية مباشرة من هنا — النظام هيسجّل الفرق تلقائيًا كتسوية جرد.','Edit the quantity directly here — the difference is auto-recorded as a stock adjustment.')}</div>`:''}
+    ${id&&!p.cartonIdentity?`<div class="hint">💡 ${L('تقدر تعدّل الكمية مباشرة من هنا — النظام هيسجّل الفرق تلقائيًا كتسوية جرد.','Edit the quantity directly here — the difference is auto-recorded as a stock adjustment.')}</div>`:''}
   </div>
   <div class="modal-f"><button class="btn btn-primary" onclick="saveProduct('${id||''}')">${L('حفظ','Save')}</button><button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button></div>`);
   // Show new cat input when "new" is selected
@@ -7213,12 +7494,7 @@ function productForm(id,initialKind){
     document.getElementById('f_cat_new').style.display=this.value==='__new__'?'block':'none';upholsteryProductMode();
   });
   renderVariantRows();upholsteryProductMode();
-  if(!id&&initialKind&&isFabricShop){
-    const category=document.getElementById('f_cat');
-    const suggested=({fabric:'أقمشة',foam:'إسفنج',pillow:'مخدات',mattress:'مراتب'})[initialKind];
-    if([...category.options].some(option=>option.value===suggested))category.value=suggested;
-    document.getElementById('f_name').focus();
-  }
+  if(!id&&initialKind&&isFabricShop)document.getElementById('f_name').focus();
 }
 function toggleWeightUI(){const on=document.getElementById('f_byweight').checked;
   document.getElementById('f_weightBox').style.display=on?'block':'none';
@@ -7257,20 +7533,31 @@ function prodPickImage(el){const f=el.files&&el.files[0];if(!f)return;
     const pv=document.getElementById('f_imgPrev');if(pv)pv.innerHTML=`<img src="${prodImgData}" style="width:100%;height:100%;object-fit:cover;border-radius:12px">`;
   };img.src=r.result;};r.readAsDataURL(f);}
 function prodClearImage(){prodImgData='';const pv=document.getElementById('f_imgPrev');if(pv)pv.innerHTML='🏷️';}
-function saveProduct(id){
+function saveProduct(id,allowDuplicateSku=false){
   const g=x=>{const e=document.getElementById(x);return e?e.value:'';};
   const guided=!id&&!!document.querySelector('#modal [data-sns-first-item]');
   const name=g('f_name').trim();if(!name)return toast(L('اكتب الاسم','Enter name'),'err');
+  if(!fatCan('editProduct'))return toast(L('مالكش صلاحية تعديل الأصناف','No permission to edit items'),'err');
+  const oldProduct=id?findProduct(id):null;
+  if(id&&!oldProduct)return;
+  let savedProduct=oldProduct;
   const customCat=g('f_cat')==='__new__';
   const cat=snsUpholsteryCategory(customCat?g('f_cat_new').trim():g('f_cat'));
+  if(!cat){
+    document.getElementById(customCat?'f_cat_new':'f_cat')?.focus();
+    return toast(L('اختار القسم قبل الحفظ','Choose a category before saving'),'err');
+  }
+  const enteredQty=+g('f_qty');
+  if(!Number.isFinite(enteredQty)||enteredQty<0||['f_price','f_cost'].some(key=>!Number.isFinite(+g(key))||+g(key)<0))
+    return toast(L('راجع الكمية والسعر والتكلفة','Check the quantity, price and cost'),'err');
+  const quantityChange=enteredQty-(oldProduct?.qty||0);
+  if(quantityChange&&!snsCanPost(today()))return;
   const measure=upholsteryProductData(g,id);
   if (measure === false) return;
   const minInputs=isManager()&&!window._fatMyBranch?[...document.querySelectorAll('#modalBg.open [data-sns-warehouse-min]')]:[];
   const minimums=minInputs.filter(input=>input.value!=='').map(input=>[input.dataset.snsWarehouseMin,+input.value]);
   if(minimums.some(([,qty])=>!Number.isFinite(qty)||qty<0||upholsteryQty({upholstery:measure?.upholstery},qty)!==qty||snsFinishedBedding(measure?.upholstery.kind)&&!Number.isSafeInteger(qty)))
     return toast(L('راجع حد المخزون. اكتب قيمة موجبة أو صفر بدقة وحدة الصنف.','Use a nonnegative warehouse minimum with the stock unit precision.'),'err');
-  if (customCat && cat && !getAllCats().includes(cat)) db.categories.push({id:uid(),name:cat});
-  if(!cat)return toast(L('اختر تصنيف الصنف — إلزامي','Choose a category — required'),'err');
   var _bc=(document.getElementById('f_barcode')?document.getElementById('f_barcode').value:'').trim();
   if(_bc){var _dup=db.products.find(function(x){return x.barcode===_bc&&x.id!==id;});if(_dup)return toast(L('⚠️ الباركود مستخدم قبل كده في: '+_dup.name,'Barcode already used: '+_dup.name),'err');}
   const byWeight=document.getElementById('f_byweight').checked;
@@ -7301,6 +7588,22 @@ function saveProduct(id){
   }else if(upholsteryActive()&&findProduct(id)?.boxStock){
     d.boxStock=false;
   }
+  const carton=Object.fromEntries(['code','color','contents'].map(key=>[key,g('f_carton_'+key).trim()]));
+  if(oldProduct?.cartonIdentity||Object.values(carton).some(Boolean)){
+    if(!d.boxStock||!carton.code||!carton.color||_selType!=='simple'||variants.length)
+      return toast(L('سجّل كود الكرتونة ولونها وعدد علبها بدون متغيرات إضافية','Specify a carton code, one color and boxes per carton'),'err');
+    const conversion=Number(g('f_unitfactor'))||1;
+    if(conversion!==1||document.getElementById('f_trackbatch')?.checked||document.getElementById('f_trackserial')?.checked)
+      return toast(L('كرتونة اللون تُتابع بالكود وتتحسب بالعلبة. راجع إعداد معامل التحويل والتتبع.','A color carton uses its code and box count. Check the unit conversion and tracking settings.'),'err');
+    if(db.products.some(p=>p.id!==id&&snsPosProductCodes(p).some(code=>fatNorm(code)===fatNorm(carton.code))))
+      return toast(L('كود الكرتونة مستخدم لصنف آخر','This carton code is already used by another item'),'err');
+    const branch=fatCurBranch();
+    if(oldProduct&&quantityChange)return toast(L('عدّل رصيد الكرتونة من حركة مخزون أو فاتورة أو جرد','Use a stock movement, invoice, or stock count to adjust carton balance'),'err');
+    if(quantityChange&&(branch==='__ALL__'||!db.branches.some(b=>b.id===branch)))
+      return toast(L('اختار المخزن اللي هيتسجل فيه الرصيد الافتتاحي','Select a warehouse for the opening balance'),'err');
+    d.cartonIdentity={...carton,contents:carton.contents||name};
+    if(!d.sku)d.sku=carton.code;
+  }
   if(measure) Object.assign(d,measure);
   if(measure?.upholstery.kind==='foamPiece'){
     const keys=['width','length','height','density'];
@@ -7322,16 +7625,17 @@ function saveProduct(id){
     if(mp>=0 && db.products.length>=mp){
       return toast(L(`وصلت للحد الأقصى للمنتجات في باقتك (${mp}). رقّي لباقة أعلى لإضافة المزيد.`,`You reached your plan's product limit (${mp}). Upgrade to add more.`),'err');
     }
-    // تحذير لو الباركود موجود قبل كده (يمنع لخبطة البيع بالماسح)
-    if(d.sku && d.sku.trim()){
-      const dupe=db.products.find(p=>p.sku && p.sku.trim()===d.sku.trim());
-      if(dupe && !window._skuDupeConfirmed){
-        window._skuDupeConfirmed=false;
-        return openModal('<div class="modal-b" style="padding:22px;text-align:center"><div style="font-size:40px;margin-bottom:8px">⚠️</div><h3 style="color:#c0392b;margin-bottom:8px">'+L('الباركود موجود قبل كده','Barcode already exists')+'</h3><p style="font-size:13.5px;color:var(--muted);margin-bottom:16px">'+L('فيه منتج تاني ('+esc(dupe.name)+') بنفس الباركود ده. لو كملت، البيع بالماسح ممكن يلخبط بينهم.','Another product has this barcode.')+'</p><button class="btn btn-primary" onclick="window._skuDupeConfirmed=true;closeModal();saveProduct()" style="width:100%;justify-content:center;margin-bottom:8px">'+L('كمّل الحفظ برضه','Save anyway')+'</button><button class="btn btn-ghost" onclick="closeModal()" style="width:100%;justify-content:center">'+L('رجوع وتعديل الباركود','Go back')+'</button></div>',true);
-      }
+    if(d.sku&&!allowDuplicateSku&&db.products.some(p=>snsPosProductCodes(p).some(code=>fatNorm(code)===fatNorm(d.sku)))){
+      document.getElementById('f_sku')?.focus();
+      return toast(L('الكود الداخلي مستخدم بالفعل. اكتب كود مختلف؛ البيانات لسه موجودة في النموذج.','The internal code is already used. Enter a different code; your form entries are retained.'),'err');
     }
-    window._skuDupeConfirmed=false;
-    const qty=+g('f_qty')||0;const np={id:uid(),...d,qty:0};db.products.push(np);if(qty)moveStock(np.id,qty,'opening',L('رصيد افتتاحي','Opening stock'));}
+    const qty=+g('f_qty')||0;const np={id:uid(),...d,qty:0};savedProduct=np;db.products.push(np);if(qty)moveStock(np.id,qty,'opening',L('رصيد افتتاحي','Opening stock'));}
+  if(customCat&&!db.categories.some(category=>category.name===cat)&&!snsActivityCategories(snsActivityType()).includes(cat))
+    db.categories.push({id:uid(),name:cat});
+  if(!id&&current==='products'){
+    prodCatFilter=cat;
+    prodTab='list';
+  }
   prodImgData='';prodVariants=[];logAudit(id?L('تعديل صنف','Edit item'):L('إضافة صنف','Add item'),name);save();closeModal();
   if(window._editFromPos){window._editFromPos=false;go('pos');
     // رجّع السلة المحفوظة بعد ما الكاشير اتفتح من جديد
@@ -7340,7 +7644,9 @@ function saveProduct(id){
       var _sel=document.getElementById('posCustomer');if(_sel&&snap.custId){_sel.value=snap.custId;try{renderPosMemberCard();}catch(e){}}
       try{renderCart();}catch(e){}try{renderPosGrid('');}catch(e){}}
     try{renderPriceTier();}catch(e){}}else if(guided){go('dashboard');}else{views.products();}
-  toast(L('تم الحفظ','Saved'));}
+  toast(L('تم الحفظ','Saved'));
+  return savedProduct;
+}
 
 async function delProduct(id){if(typeof fatCan==='function'&&!fatCan('editProduct'))return toast(L('مالكش صلاحية حذف المنتجات','No permission'),'err');
   // تحذير لو المنتج في السلة النشطة حالياً
@@ -7407,17 +7713,62 @@ function doBulkBarcodePrint(id){
   w.document.close();
   closeModal();
 }
+function snsCountSystemQty(product,branch){
+  return branch?fatBQOf({...product},branch):(+product.qty||0);
+}
+async function snsSaveWarehouseCount(counts,branch,onDone,type){
+  if(!db.branches.some(row=>row.id===branch)||fatCurBranch()!==branch)
+    return toast(L('اختار المخزن اللي هتجرده','Select the warehouse to count'),'err');
+  const items=[];
+  for(const [id,raw] of Object.entries(counts)){
+    const product=findProduct(id);
+    if(!product||!fatShowsInStock(product)||raw==='')continue;
+    const actual=Number(raw),system=snsCountSystemQty(product,branch);
+    if(!Number.isFinite(actual)||actual<0||upholsteryQty(product,actual)!==actual||
+      ((snsCartonBoxes(product)||snsFinishedBedding(upholsteryKind(product)))&&!Number.isSafeInteger(actual))||
+      actual<snsStockHeld(id,branch))
+      return toast(L('راجع وحدة الجرد والكمية المحجوزة للصنف','Check the count unit and reserved quantity')+' · '+snsCartonItemName(product),'err');
+    const diff=upholsteryQty(product,actual-system);
+    if(diff)items.push({pid:id,name:snsCartonItemName(product),system,actual,diff,unitCost:+product.cost||0});
+  }
+  if(!items.length)return toast(L('لا توجد فروق جرد','No inventory variances'));
+  const org=CURRENT_ORG,user=CURRENT_UID;
+  if(!await confirmBox(L('اعتماد تسويات مخزن','Post adjustments for')+' '+branchName(branch)+' · '+items.length))return;
+  if(org!==CURRENT_ORG||user!==CURRENT_UID||fatCurBranch()!==branch||!snsCanPost(today()))return;
+  if(items.some(item=>{
+    const product=findProduct(item.pid);
+    return !product||snsCountSystemQty(product,branch)!==item.system||
+      (+product.cost||0)!==item.unitCost||item.actual<snsStockHeld(item.pid,branch);
+  }))return toast(L('رصيد أو تكلفة صنف اتغيروا. راجع الجرد تاني.','Stock or cost changed. Review the count again.'),'err');
+  const id=uid();
+  for(const item of items)moveStock(item.pid,item.diff,'adjust',L('تسوية جرد','Stock adjustment'),id);
+  db.stockTakes.push({id,date:today(),branch,type,user:currentUserName(),count:items.length,adjs:items.length,
+    totalDiff:items.reduce((sum,item)=>sum+Math.abs(item.diff),0),items});
+  logAudit(L('تسوية جرد','Stock adjustment'),branchName(branch)+' · '+items.length);
+  save();onDone();toast(L('تم اعتماد جرد المخزن','Warehouse count posted'));
+}
 function stockCountForm(){
+  const branch=upholsteryActive()?fatCurBranch():'';
+  if(upholsteryActive()&&!db.branches.some(row=>row.id===branch))
+    return toast(L('اختار المخزن اللي هتجرده','Select the warehouse to count'),'err');
   var stkProds=db.products.filter(fatShowsInStock);
   var hasMenu=db.products.some(function(p){return fatItemType(p)==='menu';});
   openModal(`<div class="modal-h"><h3>📋 ${L('جرد وتسوية المخزون','Stock Count')}</h3><button class="x" onclick="closeModal()">×</button></div>
-  <div class="modal-b"><div class="hint">${L('اكتب الكمية الفعلية ويسجّل النظام الفرق.','Enter actual counted qty; the difference is logged.')}</div>
+  <div class="modal-b" id="snsCountWarehouse" data-branch="${esc(branch)}"><div class="hint">${branch?esc(branchName(branch))+' · ':''}${L('اكتب الكمية الفعلية ويسجّل النظام الفرق.','Enter actual counted qty; the difference is logged.')}</div>
   ${hasMenu?`<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12.5px;color:#1e40af">📦 ${L('الوجبات والأصناف المركّبة مش بتظهر هنا — مخزونها بيتحسب تلقائيًا من مكوناتها (خاماتها).','Menu/composite items are excluded — their stock is computed from their components.')}</div>`:''}
   <table class="inv-items"><thead><tr><th>${L('الصنف','Item')}</th><th>${L('بالنظام','System')}</th><th>${L('الفعلي','Actual')}</th></tr></thead><tbody>
-  ${stkProds.map(p=>`<tr><td>${esc(p.name)}${p.byWeight?` <span class="badge info" style="font-size:10.5px">⚖️ ${L('كجم','kg')}</span>`:''}</td><td class="t-num">${fmtStock(p)}</td><td><input type="number" inputmode="decimal" step="${upholsteryKind(p)?'0.000001':p.byWeight?'0.001':'1'}" id="cnt_${p.id}" value="${p.qty}"></td></tr>`).join('')}</tbody></table></div>
+  ${stkProds.map(p=>{
+    const qty=snsCountSystemQty(p,branch);
+    return `<tr><td>${esc(snsCartonItemName(p))}</td><td class="t-num">${fmtStock({...p,qty})}</td><td><input type="number" inputmode="decimal" step="${snsCartonBoxes(p)?'1':upholsteryKind(p)?'0.000001':p.byWeight?'0.001':'1'}" id="cnt_${p.id}" value="${qty}"></td></tr>`;
+  }).join('')}</tbody></table></div>
   <div class="modal-f"><button class="btn btn-primary" onclick="applyStockCount()">${L('حفظ','Save')}</button><button class="btn btn-ghost" onclick="closeModal()">${L('إلغاء','Cancel')}</button></div>`,true);}
 
-function applyStockCount(){let n=0;db.products.filter(fatShowsInStock).forEach(p=>{const el=document.getElementById('cnt_'+p.id);if(!el)return;const v=+el.value;if(v!==p.qty){moveStock(p.id,v-p.qty,'adjust',L('تسوية جرد','Stock adjustment'));n++;}});if(n)logAudit(L('جرد مخزون','Stock count'),`${n} ${L('صنف','items')}`);save();closeModal();views.products();toast(n?`${n} ${L('صنف','items')}`:L('لا تغييرات','No changes'));}
+function applyStockCount(){
+  if(upholsteryActive()){
+    const counts=Object.fromEntries(db.products.filter(fatShowsInStock).map(p=>[p.id,document.getElementById('cnt_'+p.id)?.value??'']));
+    return snsSaveWarehouseCount(counts,document.getElementById('snsCountWarehouse')?.dataset.branch,()=>{closeModal();views.products();},'count');
+  }
+  let n=0;db.products.filter(fatShowsInStock).forEach(p=>{const el=document.getElementById('cnt_'+p.id);if(!el)return;const v=+el.value;if(v!==p.qty){moveStock(p.id,v-p.qty,'adjust',L('تسوية جرد','Stock adjustment'));n++;}});if(n)logAudit(L('جرد مخزون','Stock count'),`${n} ${L('صنف','items')}`);save();closeModal();views.products();toast(n?`${n} ${L('صنف','items')}`:L('لا تغييرات','No changes'));}
 
 function stockHistory(id){const p=findProduct(id);const moves=db.stockMoves.filter(m=>m.pid===id).reverse();
   openModal(`<div class="modal-h"><h3>📜 ${esc(p.name)}</h3><button class="x" onclick="closeModal()">×</button></div>
@@ -7578,7 +7929,7 @@ function invQuickAddParty(isCust){
 }
 function invoiceForm(kind,fromQuote,preSupplierId){invKind=kind;if(kind==='purchase')setTimeout(function(){var _pa=typeof invPriceAlerts==='function'?invPriceAlerts():[];if(_pa.length)showInvPriceAlerts();},400);invLines=(window._poPrefill&&window._poPrefill.length)?window._poPrefill:[{pid:'',qty:1,price:0}];window._poPrefill=null;activePurchaseOrderId=kind==='purchase'?pendingPurchaseOrderId:null;pendingPurchaseOrderId=null;
   const isSale=kind!=='purchase';const parties=isSale?db.customers:db.suppliers;let preCust=preSupplierId||'';
-  if(fromQuote){const qd=db.quotes.find(x=>x.id===fromQuote);invLines=qd.items.map(it=>({pid:it.pid,qty:it.qty,price:it.price}));preCust=qd.customerId||'';}
+  if(fromQuote){const qd=db.quotes.find(x=>x.id===fromQuote);invLines=qd.items.map(it=>({pid:it.pid,qty:it.qty,price:it.price,label:it.name,measure:it.measure,lineDiscPct:it.lineDiscPct}));preCust=qd.customerId||'';}
   const banksOpt=db.banks.map(b=>`<option value="${b.id}">🏦 ${esc(b.name)}</option>`).join('');
   const payRow=kind==='quote'?'':`<div class="grid3"><div class="field"><label>${L('طريقة الدفع','Payment')}</label><select id="inv_pm" onchange="togglePaid()"><option value="cash">${L('نقدي بالكامل','Full cash')}</option><option value="partial">${L('دفع جزئي','Partial')}</option><option value="credit">${L('آجل بالكامل','Full credit')}</option></select></div>
     <div class="field" id="paidWrap" style="display:none"><label>${L('المدفوع الآن','Paid now')}</label><input id="inv_paid" type="number" inputmode="decimal" value="0" oninput="calcInv()"></div>
@@ -7594,6 +7945,7 @@ function invoiceForm(kind,fromQuote,preSupplierId){invKind=kind;if(kind==='purch
     ${!isSale?purchExtraHtml(editSaleCtx&&editSaleCtx.orig):''}
     ${db.products.length?'':`<div class="hint">⚠️ ${L('أضف أصنافًا أولًا','Add items first')}</div>`}
     <table class="inv-items"><thead><tr><th style="width:42%">${invKind==='purchase'?L('الصنف / الخامة','Item / Material'):L('الصنف','Item')}</th><th>${L('كمية','Qty')}</th><th>${L('سعر','Price')}</th><th>${L('إجمالي','Total')}</th><th></th></tr></thead><tbody id="invBody"></tbody></table>
+    ${isSale?'<div id="snsInvoiceMeasurement"></div>':''}
     ${kind==='sale'?'<div id="snsInvoiceStock" class="hint sns-stock-shortages" aria-live="polite" hidden></div>':''}
     <button class="btn btn-ghost btn-sm" style="margin:10px 0" onclick="addInvLine()">+ ${L('إضافة صنف','Add item')}</button>
     <div class="grid2" style="margin-top:8px"><div class="field"><label>${L('خصم','Discount')} (${cur()})</label><input id="inv_disc" type="number" inputmode="decimal" value="${isSale&&upholsteryActive()?(fromQuote?(db.quotes.find(q=>q.id===fromQuote)?.disc||0):''):0}" placeholder="${isSale&&upholsteryActive()?L('خصم العميل، أو اكتب مبلغًا','Customer default, or enter an amount'):''}" oninput="calcInv()"></div>
@@ -7658,7 +8010,8 @@ function calcInv(){const sub=invLines.filter(snsInvoiceLineIncluded).reduce((s,l
   }
   return {sub,disc,vat,vatP,total};}
 function saveInvoice(){if(!document.querySelector('#modalBg.open #inv_party'))return;const isSale=(invKind!=='purchase');const lines=invLines.filter(snsInvoiceLineIncluded);if(!lines.length)return toast(L('أضف صنفًا','Add an item'),'err');
-  if(isSale&&lines.some(l=>upholsteryKind(findProduct(l.pid))))return upholsteryUsePicker();
+  if(isSale&&lines.some(l=>upholsteryKind(findProduct(l.pid))&&!l.measure))
+    return toast(L('حدد المقاس من زر «المقاس والخصم» لكل صنف مقاس قبل الحفظ','Set the measurement on every measured item before saving'),'err');
   if(lines.some(l=>snsCartonBoxes(findProduct(l.pid))&&!Number.isSafeInteger(l.qty)))
     return toast(L('كمية الصنف المعبأ لازم تكون عدد علب صحيح','Enter a whole number of boxes'),'err');
   if(lines.some(l=>snsFinishedBedding(upholsteryKind(findProduct(l.pid)))&&!Number.isSafeInteger(l.qty)))
@@ -7666,7 +8019,10 @@ function saveInvoice(){if(!document.querySelector('#modalBg.open #inv_party'))re
   const T=calcInv();const partyId=document.getElementById('inv_party').value;const date=document.getElementById('inv_date').value||today();
   if(lines.some(line=>!Number.isFinite(line.qty)||!Number.isFinite(line.price)||line.price<0||(line.pid&&!findProduct(line.pid)))||
     !Number.isFinite(T.total)||T.disc<0||T.vatP<0)return toast(L('راجع الصنف والكمية والسعر والخصم والضريبة','Check the item, quantity, price, discount, and tax'),'err');
-  const items=lines.map(l=>{const p=l.pid?findProduct(l.pid):null;return {pid:p?p.id:'',name:p?p.name:(l.name||'').trim(),qty:l.qty,price:l.price,cost:p?effCost(p):l.price,cat:p?(p.cat||''):(l.name||'').trim(),...(!isSale&&p?{stockFactor:fatUnitFactor(p)}:{})};});
+  const items=lines.map(l=>{const p=l.pid?findProduct(l.pid):null;return {pid:p?p.id:'',name:p?(isSale&&l.label?l.label:snsCartonItemName(p)):(l.name||'').trim(),qty:l.qty,price:l.price,cost:p?effCost(p):l.price,cat:p?(p.cat||''):(l.name||'').trim(),
+    ...(isSale&&l.measure?{measure:l.measure,
+      ...(l.lineDiscPct?{lineDiscPct:l.lineDiscPct,grossUnit:upholsteryPrice({...l,price:undefined},p)}:{})}:{}),
+    ...(snsCartonBoxes(p)?{boxStock:true}:{}),...(!isSale&&p?{stockFactor:fatUnitFactor(p)}:{})};});
   if(invKind==='quote'){const party=partyId?findCustomer(partyId):null;db.quotes.push({id:uid(),no:db.seq.quote++,date,customerId:partyId,customerName:party?party.name:'',items,sub:T.sub,disc:T.disc,vat:T.vat,vatP:T.vatP,total:T.total,status:'open'});save();closeModal();go('quotes');toast(L('تم حفظ العرض','Quote saved'));return;}
   if(!snsCanPost(date,editSaleCtx?.orig?.date))return;
   const branch=activeBranch();
@@ -7904,7 +8260,7 @@ function editSale(id){if(!isManager())return toast(L('التعديل متاح ل
   if(s.items.some(it=>it.measure))return toast(L('ألغِ الفاتورة وسجّل القياسات من نقطة البيع','Void the invoice and enter measurements at the POS'),'err');
   editSaleCtx={orig:s};
   invoiceForm('sale',null,s.customerId||'');
-  invLines=s.items.map(it=>({pid:it.pid,qty:it.qty,price:it.price}));
+  invLines=s.items.map(it=>({pid:it.pid,qty:it.qty,price:it.price,label:it.name,measure:it.measure,lineDiscPct:it.lineDiscPct}));
   const setv=(k,v)=>{const e=document.getElementById(k);if(e)e.value=v;};
   setv('inv_date',s.date);setv('inv_disc',s.disc||0);setv('inv_vat',s.vatP||0);
   const pm=(s.dueAmount||0)<=0?'cash':((s.paidAmount||0)>0?'partial':'credit');
@@ -11018,7 +11374,16 @@ async function startApp(){
   try{ if(sb&&CURRENT_UID) await sb.rpc('accept_my_invites'); }catch(e){ console.warn('accept invites',e); }
   await load();
   // stamp the signed-in account (for the badge + audit log)
-  try{if(sb&&sb.auth){const {data:{session}}=await sb.auth.getSession();if(session&&session.user){db.settings.cloudEmail=session.user.email; IS_ADMIN=(session.user.email||'').toLowerCase()==='selemayman923@gmail.com';}}}catch(e){}
+  IS_ADMIN=false;
+  try{
+    if(sb&&sb.auth&&CURRENT_UID){
+      const {data:{session}}=await sb.auth.getSession();
+      if(session?.user?.id===CURRENT_UID){
+        db.settings.cloudEmail=session.user.email;
+        IS_ADMIN=(session.user.email||'').toLowerCase()==='selemayman923@gmail.com';
+      }
+    }
+  }catch(e){}
   SNS_BILLING_REVIEWER=false;
   if(sb&&CURRENT_UID){
     try{const {data,error}=await sb.rpc('sns_can_review_billing');if(!error)SNS_BILLING_REVIEWER=data===true;}
@@ -13158,12 +13523,17 @@ function renderInvLines(){var isPurch=(invKind==='purchase');
     '<td class="t-num">'+money(ln.qty*ln.price)+'</td>'+
     '<td><button class="iconbtn del" onclick="rmInvLine('+i+')">×</button></td></tr>';}).join('');}
 /* Override setLineProduct: auto-fills name for purchases */
-function setLineProduct(i,pid){invLines[i].pid=pid;var p=findProduct(pid);
-  if(p){invLines[i].price=invKind==='purchase'?p.cost:p.price;if(invKind==='purchase'&&!invLines[i].name)invLines[i].name=p.name;}
+function setLineProduct(i,pid){
+  if(invLines[i].pid!==pid){
+    delete invLines[i].measure;delete invLines[i].label;delete invLines[i].lineDiscPct;
+    snsCloseInvoiceMeasurement();
+  }
+  invLines[i].pid=pid;var p=findProduct(pid);
+  if(p){if(!invLines[i].measure)invLines[i].price=invKind==='purchase'?p.cost:p.price;if(invKind==='purchase'&&!invLines[i].name)invLines[i].name=p.name;}
   renderInvLines();calcInv();}
 /* Override addInvLine: includes name field */
 function addInvLine(){invLines.push({pid:'',name:'',qty:1,price:0});renderInvLines();calcInv();}
-function rmInvLine(i){invLines.splice(i,1);if(!invLines.length)invLines.push({pid:'',name:'',qty:1,price:0});renderInvLines();calcInv();}
+function rmInvLine(i){document.getElementById('snsInvoiceMeasurement')?.replaceChildren();invLines.splice(i,1);if(!invLines.length)invLines.push({pid:'',name:'',qty:1,price:0});renderInvLines();calcInv();}
 /* Override delPurchase: guard moveStock for freetext items */
 async function delPurchase(id){if(!await confirmBox(L('حذف الفاتورة؟','Delete invoice?')))return;
   var s=db.purchases.find(function(x){return x.id===id;});if(!s||!snsCanPost(s.date,today()))return;
@@ -13553,6 +13923,8 @@ function ownerPhoneSetting(){return '<div class="field"><label>📱 '+L('رقم 
 /* ---- 1. STOCK TAKE (جرد المخزون الفعلي) ---- */
 var _stk={};   // temp counts keyed by product id
 views.stocktake=()=>{
+  const branch=upholsteryActive()?fatCurBranch():'';
+  if(upholsteryActive()&&window._snsStockTakeBranch!==branch){_stk={};window._snsStockTakeBranch=branch;}
   document.getElementById('topActions').innerHTML=
     ((typeof fatBizHasOrderTypes==='function'&&fatBizHasOrderTypes())?'<button class="btn btn-ghost" onclick="bulkClassifyModal()" title="'+L('حدّد أنهي صنف وجبة وأنهي خامة','Classify items')+'">🍔 '+L('تصنيف الأصناف','Classify items')+'</button>':'')+
     '<button class="btn btn-primary" onclick="stkSave()">✅ '+L('اعتماد التسويات','Apply adjustments')+'</button>'+
@@ -13560,7 +13932,7 @@ views.stocktake=()=>{
   var prods=db.products.filter(fatShowsInStock).slice().sort(function(a,b){return String(a.cat||'').localeCompare(String(b.cat||''),'ar')||String(a.name).localeCompare(String(b.name),'ar');});
   var _stkFull=prods; prods=prods.slice(0,_cap('stocktake'));
   var totalDiff=0,upCount=0,downCount=0;
-  prods.forEach(function(p){var e=_stk[p.id];if(e==null)return;var d=r2(e-p.qty);totalDiff+=Math.abs(d);if(d>0)upCount++;else if(d<0)downCount++;});
+  prods.forEach(function(p){var e=_stk[p.id];if(e==null)return;var d=upholsteryQty(p,e-snsCountSystemQty(p,branch));totalDiff+=Math.abs(d);if(d>0)upCount++;else if(d<0)downCount++;});
   var summaryColor=totalDiff>0?'var(--danger)':'var(--ok)';
   var _hasMenu=db.products.some(function(p){return fatItemType(p)==='menu';});
   var _hasRaw=db.products.some(function(p){return fatItemType(p)==='raw';});
@@ -13596,13 +13968,13 @@ views.stocktake=()=>{
     '<div class="card"><div class="ic-bg">📦</div><div class="lbl">'+L('أصناف تم جردها','Items counted')+'</div><div class="val">'+Object.keys(_stk).length+' / '+prods.length+'</div></div>'+
     '<div class="card"><div class="ic-bg">⚖️</div><div class="lbl">'+L('تسويات مطلوبة','Adjustments needed')+'</div><div class="val" style="color:'+summaryColor+'">'+upCount+'↑ '+downCount+'↓</div></div>'+
   '</div>'+
-  '<div class="panel"><div class="panel-h"><h3>📦 '+L('جرد المخزون الفعلي','Physical stock count')+'</h3><div style="font-size:12px;color:var(--muted)">'+L('أدخل الكمية الفعلية — الكميات الفارغة تعني لم تُجرد بعد','Enter actual qty — blank = not yet counted')+'</div></div><div class="panel-b">'+
+  '<div class="panel"><div class="panel-h"><h3>📦 '+L('جرد المخزون الفعلي','Physical stock count')+(branch?' · '+esc(branchName(branch)):'')+'</h3><div style="font-size:12px;color:var(--muted)">'+L('أدخل الكمية الفعلية — الكميات الفارغة تعني لم تُجرد بعد','Enter actual qty — blank = not yet counted')+'</div></div><div class="panel-b">'+
   '<div style="overflow-x:auto"><table><thead><tr><th>'+L('الصنف','Item')+'</th><th>'+L('التصنيف','Cat')+'</th><th style="text-align:center">'+L('في النظام','System')+'</th><th>'+L('الفعلي','Actual')+'</th><th style="text-align:center">'+L('الفرق','Diff')+'</th></tr></thead><tbody>'+
   prods.map(function(p){
-    var e=_stk[p.id];var counted=e!=null;var diff=counted?r2(e-p.qty):null;
+    var e=_stk[p.id];var counted=e!=null;var diff=counted?upholsteryQty(p,e-snsCountSystemQty(p,branch)):null;
     var diffColor=diff==null?'':diff>0?'var(--ok)':diff<0?'var(--danger)':'var(--muted)';
-    return '<tr><td><b>'+esc(p.name)+'</b></td><td><span class="badge muted" style="font-size:10px">'+esc(p.cat||'—')+'</span></td>'+
-    '<td class="t-num">'+fmt(p.qty)+'</td>'+
+    return '<tr><td><b>'+esc(snsCartonItemName(p))+'</b></td><td><span class="badge muted" style="font-size:10px">'+esc(p.cat||'—')+'</span></td>'+
+    '<td class="t-num">'+fmt(snsCountSystemQty(p,branch))+'</td>'+
     '<td style="min-width:110px"><input type="number" inputmode="decimal" step="any" min="0" placeholder="—" value="'+(counted?e:'')+'" onchange="stkSet(\''+p.id+'\',this.value)" style="width:100px;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink)"></td>'+
     '<td class="t-num" style="font-weight:700;color:'+diffColor+'">'+
       (diff==null?'—':(diff>0?'+':'')+fmt(diff))+'</td></tr>';}).join('')+
@@ -13617,6 +13989,7 @@ function stkSet(pid,val){if(val===''||val==null){delete _stk[pid];}else{_stk[pid
 function stkSetFilter(f){window._stkFilter=f;views.stocktake();}
 function stkReset(){_stk={};views.stocktake();}
 async function stkSave(){
+  if(upholsteryActive())return snsSaveWarehouseCount(_stk,window._snsStockTakeBranch,()=>{_stk={};views.stocktake();},'count');
   var adjs=[];Object.keys(_stk).forEach(function(pid){var p=findProduct(pid);if(!p)return;var actual=_stk[pid];var diff=r2(actual-p.qty);if(Math.abs(diff)<1e-6)return;adjs.push({pid:pid,name:p.name,system:p.qty,actual:actual,diff:diff});});
   if(!adjs.length)return toast(L('لا توجد فروق في الكميات المدخلة','No variances in entered counts'),'err');
   var msg=L('سيتم تسوية','Adjusting')+' '+adjs.length+' '+L('صنفًا. تأكيد؟','items. Confirm?')+'\n'+adjs.slice(0,5).map(function(a){return '• '+esc(a.name)+': '+(a.diff>0?'+':'')+fmt(a.diff);}).join('\n')+(adjs.length>5?'\n…':'');
@@ -14617,6 +14990,12 @@ function restoreFullBackup(input){
         return toast(L('النسخة فيها سجل حجوزات سابق. راجعها في وضع الجهاز أو استرجع نسخة كاملة لقاعدة اختبار.',
           'This backup contains reservation history. Review it in device mode or restore a full backup into a test database.'),'err');
       }
+      const hasBalanceArchive=(data.partyBalanceHistory||[]).length>0||
+        [...(data.customers||[]),...(data.suppliers||[])].some(party=>party.partyBalance!==undefined);
+      if(org&&hasBalanceArchive){
+        return toast(L('النسخة فيها تاريخ أرصدة محمي. راجعها على الجهاز أو استرجع نسخة قاعدة البيانات في بيئة اختبار.',
+          'This backup has protected balance history. Review it in device mode or restore the database backup in a test environment.'),'err');
+      }
       if(!mayRestore()||!await confirmBox(L('استرجاع بيانات النسخة الاحتياطية؟','Restore this backup?'))||!mayRestore())return;
       if(!await makeSnapshot('before-full-restore'))return toast(L('تعذّر حفظ لقطة قبل الاسترجاع','Could not create a pre-restore snapshot'),'err');
       if(!mayRestore())return;
@@ -15420,7 +15799,7 @@ function csvImportModal(){
   '<div class="modal-f"><button type="button" class="btn btn-ghost" onclick="closeModal()">'+L('إغلاق','Close')+'</button></div>');
   window._csvMode=isProduct?'products':(isSupplier?'suppliers':'customers');window._csvRows=null;}
 
-const SNS_RELEASE_ID='2026.11.26-r28';
+const SNS_RELEASE_ID='2026.11.27-r31';
 
 function setSyncStatus(state){
   var el=document.getElementById('syncDot');if(!el)return;
@@ -15689,7 +16068,8 @@ function fatBuildJournal(from,to){
     J.push({date:movement.date,ref:movement.name,desc:movement.note,
       lines:movement.postingLines.map(line=>({...line,acct:snsAccountLabel(line.code)}))});
   }
-  (db.stockTakes||[]).forEach(function(tk){ if(!inR(tk.date||'')) return;
+  (db.stockTakes||[]).forEach(function(tk){
+    if(!inR(tk.date||'')||db.branches.length>1&&activeBranch()!=='__ALL__'&&tk.branch&&tk.branch!==activeBranch())return;
     (tk.items||[]).forEach(function(it){ var diff=+it.diff||0; if(!diff) return;
       var p=findProduct(it.pid); var val=r2(Math.abs(diff)*(it.unitCost??(p?(+p.cost||0):0))); if(val<=0) return;
       if(diff<0){ J.push({date:tk.date,ref:L('\u062c\u0631\u062f','Count'),desc:L('\u0639\u062c\u0632 \u062c\u0631\u062f','Count shortage')+': '+(it.name||''),lines:[{acct:L('\u0639\u062c\u0632 \u0648\u0641\u0631\u0648\u0642 \u062c\u0631\u062f','Stock count variance'),debit:val,credit:0},{acct:L('\u0627\u0644\u0645\u062e\u0632\u0648\u0646','Inventory'),debit:0,credit:val}]}); }
@@ -18638,34 +19018,41 @@ function fatInvEnsureDatalists(){
   ['inv_items_dl','inv_stock_dl'].forEach(function(id,ix){
     var dl=document.getElementById(id);
     if(!dl){dl=document.createElement('datalist');dl.id=id;document.body.appendChild(dl);}
-    dl.innerHTML=(ix===0?menu:stock).map(function(p){return '<option data-id="'+p.id+'" value="'+esc(p.name)+'">';}).join('');
+    dl.innerHTML=(ix===0?menu:stock).map(function(p){return '<option data-id="'+p.id+'" value="'+esc(snsCartonItemName(p))+'">';}).join('');
   });
 }
 window.fatInvItemType=function(i,val,isStock){
   var pool=db.products.filter(function(p){return isStock?fatShowsInStock(p):fatShowsInMenu(p);});
   var v=(val||'').trim();
-  var p=pool.find(function(x){return x.name===v;})||pool.find(function(x){return x.name.trim()===v;});
+  var p=pool.find(function(x){return snsCartonItemName(x).trim()===v;});
+  if(!p){
+    const matches=pool.filter(x=>x.name.trim()===v);
+    if(matches.length===1)p=matches[0];
+  }
   if(p){setLineProduct(i,p.id);}
-  else if(!isStock){invLines[i].pid='';}
+  else if(!isStock){invLines[i].pid='';delete invLines[i].measure;delete invLines[i].label;delete invLines[i].lineDiscPct;snsCloseInvoiceMeasurement();calcInv();}
   else if(isStock&&!v){invLines[i].pid='';}
 };
 window.renderInvLines=function(){var isPurch=(invKind==='purchase');
   fatInvEnsureDatalists();
   document.getElementById('invBody').innerHTML=invLines.map(function(ln,i){
     var lp=ln.pid?findProduct(ln.pid):null;
+    const measured=!isPurch&&upholsteryKind(lp);
     if(isPurch){
       return '<tr><td><input value="'+esc(ln.name||'')+'" placeholder="'+L('اسم الصنف أو الخامة','Item or material name')+'" oninput="invLines['+i+'].name=this.value" style="width:100%;margin-bottom:4px">'+
-      '<input list="inv_stock_dl" value="'+(lp?esc(lp.name):'')+'" placeholder="\ud83d\udd0d '+L('ربط بالمخزون (ابحث بالاسم — اختياري)','Link to stock (search — optional)')+'" onchange="fatInvItemType('+i+',this.value,true)" oninput="if(!this.value){invLines['+i+'].pid=\'\';}" style="width:100%;font-size:11.5px;color:var(--muted)">'+
-      (lp?'<div style="font-size:10.5px;color:var(--ok);margin-top:2px">\ud83d\udce6 '+L('مرتبط:','Linked:')+' '+esc(lp.name)+' ('+fmt(lp.qty)+')</div>':'')+'</td>'+
+      '<input list="inv_stock_dl" value="'+(lp?esc(snsCartonItemName(lp)):'')+'" placeholder="\ud83d\udd0d '+L('ربط بالمخزون (ابحث بالاسم — اختياري)','Link to stock (search — optional)')+'" onchange="fatInvItemType('+i+',this.value,true)" oninput="if(!this.value){invLines['+i+'].pid=\'\';}" style="width:100%;font-size:11.5px;color:var(--muted)">'+
+      (lp?'<div style="font-size:10.5px;color:var(--ok);margin-top:2px">\ud83d\udce6 '+L('مرتبط:','Linked:')+' '+esc(snsCartonItemName(lp))+' ('+fmt(lp.qty)+')</div>':'')+'</td>'+
       '<td><input type="number" inputmode="decimal" min="0" step="any" value="'+ln.qty+'" oninput="invLines['+i+'].qty=+this.value;calcInv()">'+(snsCartonBoxes(lp)?'<button type="button" class="btn btn-ghost btn-sm" onclick="snsBoxesPurchase('+i+')">'+L('إدخال بالكراتين','Enter cartons')+'</button><small> '+L('الكمية بالعلبة','Quantity in boxes')+'</small>':'')+'</td>'+
       '<td><input type="number" inputmode="decimal" value="'+ln.price+'" oninput="invLines['+i+'].price=+this.value;calcInv()"></td>'+
       '<td class="t-num">'+money(ln.qty*ln.price)+'</td>'+
       '<td><button class="iconbtn del" onclick="rmInvLine('+i+')">\u00d7</button></td></tr>';}
-    return '<tr><td><input list="inv_items_dl" value="'+(lp?esc(lp.name):'')+'" placeholder="\ud83d\udd0d '+L('ابحث عن الصنف بالاسم...','Search item by name...')+'" onchange="fatInvItemType('+i+',this.value,false)" style="width:100%">'+
-      (lp?'<div style="font-size:10.5px;color:var(--muted);margin-top:2px">'+L('المتاح','In stock')+': '+fmt(lp.qty)+'</div>':'')+'</td>'+
-    '<td><input type="number" inputmode="decimal" min="0" step="any" value="'+ln.qty+'" oninput="invLines['+i+'].qty=+this.value;calcInv()">'+
+    return '<tr><td><input list="inv_items_dl" value="'+(lp?esc(snsCartonItemName(lp)):'')+'" placeholder="\ud83d\udd0d '+L('ابحث عن الصنف بالاسم...','Search item by name...')+'" onchange="fatInvItemType('+i+',this.value,false)" style="width:100%">'+
+      (lp?'<div style="font-size:10.5px;color:var(--muted);margin-top:2px">'+L('المتاح','In stock')+': '+fmt(lp.qty)+'</div>':'')+
+      (measured?'<button type="button" class="btn btn-ghost btn-sm" onclick="snsEditInvoiceMeasurement('+i+')">'+L('المقاس والخصم','Dimensions and discount')+'</button>'+
+        (ln.label?'<small>'+esc(ln.label)+'</small>':''):'')+'</td>'+
+    '<td><input type="number" inputmode="decimal" min="0" step="any" value="'+ln.qty+'" '+(measured?'readonly ':'')+'oninput="invLines['+i+'].qty=+this.value;calcInv()">'+
     (function(){if(!isPurch)return'';return'';})()+'</td>'+
-    '<td><input type="number" inputmode="decimal" value="'+ln.price+'" oninput="invLines['+i+'].price=+this.value;calcInv()"></td>'+
+    '<td><input type="number" inputmode="decimal" value="'+ln.price+'" '+(measured?'readonly ':'')+'oninput="invLines['+i+'].price=+this.value;calcInv()"></td>'+
     '<td class="t-num">'+money(ln.qty*ln.price)+'</td>'+
     '<td><button class="iconbtn del" onclick="rmInvLine('+i+')">\u00d7</button></td></tr>';}).join('');};
 
@@ -18895,13 +19282,19 @@ window.saveProduct=async function(id){
   if(cat==='__new__'){var newCatEl=document.getElementById('f_cat_new');cat=newCatEl?newCatEl.value.trim():'';}
   // تحذير التكرار بيظهر بس لو الاسم والتصنيف الاتنين متطابقين — نفس الاسم في تصنيف مختلف = صنف تاني فعليًا
   var isRoll=document.getElementById('up_kind')?.value==='fabric';
-  var sameNameSameCat=!isRoll&&db.products.find(function(x){return !upholsteryKind(x)&&x.id!==id&&fatNorm(x.name)===fatNorm(name)&&(x.cat||'')===(cat||'');});
+  var sameNameSameCat=!isRoll&&!document.getElementById('f_carton_code')?.value.trim()&&db.products.find(function(x){return !upholsteryKind(x)&&x.id!==id&&fatNorm(x.name)===fatNorm(name)&&(x.cat||'')===(cat||'');});
   if(sameNameSameCat){
+    const form=document.getElementById('f_name');
     var ok=await confirmBox('\u26a0\ufe0f '+L('صنف','Product')+' "'+sameNameSameCat.name+'" '+L('موجود بالفعل بنفس التصنيف','already exists in the same category')+'. '+
       L('الإضافة تاني هتعمل تكرار وتشتّت. متأكد إنك عايز تضيفه برضه؟','Adding again creates a duplicate. Add anyway?'));
-    if(!ok)return;
+    if(!ok||!form?.isConnected)return;
   }
-  return _oSaveProduct(id);
+  const skuInput=document.getElementById('f_sku');
+  const sku=skuInput?.value.trim();
+  const legacyDuplicate=!id&&!upholsteryActive()&&sku&&db.products.some(p=>snsPosProductCodes(p).some(code=>fatNorm(code)===fatNorm(sku)));
+  if(legacyDuplicate&&(!await confirmBox(L('الكود الداخلي مستخدم. تحب تحفظ الصنف بنفس الكود؟','Internal code already used. Save this item with the same code?'))||
+     !skuInput.isConnected||skuInput.value.trim()!==sku))return;
+  return _oSaveProduct(id,!!legacyDuplicate);
 };
 // العملاء والموردين (الفورم الرئيسي)
 var _oSaveParty=window.saveParty;
@@ -21844,14 +22237,12 @@ window.fatThermalPrint=async function(sale){
     window.saveProduct=async function(id){
       var chk=document.getElementById('f_trackserial');
       var wantTrack=chk?chk.checked:false;
-      var before=db.products.length;
-      var r=await _origSave(id);
-      try{
-        var p=id?db.products.find(function(x){return x.id===id;}):db.products[db.products.length-1];
-        if(p&&db.products.length>=before)p.trackSerial=wantTrack;
+      const product=await _origSave(id);
+      if(product&&!!product.trackSerial!==wantTrack){
+        product.trackSerial=wantTrack;
         save();
-      }catch(e){}
-      return r;
+      }
+      return product;
     };
   }
 })();
@@ -22316,14 +22707,13 @@ window.fatUnitFactor=function(p){return (p&&+p.unitFactor>0)?+p.unitFactor:1;};
     window.saveProduct=async function(id){
       var bu=document.getElementById('f_buyunit'),uf=document.getElementById('f_unitfactor');
       var buVal=bu?bu.value.trim():'',ufVal=uf?(+uf.value||0):0;
-      var before=db.products.length;
-      var r=await _origSave(id);
-      try{
-        var p=id?db.products.find(function(x){return x.id===id;}):db.products[db.products.length-1];
-        if(p&&db.products.length>=before){p.buyUnit=buVal;p.unitFactor=ufVal>0?ufVal:1;}
+      const product=await _origSave(id);
+      if(product&&bu&&uf&&(product.buyUnit!==buVal||fatUnitFactor(product)!==(ufVal>0?ufVal:1))){
+        product.buyUnit=buVal;
+        product.unitFactor=ufVal>0?ufVal:1;
         save();
-      }catch(e){}
-      return r;
+      }
+      return product;
     };
   }
 })();
@@ -23264,7 +23654,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
         '<select onchange="fatTfSet(' + i + ',\'pid\',this.value)" style="flex:1;min-width:0">' +
         '<option value="">' + L('اختر صنف…', 'Pick item…') + '</option>' +
         stockable.map(function (p) {
-          return '<option value="' + p.id + '"' + (r.pid === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+          return '<option value="' + p.id + '"' + (r.pid === p.id ? ' selected' : '') + '>' + esc(snsCartonItemName(p)) + '</option>';
         }).join('') + '</select>' +
         '<input type="number" inputmode="decimal" step="any" min="0" value="' + (r.qty || '') +
         '" oninput="fatTfSet(' + i + ',\'qty\',this.value)" style="width:96px' +
@@ -23273,7 +23663,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
         '</div>' +
         (r.pid ? '<div style="font-size:11px;margin:-4px 0 8px 0;color:' +
           (bad ? 'var(--danger)' : 'var(--muted)') + '">' +
-          L('متاح في الفرع ده', 'Available in this branch') + ': <b>' + fmt(avail) + '</b>' +
+          L('متاح في الفرع ده', 'Available in this branch') + ': <b>' + (snsCartonBoxes(findProduct(r.pid))?snsBoxEquivalent(avail,snsCartonBoxes(findProduct(r.pid))):fmt(avail)) + '</b>' +
           (bad ? ' — ' + L('الكمية أكبر من المتاح', 'exceeds available') : '') + '</div>' : '');
     }).join('');
   };
@@ -23299,9 +23689,11 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       if (!Object.prototype.hasOwnProperty.call(merged, pid)) continue;
       var p = findProduct(pid);
       if (!p) continue;
+      if(snsCartonBoxes(p)&&rows.some(row=>row.pid===pid&&!Number.isSafeInteger(+row.qty)))
+        return toast(L('تحويل الكراتين يكون بعدد علب صحيح','Transfer cartons as a whole number of boxes'),'err');
       var have = window.fatBQOf(p, from)-snsStockHeld(p.id,from);
       if (merged[pid] > have + 1e-9) bad.push(p.name + ' (' + L('متاح', 'have') + ' ' + fmt(have) + ')');
-      items.push({ pid: pid, name: p.name, qty: merged[pid] });
+      items.push({ pid: pid, name: snsCartonItemName(p), qty: merged[pid] });
     }
     if (bad.length) return toast(L('كمية أكبر من المتاح', 'Exceeds available') + ': ' + bad.join('، '), 'err');
     if (!items.length) return;
@@ -24609,20 +25001,17 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       var unitEl = document.getElementById('f_etaunit');
       var code = codeEl ? String(codeEl.value || '').trim() : null;
       var unit = unitEl ? String(unitEl.value || '').trim() : null;
-      var before = (db.products || []).length;
       var r = _sp.apply(this, arguments);
-      var apply = function () {
+      var apply = function (p) {
         try {
-          if (code === null) return;
-          var p = id ? findProduct(id) : ((db.products || []).length > before ? db.products[db.products.length - 1] : null);
-          if (!p) return;
+          if (code === null || !p) return;
           if (code) { p.etaCode = code; p.etaType = /^EG-/i.test(code) ? 'EGS' : 'GS1'; }
           else { delete p.etaCode; delete p.etaType; }
           if (unit) p.etaUnit = unit;
           save();
         } catch (er) {}
       };
-      if (r && typeof r.then === 'function') { r.then(apply)['catch'](function () {}); } else { apply(); }
+      if (r && typeof r.then === 'function') { r.then(apply)['catch'](function () {}); } else { apply(r); }
       return r;
     };
   })();
@@ -25645,19 +26034,16 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
     window.saveProduct = function (id) {
       var el = document.getElementById('f_trackbatch');
       var on = el ? !!el.checked : null;
-      var before = (db.products || []).length;
       var r = _sp.apply(this, arguments);
-      var apply = function () {
+      var apply = function (p) {
         try {
-          if (on === null) return;
-          var p = id ? findProduct(id) : ((db.products || []).length > before ? db.products[db.products.length - 1] : null);
-          if (!p) return;
+          if (on === null || !p || !!p.trackBatch===on) return;
           if (on) { p.trackBatch = true; window.fatBatchEnsure(p); }
           else { delete p.trackBatch; }
           save();
         } catch (e) {}
       };
-      if (r && typeof r.then === 'function') { r.then(apply)['catch'](function () {}); } else { apply(); }
+      if (r && typeof r.then === 'function') { r.then(apply)['catch'](function () {}); } else { apply(r); }
       return r;
     };
   })();
@@ -29891,15 +30277,18 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   window.fatHealthCompute = function (orgs, subs) {
     var subMap = {};
     (subs || []).forEach(function (s) { subMap[s.org_id] = s; });
-    var out = { total: 0, noSub: 0, trial: 0, active: 0, expiringSoon: 0, expired: 0, rows: [] };
+    var out = { total: 0, noSub: 0, trial: 0, active: 0, expiringSoon: 0, expired: 0, stopped: 0, rows: [] };
 
     (orgs || []).forEach(function (o) {
       out.total++;
       var s = subMap[o.id];
-      var days = (s && s.expires_at) ? Math.ceil((new Date(s.expires_at) - new Date()) / 86400000) : null;
+      const expiry=Date.parse(s?.expires_at);
+      const now=Date.now();
+      const days=Number.isFinite(expiry)?Math.ceil((expiry-now)/86400000):null;
       var status = 'noSub';
-      if (!s) { status = 'noSub'; out.noSub++; }
-      else if (days !== null && days < 0) { status = 'expired'; out.expired++; }
+      if (!s) { out.noSub++; }
+      else if(['suspended','cancelled','canceled','inactive'].includes(s.status)){status='stopped';out.stopped++;}
+      else if(s.status==='expired'||Number.isFinite(expiry)&&expiry<=now){status='expired';out.expired++;}
       else if (s.status === 'trialing') { status = 'trial'; out.trial++; }
       else { status = 'active'; out.active++; if (days !== null && days <= 5) out.expiringSoon++; }
       out.rows.push({ org: o, sub: s, days: days, status: status });
@@ -29926,6 +30315,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       '<div class="card"><div class="ic-bg">⚪</div><div class="lbl">' + L('بدون اشتراك', 'No subscription') +
       '</div><div class="val">' + health.noSub + '</div></div>' +
       '</div>' +
+      (health.stopped?' <p class="hint">'+L('موقوفة أو ملغاة','Suspended or cancelled')+' '+health.stopped+'</p>':'')+
       (health.expiringSoon || health.expired
         ? '<div class="hint" style="margin-top:12px;color:' + (health.expired ? 'var(--danger)' : '#d97706') + '">' +
           (health.expired ? '🔴 ' + health.expired + ' ' + L('محل منتهي الاشتراك دلوقتي', 'shops currently expired') : '') +
@@ -29937,36 +30327,7 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       '</div></div>';
   };
 
-  (function () {
-    var _va = views.admin;
-    if (typeof _va !== 'function' || window._fatHealthWrapped) return;
-    window._fatHealthWrapped = true;
-    views.admin = async function () {
-      var r = await _va.apply(this, arguments);
-      try {
-        if (typeof IS_ADMIN !== 'undefined' && !IS_ADMIN) return r;
-        if (typeof sb === 'undefined' || !sb) return r;
-        var c = document.getElementById('content');
-        if (!c || document.getElementById('fatHealthBox')) return r;
 
-        var box = document.createElement('div');
-        box.id = 'fatHealthBox';
-        box.innerHTML = '<div class="panel" style="max-width:920px;margin-bottom:16px"><div class="panel-b pad">' +
-          L('جارٍ حساب صحة الحساب…', 'Computing account health…') + '</div></div>';
-        c.insertBefore(box, c.firstChild);
-
-        var res = await Promise.all([
-          sb.rpc('admin_list_orgs'),
-          sb.from('subscriptions').select('org_id,plan,status,expires_at')
-        ]);
-        var orgs = (res[0] && res[0].data) || [];
-        var subs = (res[1] && res[1].data) || [];
-        var health = window.fatHealthCompute(orgs, subs);
-        box.innerHTML = window.fatHealthWidget(health);
-      } catch (e) {}
-      return r;
-    };
-  })();
 
 })();
 
@@ -36391,6 +36752,9 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   window.fatCycleSetCount = function (pid, v) { window._cycleCounts[pid] = v; };
 
   window.fatCycleApply = function () {
+    if(upholsteryActive())return snsSaveWarehouseCount(window._cycleCounts,window._snsCycleBranch,()=>{
+      window._cycleCounts={};views.cyclecount();
+    },'cycle');
     var prods = window.fatCycleProducts();
     var items = [];
     prods.forEach(function (p) {
@@ -36423,6 +36787,8 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
   } catch (e) {}
 
   views.cyclecount = function () {
+    const branch=upholsteryActive()?fatCurBranch():'';
+    if(upholsteryActive()&&window._snsCycleBranch!==branch){window._cycleCounts={};window._snsCycleBranch=branch;}
     try { document.getElementById('topActions').innerHTML = '<button class="btn btn-primary btn-sm" onclick="fatCycleApply()">✅ ' + L('تطبيق', 'Apply') + '</button>'; } catch (e) {}
     var cats = window.fatCycleCats();
     var prods = window.fatCycleProducts();
@@ -36434,15 +36800,15 @@ try{setTimeout(function(){typeof fatEmit==='function'&&fatEmit('app:ready',{vers
       ? '<table><thead><tr><th>' + L('الصنف', 'Item') + '</th><th>' + L('النظام', 'System') + '</th><th>' + L('الفعلي', 'Counted') + '</th><th>' + L('الفرق', 'Diff') + '</th></tr></thead><tbody>' +
         prods.map(function (p) {
           var v = window._cycleCounts[p.id];
-          var diff = (v === undefined || v === '') ? '' : ((+v || 0) - (+p.qty || 0));
+          var diff = (v === undefined || v === '') ? '' : upholsteryQty(p,(+v||0)-snsCountSystemQty(p,branch));
           var col = diff === '' ? 'var(--muted)' : (diff < 0 ? 'var(--danger)' : diff > 0 ? 'var(--ok)' : 'var(--muted)');
-          return '<tr><td><b>' + esc(p.name) + '</b></td><td class="t-num">' + (+p.qty || 0) + '</td>' +
+          return '<tr><td><b>' + esc(snsCartonItemName(p)) + '</b></td><td class="t-num">' + snsCountSystemQty(p,branch) + '</td>' +
             '<td><input type="number" inputmode="decimal" style="width:80px" value="' + (v === undefined ? '' : esc(String(v))) + '" oninput="fatCycleSetCount(\'' + p.id + '\',this.value)" onchange="views.cyclecount()"></td>' +
             '<td class="t-num" style="color:' + col + '">' + (diff === '' ? '—' : (diff > 0 ? '+' : '') + diff) + '</td></tr>';
         }).join('') + '</tbody></table>' + (_ccFull.length > 300 ? '<div class="hint" style="text-align:center;padding:10px">' + L('بيعرض أول 300 صنف من', 'Showing first 300 of') + ' ' + _ccFull.length + ' — ' + L('استخدم التصنيفات فوق للتصفية', 'use the category filters above') + '</div>' : '')
       : '<div class="empty"><span class="big">📦</span>' + L('مفيش أصناف في المجموعة دي', 'No items in this group') + '</div>';
     document.getElementById('content').innerHTML =
-      '<div class="hint" style="margin-bottom:10px">💡 ' + L('اختار مجموعة، دخّل العدد الفعلي، ودوس تطبيق. اللي متسيبه فاضي مايتغيّرش.', 'Pick a group, enter actual counts, then Apply. Blank rows are untouched.') + '</div>' +
+      '<div class="hint" style="margin-bottom:10px">💡 ' + (branch?esc(branchName(branch))+' · ':'') + L('اختار مجموعة، دخّل العدد الفعلي، ودوس تطبيق. اللي متسيبه فاضي مايتغيّرش.', 'Pick a group, enter actual counts, then Apply. Blank rows are untouched.') + '</div>' +
       catBtns + '<div class="panel"><div class="panel-b">' + table + '</div></div>';
   };
 
